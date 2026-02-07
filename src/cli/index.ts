@@ -114,3 +114,6 @@ export async function startCli(): Promise<void> {
 
 	prompt();
 }
+
+// Auto-run when executed directly
+startCli();
