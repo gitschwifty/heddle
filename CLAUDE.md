@@ -49,11 +49,55 @@ Integration tests hit real APIs and need env vars (auto-loaded from `.env.test`)
 - Use `async function*` generators for streaming patterns (provider streams, agent loop).
 - Return error strings from tool `execute()` rather than throwing — the agent loop sends these back to the LLM as tool results. Only throw for truly unrecoverable errors (unknown tool name, invalid JSON args).
 
+## File Format Philosophy
+
+- **Human + agent readable/writable** (agents, skills, HEDDLE.md): **Markdown**
+- **Human config** (settings): **TOML**
+- **Machine-only** (future: plugins, cache, telemetry): whatever fits (JSON, binary, etc.)
+- **Session logs**: **JSONL**
+
+## Config Directory
+
+Two-layer config: global (`~/.heddle/`) and local (`./.heddle/` in project dir).
+
+### Global: `~/.heddle/`
+
+```
+~/.heddle/
+  config.toml       # User settings (model, api_key, system_prompt)
+  agents/           # Agent persona definitions (Markdown)
+  skills/           # Reusable instruction sets (Markdown)
+  sessions/         # JSONL conversation logs
+```
+
+### Local: `.heddle/` in project directory
+
+Project-specific overrides (checked in or gitignored per preference):
+
+```
+<project>/.heddle/
+  config.toml       # Project-specific settings (overrides global)
+  agents/           # Project-specific agent definitions
+  skills/           # Project-specific skills
+```
+
+**Merge order:** Defaults → Global → Local → Env vars. Last wins.
+
+### Dev/Test Isolation
+
+`HEDDLE_HOME` env var overrides the global config dir. Relative paths resolve from cwd.
+
+```bash
+HEDDLE_HOME=.heddle-dev bun run dev    # Dev config, easy to blow away
+HEDDLE_HOME=.heddle-test bun test      # Isolated test config
+```
+
 ## Project Structure
 
 ```
 src/
   types.ts          # Core message/tool types (TypeBox schemas)
+  config/           # Directory resolution + TOML config loading
   provider/         # LLM API clients (OpenRouter)
   agent/            # Agent loop, event types
   tools/            # Tool implementations + registry
@@ -61,6 +105,7 @@ src/
   cli/              # REPL interface
 test/
   mocks/            # Shared mock helpers
+  config/           # Config paths + loader tests
   provider/         # Provider unit + integration tests
   agent/            # Agent loop tests
   tools/            # Tool tests (positive + negative)

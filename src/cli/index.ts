@@ -1,5 +1,4 @@
 import * as readline from "node:readline";
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createOpenRouterProvider } from "../provider/openrouter.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -9,6 +8,8 @@ import { createEditTool } from "../tools/edit.ts";
 import { createGlobTool } from "../tools/glob.ts";
 import { runAgentLoop } from "../agent/loop.ts";
 import { appendMessage } from "../session/jsonl.ts";
+import { ensureHeddleDirs, getSessionsDir } from "../config/paths.ts";
+import { loadConfig } from "../config/loader.ts";
 import type { Message } from "../types.ts";
 
 function timestamp(): string {
@@ -16,15 +17,16 @@ function timestamp(): string {
 }
 
 export async function startCli(): Promise<void> {
-	const apiKey = process.env.OPENROUTER_API_KEY;
+	ensureHeddleDirs();
+	const config = loadConfig();
+
+	const apiKey = config.apiKey;
 	if (!apiKey) {
-		console.error("Error: OPENROUTER_API_KEY environment variable is required");
+		console.error("Error: OPENROUTER_API_KEY environment variable or api_key in config.toml is required");
 		process.exit(1);
 	}
 
-	const model = process.env.TEST_MODEL ?? "moonshotai/kimi-k2.5";
-
-	const provider = createOpenRouterProvider({ apiKey, model });
+	const provider = createOpenRouterProvider({ apiKey, model: config.model });
 
 	const registry = new ToolRegistry();
 	registry.register(createReadTool());
@@ -32,14 +34,14 @@ export async function startCli(): Promise<void> {
 	registry.register(createEditTool());
 	registry.register(createGlobTool());
 
-	const sessionDir = join(process.cwd(), ".heddle", "sessions");
-	mkdirSync(sessionDir, { recursive: true });
+	const sessionDir = getSessionsDir();
 	const sessionFile = join(sessionDir, `${timestamp()}.jsonl`);
 
 	const messages: Message[] = [
 		{
 			role: "system",
 			content:
+				config.systemPrompt ??
 				"You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use them when the user asks you to work with files.",
 		},
 	];
@@ -50,7 +52,7 @@ export async function startCli(): Promise<void> {
 		output: process.stdout,
 	});
 
-	console.log(`Heddle CLI — model: ${model}`);
+	console.log(`Heddle CLI — model: ${config.model}`);
 	console.log(`Session: ${sessionFile}`);
 	console.log('Type "exit" or "quit" to stop.\n');
 

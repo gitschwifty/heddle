@@ -7,3 +7,5 @@ dist
 bun.lock
 *.tgz
 .heddle
+.heddle-dev
+.heddle-test
