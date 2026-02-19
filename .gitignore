@@ -4,7 +4,6 @@ node_modules
 dist
 .env*
 !.env.example
-bun.lock
 *.tgz
 .heddle
 .heddle-dev
