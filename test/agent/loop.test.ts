@@ -166,9 +166,9 @@ describe("Agent Loop", () => {
 	});
 
 	test("max iterations prevents infinite loop", async () => {
-		// Provider always returns tool calls
-		const infiniteToolCalls = Array.from({ length: 20 }, () =>
-			mockToolCallResponse([{ name: "echo", arguments: { text: "loop" } }]),
+		// Provider always returns tool calls — use different args each time to avoid doom loop
+		const infiniteToolCalls = Array.from({ length: 20 }, (_, i) =>
+			mockToolCallResponse([{ name: "echo", arguments: { text: `loop-${i}` } }]),
 		);
 		const provider = mockProvider(infiniteToolCalls);
 

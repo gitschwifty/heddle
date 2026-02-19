@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as readline from "node:readline";
-import { runAgentLoop } from "../agent/loop.ts";
+import { runAgentLoopStreaming } from "../agent/loop.ts";
 import { loadAgentsContext } from "../config/agents-md.ts";
 import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
@@ -95,11 +95,21 @@ export async function startCli(): Promise<void> {
 			await appendMessage(sessionFile, userMsg);
 
 			try {
-				for await (const event of runAgentLoop(provider, registry, messages)) {
+				let needsNewline = false;
+				for await (const event of runAgentLoopStreaming(provider, registry, messages)) {
 					switch (event.type) {
+						case "content_delta": {
+							if (!needsNewline) {
+								process.stdout.write("\nassistant> ");
+								needsNewline = true;
+							}
+							process.stdout.write(event.text);
+							break;
+						}
 						case "assistant_message": {
-							if (event.message.content) {
-								console.log(`\nassistant> ${event.message.content}\n`);
+							if (needsNewline) {
+								process.stdout.write("\n\n");
+								needsNewline = false;
 							}
 							await appendMessage(sessionFile, event.message);
 							break;
@@ -118,6 +128,12 @@ export async function startCli(): Promise<void> {
 							});
 							break;
 						}
+						case "loop_detected": {
+							console.error(
+								`\n  [warning] Doom loop detected: ${event.count} identical tool call iterations. Stopping.`,
+							);
+							break;
+						}
 						case "error": {
 							console.error(`  [error] ${event.error.message}`);
 							break;
@@ -127,7 +143,6 @@ export async function startCli(): Promise<void> {
 			} catch (err) {
 				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
 			}
-			console.log(messages);
 
 			prompt();
 		});
