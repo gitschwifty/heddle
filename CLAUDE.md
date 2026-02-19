@@ -15,7 +15,7 @@ TypeScript LLM API harness — tool execution, streaming, edits, context managem
 
 Write failing tests before implementation. This project was built test-first and should stay that way.
 
-**Why:** Tests define the contract. Writing them first forces clear interface design, catches regressions immediately, and makes refactoring safe. The codebase has 83+ tests — keep that ratio healthy.
+**Why:** Tests define the contract. Writing them first forces clear interface design, catches regressions immediately, and makes refactoring safe. The codebase has 155+ tests — keep that ratio healthy.
 
 **In practice:**
 1. Write the test file with expected behavior (it will fail — that's the point)
@@ -118,19 +118,20 @@ src/
   cli/              # REPL interface
 test/
   mocks/            # Shared mock helpers
-  config/           # Config paths + loader tests
+  config/           # Config paths + loader + agents-md tests
   provider/         # Provider unit + integration tests
-  agent/            # Agent loop tests
-  tools/            # Tool tests (positive + negative)
+  agent/            # Agent loop tests (streaming, multi-turn, doom loop)
+  tools/            # Tool tests (edit, fuzzy-match, read, write, grep, glob)
   session/          # Session logging tests
   e2e/              # End-to-end tests with mock provider + real tools
+  integration/      # Real-model integration tests (gated by env vars)
 ```
 
 ## Environment
 
 - `.env` — shared config (TEST_MODEL)
 - `.env.local` — secrets for runtime (OPENROUTER_API_KEY), not loaded by `bun test`
-- `.env.test` — secrets + config for tests, auto-loaded by `bun test`
+- `.env.test` — secrets + config for tests, auto-loaded by `bun test`. Also sets `HEDDLE_INTEGRATION_TESTS=0`.
 - All `.env*` files are gitignored.
 
 ## Commit Practices
@@ -144,5 +145,20 @@ test/
 - **Provider interface** (`src/provider/types.ts`): `send()` for non-streaming, `stream()` as async generator.
 - **HeddleTool interface** (`src/tools/types.ts`): name, description, TypeBox parameters schema, `execute()` function.
 - **ToolRegistry**: register tools, generate OpenAI-format tool definitions, execute by name with JSON string args.
-- **Agent loop** (`src/agent/loop.ts`): send → tool_calls? → execute each → append results → repeat until text-only response or max iterations.
-- **Mock helpers** (`test/mocks/openrouter.ts`): use these for unit tests — `mockTextResponse()`, `mockToolCallResponse()`, `mockSSE()`, etc.
+- **Agent loop** (`src/agent/loop.ts`): Two variants:
+  - `runAgentLoop()` — non-streaming, uses `provider.send()`. Good for tests and batch use.
+  - `runAgentLoopStreaming()` — streaming, uses `provider.stream()`, yields `content_delta` events as tokens arrive. CLI uses this.
+  - Both support doom loop detection (configurable via `doomLoopThreshold`, default 3).
+- **Fuzzy edit matching** (`src/tools/fuzzy-match.ts`): When exact match fails, `cascadingMatch()` tries 4 levels: exact → whitespace-normalized → indent-flexible → line-fuzzy. Edit tool falls back automatically.
+- **AGENTS.md** (`src/config/agents-md.ts`): `loadAgentsContext()` walks up from cwd collecting AGENTS.md files (case-insensitive), also checks HEDDLE_HOME. Concatenated farthest-first into system prompt.
+- **Mock helpers** (`test/mocks/openrouter.ts`): use these for unit tests — `mockTextResponse()`, `mockToolCallResponse()`, `textChunk()`, `toolCallChunk()`, `finishChunk()`, `mockSSE()`, etc.
+
+## Agent Event Types
+
+The agent loop yields events via `AsyncGenerator<AgentEvent>`:
+
+- `content_delta` — streaming text token (streaming loop only)
+- `assistant_message` — complete assembled message
+- `tool_start` / `tool_end` — tool execution lifecycle
+- `loop_detected` — doom loop warning (N identical iterations)
+- `error` — unrecoverable error
