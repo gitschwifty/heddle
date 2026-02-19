@@ -7,34 +7,19 @@ Heddle gives LLMs the ability to read, write, edit, and search files, run shell 
 ## Quick Start
 
 ```bash
-# Install dependencies
 bun install
 
-# Set up environment
-cp .env.example .env
-# Create .env.local with your API key:
-echo "OPENROUTER_API_KEY=sk-or-v1-your-key" > .env.local
+# Add your API key
+echo "OPENROUTER_API_KEY=sk-or-v1-your-key" > .env
 
 # Run the CLI
-bun run src/cli/index.ts
+bun run dev
 ```
 
 ## Requirements
 
 - [Bun](https://bun.sh) (runtime, test runner, package manager)
 - An [OpenRouter](https://openrouter.ai) API key
-
-## Environment
-
-Heddle uses three env files (all gitignored via `.env*`):
-
-| File | Loaded by | Purpose |
-|------|-----------|---------|
-| `.env` | `bun run` + `bun test` | Shared config (`TEST_MODEL`) |
-| `.env.local` | `bun run` only | Runtime secrets (`OPENROUTER_API_KEY`) |
-| `.env.test` | `bun test` only | Test secrets + config |
-
-See `.env.example` for the template.
 
 ## Tools
 
@@ -54,6 +39,7 @@ The agent has access to 6 built-in tools:
 ```
 src/
   types.ts          # Core message/tool types (TypeBox schemas)
+  config/           # Directory resolution + TOML config loading
   provider/         # LLM API clients (OpenRouter)
   agent/            # Agent loop (send → tool_call → execute → repeat)
   tools/            # Tool implementations + registry
@@ -68,21 +54,16 @@ src/
 ## Development
 
 ```bash
-# Run tests
-bun test                    # full suite (83 tests)
+bun test                    # full suite
 bun test test/tools/        # specific directory
-bun test test/provider/openrouter.unit.test.ts  # specific file
-
-# Type check
-bun run tsc --noEmit
-
-# Lint + format
-bunx biome check src/ test/
+bun run tsc --noEmit        # type check
+bun run lint                # lint + format (auto-fixes)
 ```
 
 ## Dependencies
 
 - **[@sinclair/typebox](https://github.com/sinclairzx81/typebox)** — TypeScript type + JSON Schema from a single definition
+- **[smol-toml](https://github.com/squirrelchat/smol-toml)** — TOML parser for config files
 - **[@biomejs/biome](https://biomejs.dev)** — Lint + format (dev)
 
 ## License
