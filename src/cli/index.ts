@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as readline from "node:readline";
 import { runAgentLoop } from "../agent/loop.ts";
+import { loadAgentsContext } from "../config/agents-md.ts";
 import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
 import { createOpenRouterProvider } from "../provider/openrouter.ts";
@@ -44,12 +45,20 @@ export async function startCli(): Promise<void> {
 		heddle_version: "0.1.0",
 	});
 
+	const agentsContext = loadAgentsContext();
+
+	const systemContent = [
+		agentsContext,
+		config.systemPrompt ??
+			"You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use them when the user asks you to work with files.",
+	]
+		.filter(Boolean)
+		.join("\n\n");
+
 	const messages: Message[] = [
 		{
 			role: "system",
-			content:
-				config.systemPrompt ??
-				"You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use them when the user asks you to work with files.",
+			content: systemContent,
 		},
 	];
 	await appendMessage(sessionFile, messages[0]!);
@@ -61,6 +70,11 @@ export async function startCli(): Promise<void> {
 
 	console.log(`Heddle CLI — model: ${config.model}`);
 	console.log(`Session: ${sessionFile}`);
+	if (agentsContext) {
+		console.log("AGENTS.md: loaded project instructions");
+	} else {
+		console.log("AGENTS.md: none found (using default system prompt)");
+	}
 	console.log('Type "exit" or "quit" to stop.\n');
 
 	const prompt = (): void => {
