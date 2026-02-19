@@ -64,10 +64,9 @@ describe("cascadingMatch", () => {
 		expect(result?.level).toBe(2);
 		expect(result?.matchedText).toBe("    foo()\n    bar()");
 		// Verify replacement works correctly
-		const replaced =
-			content.slice(0, result?.startIndex) +
-			"REPLACED" +
-			content.slice(result?.startIndex + result?.matchedText.length);
+		const start = result!.startIndex;
+		const end = start + result!.matchedText.length;
+		const replaced = `${content.slice(0, start)}REPLACED${content.slice(end)}`;
 		expect(replaced).toBe("header\nREPLACED\nfooter");
 	});
 

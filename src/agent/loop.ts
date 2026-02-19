@@ -1,4 +1,4 @@
-import type { Provider } from "../provider/types.ts";
+import type { Provider, RequestOverrides } from "../provider/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { AssistantMessage, Message, ToolCall, ToolMessage } from "../types.ts";
 import type { AgentEvent } from "./types.ts";
@@ -6,6 +6,7 @@ import type { AgentEvent } from "./types.ts";
 export interface AgentLoopOptions {
 	maxIterations?: number;
 	doomLoopThreshold?: number;
+	requestOverrides?: RequestOverrides;
 }
 
 const DEFAULT_MAX_ITERATIONS = 20;
@@ -49,8 +50,10 @@ export async function* runAgentLoop(
 	const tools = registry.definitions();
 	const recentHashes: string[] = [];
 
+	const overrides = options?.requestOverrides;
+
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
-		const response = await provider.send(messages, tools.length > 0 ? tools : undefined);
+		const response = await provider.send(messages, tools.length > 0 ? tools : undefined, overrides);
 		const choice = response.choices[0];
 		if (!choice) {
 			yield { type: "error", error: new Error("No choice in response") };
@@ -118,13 +121,14 @@ export async function* runAgentLoopStreaming(
 	const doomThreshold = options?.doomLoopThreshold ?? DEFAULT_DOOM_LOOP_THRESHOLD;
 	const tools = registry.definitions();
 	const recentHashes: string[] = [];
+	const overrides = options?.requestOverrides;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
 		// Accumulate content and tool call deltas from the stream
 		let contentParts = "";
 		const assembledToolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
 
-		for await (const chunk of provider.stream(messages, tools.length > 0 ? tools : undefined)) {
+		for await (const chunk of provider.stream(messages, tools.length > 0 ? tools : undefined, overrides)) {
 			const choice = chunk.choices[0];
 			if (!choice) continue;
 

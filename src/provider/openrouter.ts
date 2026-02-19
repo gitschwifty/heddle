@@ -1,5 +1,8 @@
+import { debug } from "../debug.ts";
 import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../types.ts";
-import type { Provider, ProviderConfig } from "./types.ts";
+import type { OpenRouterOverrides } from "./overrides.ts";
+import { validateOverrides } from "./overrides.ts";
+import type { Provider, ProviderConfig, RequestOverrides } from "./types.ts";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -15,24 +18,38 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 		};
 	}
 
-	function buildBody(messages: Message[], tools: ToolDefinition[] | undefined, stream: boolean) {
+	function buildBody(
+		messages: Message[],
+		tools: ToolDefinition[] | undefined,
+		stream: boolean,
+		overrides?: RequestOverrides,
+	) {
+		const validated = overrides ? validateOverrides(overrides) : undefined;
 		const body: Record<string, unknown> = {
 			model: config.model,
 			messages,
 			stream,
 			...config.requestParams,
+			...(validated ?? {}),
 		};
+		// model override handled explicitly (top-level, not nested in requestParams)
+		if (validated?.model) body.model = validated.model;
 		if (tools?.length) {
 			body.tools = tools;
 		}
+		debug("provider", "request:", { model: body.model, stream, overrideKeys: Object.keys(validated ?? {}) });
 		return JSON.stringify(body);
 	}
 
-	async function send(messages: Message[], tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
+	async function send(
+		messages: Message[],
+		tools?: ToolDefinition[],
+		overrides?: RequestOverrides,
+	): Promise<ChatCompletionResponse> {
 		const response = await fetch(`${baseUrl}/chat/completions`, {
 			method: "POST",
 			headers: buildHeaders(),
-			body: buildBody(messages, tools, false),
+			body: buildBody(messages, tools, false, overrides),
 		});
 
 		if (!response.ok) {
@@ -43,11 +60,15 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 		return (await response.json()) as ChatCompletionResponse;
 	}
 
-	async function* stream(messages: Message[], tools?: ToolDefinition[]): AsyncGenerator<StreamChunk> {
+	async function* stream(
+		messages: Message[],
+		tools?: ToolDefinition[],
+		overrides?: RequestOverrides,
+	): AsyncGenerator<StreamChunk> {
 		const response = await fetch(`${baseUrl}/chat/completions`, {
 			method: "POST",
 			headers: buildHeaders(),
-			body: buildBody(messages, tools, true),
+			body: buildBody(messages, tools, true, overrides),
 		});
 
 		if (!response.ok) {
@@ -93,5 +114,14 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 		}
 	}
 
-	return { send, stream };
+	function withOverrides(overrides: RequestOverrides): Provider {
+		const validated = validateOverrides(overrides) as OpenRouterOverrides;
+		return createOpenRouterProvider({
+			...config,
+			model: validated.model ?? config.model,
+			requestParams: { ...config.requestParams, ...validated },
+		});
+	}
+
+	return { send, stream, with: withOverrides };
 }

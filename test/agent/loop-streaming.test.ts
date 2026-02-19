@@ -11,7 +11,7 @@ import { finishChunk, mockTextResponse, mockToolCallResponse, textChunk, toolCal
 /** Create a mock streaming provider from arrays of stream chunks (one per call). */
 function mockStreamProvider(streamSets: StreamChunk[][]): Provider {
 	let callIndex = 0;
-	return {
+	const p: Provider = {
 		async send() {
 			throw new Error("send not used");
 		},
@@ -19,13 +19,17 @@ function mockStreamProvider(streamSets: StreamChunk[][]): Provider {
 			const chunks = streamSets[callIndex++] ?? [];
 			for (const chunk of chunks) yield chunk;
 		},
+		with() {
+			return p;
+		},
 	};
+	return p;
 }
 
 /** Create a mock provider for non-streaming runAgentLoop. */
 function mockProvider(responses: ChatCompletionResponse[]): Provider {
 	let callIndex = 0;
-	return {
+	const p: Provider = {
 		async send(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
 			const resp = responses[callIndex];
 			if (!resp) throw new Error("No more mock responses");
@@ -35,7 +39,11 @@ function mockProvider(responses: ChatCompletionResponse[]): Provider {
 		async *stream(): AsyncGenerator<StreamChunk> {
 			throw new Error("stream not used");
 		},
+		with() {
+			return p;
+		},
 	};
+	return p;
 }
 
 async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
@@ -206,6 +214,30 @@ describe("Streaming Agent Loop", () => {
 
 		// Verify messages array was mutated correctly
 		expect(messages).toHaveLength(4); // user, assistant(tool), tool_result, assistant(text)
+	});
+
+	test("requestOverrides passes through to provider.stream()", async () => {
+		let capturedOverrides: Record<string, unknown> | undefined;
+		const p: Provider = {
+			async send() {
+				throw new Error("not used");
+			},
+			async *stream(_messages, _tools, overrides) {
+				capturedOverrides = overrides;
+				yield textChunk("Hi");
+				yield finishChunk("stop");
+			},
+			with() {
+				return p;
+			},
+		};
+
+		const registry = new ToolRegistry();
+		const overrides = { temperature: 0.7 };
+		await collectEvents(
+			runAgentLoopStreaming(p, registry, [{ role: "user", content: "Hi" }], { requestOverrides: overrides }),
+		);
+		expect(capturedOverrides).toEqual(overrides);
 	});
 
 	test("doom loop detection (streaming): 3 identical iterations yields loop_detected", async () => {

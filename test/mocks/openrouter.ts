@@ -108,6 +108,18 @@ export function mockToolCallResponse(
 	};
 }
 
+/** Create a stream chunk with usage data (final SSE chunk from OpenRouter) */
+export function usageChunk(
+	usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost?: number },
+	id = "chatcmpl-test",
+): StreamChunk {
+	return {
+		id,
+		choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+		usage,
+	};
+}
+
 /** Create a mock error response (non-200) */
 export function mockErrorResponse(status: number, message: string): Response {
 	return new Response(JSON.stringify({ error: { message, type: "error", code: status } }), {

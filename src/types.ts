@@ -76,6 +76,19 @@ export const Usage = Type.Object({
 	prompt_tokens: Type.Number(),
 	completion_tokens: Type.Number(),
 	total_tokens: Type.Number(),
+	// OpenRouter-specific (optional for other future providers)
+	cost: Type.Optional(Type.Number()),
+	prompt_tokens_details: Type.Optional(
+		Type.Object({
+			cached_tokens: Type.Optional(Type.Number()),
+			cache_write_tokens: Type.Optional(Type.Number()),
+		}),
+	),
+	completion_tokens_details: Type.Optional(
+		Type.Object({
+			reasoning_tokens: Type.Optional(Type.Number()),
+		}),
+	),
 });
 export type Usage = Static<typeof Usage>;
 
@@ -119,5 +132,6 @@ export type StreamChoice = Static<typeof StreamChoice>;
 export const StreamChunk = Type.Object({
 	id: Type.String(),
 	choices: Type.Array(StreamChoice),
+	usage: Type.Optional(Usage),
 });
 export type StreamChunk = Static<typeof StreamChunk>;

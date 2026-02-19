@@ -14,7 +14,7 @@ import { mockTextResponse, mockToolCallResponse } from "../mocks/openrouter.ts";
 /** Create a mock provider from ordered responses */
 function mockProvider(responses: ChatCompletionResponse[]): Provider {
 	let callIndex = 0;
-	return {
+	const p: Provider = {
 		async send(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
 			const resp = responses[callIndex];
 			if (!resp) throw new Error("No more mock responses");
@@ -24,7 +24,11 @@ function mockProvider(responses: ChatCompletionResponse[]): Provider {
 		async *stream(): AsyncGenerator<StreamChunk> {
 			throw new Error("stream not used in E2E tests");
 		},
+		with() {
+			return p;
+		},
 	};
+	return p;
 }
 
 async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {

@@ -19,7 +19,7 @@ async function appendLine(filePath: string, data: Record<string, unknown>): Prom
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
-	await appendFile(filePath, JSON.stringify(data) + "\n", "utf-8");
+	await appendFile(filePath, `${JSON.stringify(data)}\n`, "utf-8");
 }
 
 /** Write the session_meta header as the first line of a new session file. */

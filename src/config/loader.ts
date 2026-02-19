@@ -1,13 +1,42 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
+import { debug } from "../debug.ts";
 import { getHeddleHome } from "./paths.ts";
 
+export type ApprovalMode = "suggest" | "auto-edit" | "full-auto" | "plan" | "yolo";
+
+const VALID_APPROVAL_MODES: ReadonlySet<string> = new Set(["suggest", "auto-edit", "full-auto", "plan", "yolo"]);
+
 export interface HeddleConfig {
-	model: string;
+	// ── Identity ──
 	apiKey?: string;
+
+	// ── Provider/API ──
+	model: string;
+	weakModel?: string;
+	editorModel?: string;
+	maxTokens?: number;
+	temperature?: number;
+	baseUrl?: string;
+
+	// ── Session ──
 	systemPrompt?: string;
+	approvalMode?: ApprovalMode;
+	instructions?: string[];
+	doomLoopThreshold?: number;
+	budgetLimit?: number;
 }
+
+/** Type aliases for consumer clarity. */
+export type ProviderFields = Pick<
+	HeddleConfig,
+	"model" | "weakModel" | "editorModel" | "maxTokens" | "temperature" | "baseUrl"
+>;
+export type SessionFields = Pick<
+	HeddleConfig,
+	"systemPrompt" | "approvalMode" | "instructions" | "doomLoopThreshold" | "budgetLimit"
+>;
 
 const DEFAULTS: HeddleConfig = {
 	model: "openrouter/free",
@@ -28,9 +57,32 @@ function loadToml(path: string): Record<string, unknown> {
 /** Map raw TOML keys to HeddleConfig fields. */
 function toConfig(raw: Record<string, unknown>): Partial<HeddleConfig> {
 	const config: Partial<HeddleConfig> = {};
+
+	// String fields
 	if (typeof raw.model === "string") config.model = raw.model;
 	if (typeof raw.api_key === "string") config.apiKey = raw.api_key;
 	if (typeof raw.system_prompt === "string") config.systemPrompt = raw.system_prompt;
+	if (typeof raw.weak_model === "string") config.weakModel = raw.weak_model;
+	if (typeof raw.editor_model === "string") config.editorModel = raw.editor_model;
+	if (typeof raw.base_url === "string") config.baseUrl = raw.base_url;
+
+	// Number fields
+	if (typeof raw.max_tokens === "number") config.maxTokens = raw.max_tokens;
+	if (typeof raw.temperature === "number") config.temperature = raw.temperature;
+	if (typeof raw.doom_loop_threshold === "number") config.doomLoopThreshold = raw.doom_loop_threshold;
+	if (typeof raw.budget_limit === "number") config.budgetLimit = raw.budget_limit;
+
+	// Approval mode — validate against allowed values
+	if (typeof raw.approval_mode === "string" && VALID_APPROVAL_MODES.has(raw.approval_mode)) {
+		config.approvalMode = raw.approval_mode as ApprovalMode;
+	}
+
+	// Instructions — must be an array of strings
+	if (Array.isArray(raw.instructions)) {
+		const filtered = raw.instructions.filter((item): item is string => typeof item === "string");
+		if (filtered.length > 0) config.instructions = filtered;
+	}
+
 	return config;
 }
 
@@ -54,6 +106,19 @@ export function loadConfig(localDir?: string): HeddleConfig {
 	// Env vars override everything
 	if (process.env.HEDDLE_MODEL) merged.model = process.env.HEDDLE_MODEL;
 	if (process.env.OPENROUTER_API_KEY) merged.apiKey = process.env.OPENROUTER_API_KEY;
+	if (process.env.HEDDLE_BASE_URL) merged.baseUrl = process.env.HEDDLE_BASE_URL;
 
+	// Numeric env vars with isNaN guard
+	const maxTokensEnv = process.env.HEDDLE_MAX_TOKENS;
+	if (maxTokensEnv && !Number.isNaN(Number(maxTokensEnv))) {
+		merged.maxTokens = Number(maxTokensEnv);
+	}
+
+	const temperatureEnv = process.env.HEDDLE_TEMPERATURE;
+	if (temperatureEnv && !Number.isNaN(Number(temperatureEnv))) {
+		merged.temperature = Number(temperatureEnv);
+	}
+
+	debug("config", "loaded:", merged);
 	return merged;
 }

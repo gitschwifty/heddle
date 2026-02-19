@@ -11,7 +11,7 @@ import { mockTextResponse, mockToolCallResponse } from "../mocks/openrouter.ts";
 /** Create a mock provider from an array of responses (returned in order). */
 function mockProvider(responses: ChatCompletionResponse[]): Provider {
 	let callIndex = 0;
-	return {
+	const p: Provider = {
 		async send(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
 			const resp = responses[callIndex];
 			if (!resp) throw new Error("No more mock responses");
@@ -21,7 +21,11 @@ function mockProvider(responses: ChatCompletionResponse[]): Provider {
 		async *stream(): AsyncGenerator<StreamChunk> {
 			throw new Error("stream not used in loop tests");
 		},
+		with() {
+			return p;
+		},
 	};
+	return p;
 }
 
 async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
@@ -185,6 +189,27 @@ describe("Agent Loop", () => {
 		if (errorEvents[0]?.type === "error") {
 			expect(errorEvents[0].error.message).toContain("Max iterations");
 		}
+	});
+
+	test("requestOverrides passes through to provider.send()", async () => {
+		let capturedOverrides: Record<string, unknown> | undefined;
+		const p: Provider = {
+			async send(_messages, _tools, overrides) {
+				capturedOverrides = overrides;
+				return mockTextResponse("Hi");
+			},
+			async *stream() {
+				throw new Error("not used");
+			},
+			with() {
+				return p;
+			},
+		};
+
+		const registry = new ToolRegistry();
+		const overrides = { temperature: 0.7 };
+		await collectEvents(runAgentLoop(p, registry, [{ role: "user", content: "Hi" }], { requestOverrides: overrides }));
+		expect(capturedOverrides).toEqual(overrides);
 	});
 
 	test("mutates the passed-in messages array", async () => {

@@ -1,5 +1,7 @@
 import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../types.ts";
 
+export type RequestOverrides = Record<string, unknown>;
+
 export interface ProviderConfig {
 	apiKey: string;
 	model: string;
@@ -9,6 +11,7 @@ export interface ProviderConfig {
 }
 
 export interface Provider {
-	send(messages: Message[], tools?: ToolDefinition[]): Promise<ChatCompletionResponse>;
-	stream(messages: Message[], tools?: ToolDefinition[]): AsyncGenerator<StreamChunk>;
+	send(messages: Message[], tools?: ToolDefinition[], overrides?: RequestOverrides): Promise<ChatCompletionResponse>;
+	stream(messages: Message[], tools?: ToolDefinition[], overrides?: RequestOverrides): AsyncGenerator<StreamChunk>;
+	with(overrides: RequestOverrides): Provider;
 }

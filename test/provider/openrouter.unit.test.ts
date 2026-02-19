@@ -127,6 +127,49 @@ describe("OpenRouter Provider", () => {
 
 			expect(provider.send(messages)).rejects.toThrow();
 		});
+
+		test("send() with overrides merges into request body", async () => {
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+
+			await provider.send(messages, undefined, { temperature: 0.5, max_tokens: 1000 });
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBe(0.5);
+			expect(body.max_tokens).toBe(1000);
+			expect(body.model).toBe(TEST_MODEL);
+		});
+
+		test("per-call model override overrides config model", async () => {
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+
+			await provider.send(messages, undefined, { model: "override-model" });
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.model).toBe("override-model");
+		});
+
+		test("per-call temperature override appears in body", async () => {
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+
+			await provider.send(messages, undefined, { temperature: 1.5 });
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBe(1.5);
+		});
+
+		test("invalid overrides filtered out by validateOverrides", async () => {
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+
+			await provider.send(messages, undefined, { temperature: 5.0, max_tokens: -1 });
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBeUndefined();
+			expect(body.max_tokens).toBeUndefined();
+		});
 	});
 
 	describe("stream()", () => {
@@ -191,6 +234,92 @@ describe("OpenRouter Provider", () => {
 					// should throw before yielding
 				}
 			}).toThrow();
+		});
+
+		test("stream() with overrides merges into request body", async () => {
+			fetchMock.mockResolvedValueOnce(mockStreamResponse([textChunk("Hi"), finishChunk("stop")]));
+
+			for await (const _ of provider.stream(messages, undefined, { temperature: 0.8 })) {
+				// drain
+			}
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBe(0.8);
+			expect(body.stream).toBe(true);
+		});
+	});
+
+	describe("requestParams + per-call overrides", () => {
+		test("per-call overrides win on conflict with requestParams", async () => {
+			const providerWithParams = createOpenRouterProvider({
+				apiKey: TEST_KEY,
+				model: TEST_MODEL,
+				requestParams: { temperature: 0.3, top_p: 0.9 },
+			});
+
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+
+			await providerWithParams.send(messages, undefined, { temperature: 0.8 });
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBe(0.8); // per-call wins
+			expect(body.top_p).toBe(0.9); // base preserved
+		});
+	});
+
+	describe("with()", () => {
+		test("returns new provider, original unchanged", async () => {
+			const derived = provider.with({ temperature: 0.5 });
+
+			// Original provider should not have temperature
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+			await provider.send(messages);
+			const [, opts1] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body1 = JSON.parse(opts1.body as string);
+			expect(body1.temperature).toBeUndefined();
+
+			// Derived provider should have temperature
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+			await derived.send(messages);
+			const [, opts2] = fetchMock.mock.calls[1] as [string, RequestInit];
+			const body2 = JSON.parse(opts2.body as string);
+			expect(body2.temperature).toBe(0.5);
+		});
+
+		test("with() composes: .with({a}).with({b}) merges correctly", async () => {
+			const derived = provider.with({ temperature: 0.5 }).with({ max_tokens: 1000 });
+
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+			await derived.send(messages);
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBe(0.5);
+			expect(body.max_tokens).toBe(1000);
+		});
+
+		test("with({ model }) changes the model", async () => {
+			const derived = provider.with({ model: "different-model" });
+
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+			await derived.send(messages);
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.model).toBe("different-model");
+		});
+
+		test("per-call overrides win over with() sticky overrides", async () => {
+			const derived = provider.with({ temperature: 0.5 });
+
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+			await derived.send(messages, undefined, { temperature: 0.8 });
+
+			const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+			const body = JSON.parse(opts.body as string);
+			expect(body.temperature).toBe(0.8);
 		});
 	});
 });

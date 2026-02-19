@@ -16,7 +16,7 @@ import { mockTextResponse, mockToolCallResponse } from "../mocks/openrouter.ts";
 
 function mockProvider(responses: ChatCompletionResponse[]): Provider {
 	let callIndex = 0;
-	return {
+	const p: Provider = {
 		async send(_messages: Message[], _tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
 			const resp = responses[callIndex];
 			if (!resp) throw new Error("No more mock responses");
@@ -26,7 +26,11 @@ function mockProvider(responses: ChatCompletionResponse[]): Provider {
 		stream(): AsyncGenerator<StreamChunk> {
 			throw new Error("stream not used");
 		},
+		with() {
+			return p;
+		},
 	};
+	return p;
 }
 
 async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {

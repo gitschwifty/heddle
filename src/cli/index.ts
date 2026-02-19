@@ -6,6 +6,7 @@ import { loadAgentsContext } from "../config/agents-md.ts";
 import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
 import { createOpenRouterProvider } from "../provider/openrouter.ts";
+import type { ProviderConfig } from "../provider/types.ts";
 import { appendMessage, writeSessionMeta } from "../session/jsonl.ts";
 import { createEditTool } from "../tools/edit.ts";
 import { createGlobTool } from "../tools/glob.ts";
@@ -24,7 +25,20 @@ export async function startCli(): Promise<void> {
 		process.exit(1);
 	}
 
-	const provider = createOpenRouterProvider({ apiKey, model: config.model });
+	// Build provider config from expanded HeddleConfig
+	const providerConfig: ProviderConfig = {
+		apiKey,
+		model: config.model,
+		baseUrl: config.baseUrl,
+	};
+
+	// Build requestParams from config fields (only when defined)
+	const requestParams: Record<string, unknown> = {};
+	if (config.maxTokens !== undefined) requestParams.max_tokens = config.maxTokens;
+	if (config.temperature !== undefined) requestParams.temperature = config.temperature;
+	if (Object.keys(requestParams).length > 0) providerConfig.requestParams = requestParams;
+
+	const provider = createOpenRouterProvider(providerConfig);
 
 	const registry = new ToolRegistry();
 	registry.register(createReadTool());
@@ -61,7 +75,8 @@ export async function startCli(): Promise<void> {
 			content: systemContent,
 		},
 	];
-	await appendMessage(sessionFile, messages[0]!);
+	const systemMessage = messages[0];
+	if (systemMessage) await appendMessage(sessionFile, systemMessage);
 
 	const rl = readline.createInterface({
 		input: process.stdin,
@@ -76,6 +91,11 @@ export async function startCli(): Promise<void> {
 		console.log("AGENTS.md: none found (using default system prompt)");
 	}
 	console.log('Type "exit" or "quit" to stop.\n');
+
+	// Agent loop options from config
+	const loopOptions = {
+		...(config.doomLoopThreshold !== undefined ? { doomLoopThreshold: config.doomLoopThreshold } : {}),
+	};
 
 	const prompt = (): void => {
 		rl.question("you> ", async (input) => {
@@ -96,7 +116,7 @@ export async function startCli(): Promise<void> {
 
 			try {
 				let needsNewline = false;
-				for await (const event of runAgentLoopStreaming(provider, registry, messages)) {
+				for await (const event of runAgentLoopStreaming(provider, registry, messages, loopOptions)) {
 					switch (event.type) {
 						case "content_delta": {
 							if (!needsNewline) {

@@ -23,8 +23,8 @@ export function createBashTool(): HeddleTool {
 
 				let output = "";
 				if (stdout) output += stdout;
-				if (stderr) output += (output ? "\n" : "") + `STDERR: ${stderr}`;
-				if (exitCode !== 0) output += (output ? "\n" : "") + `Exit code: ${exitCode}`;
+				if (stderr) output += `${output ? "\n" : ""}STDERR: ${stderr}`;
+				if (exitCode !== 0) output += `${output ? "\n" : ""}Exit code: ${exitCode}`;
 				return output || "(no output)";
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
