@@ -186,4 +186,24 @@ describe("Agent Loop", () => {
 			expect(errorEvents[0].error.message).toContain("Max iterations");
 		}
 	});
+
+	test("mutates the passed-in messages array", async () => {
+		const provider = mockProvider([
+			mockToolCallResponse([{ name: "echo", arguments: { text: "ping" } }]),
+			mockTextResponse("Done"),
+		]);
+
+		const registry = new ToolRegistry();
+		registry.register(echoTool());
+
+		const messages: Message[] = [{ role: "user", content: "echo ping" }];
+		await collectEvents(runAgentLoop(provider, registry, messages));
+
+		// Loop should have appended: assistant(tool_call), tool_result, assistant(text)
+		expect(messages).toHaveLength(4);
+		expect(messages[0]!.role).toBe("user");
+		expect(messages[1]!.role).toBe("assistant");
+		expect(messages[2]!.role).toBe("tool");
+		expect(messages[3]!.role).toBe("assistant");
+	});
 });

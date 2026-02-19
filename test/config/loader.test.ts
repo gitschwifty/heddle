@@ -18,6 +18,8 @@ describe("config/loader", () => {
 	beforeEach(() => {
 		cleanup();
 		mkdirSync(TEST_DIR, { recursive: true });
+		delete process.env.HEDDLE_MODEL;
+		delete process.env.OPENROUTER_API_KEY;
 	});
 
 	afterEach(() => {
@@ -32,11 +34,9 @@ describe("config/loader", () => {
 			mkdirSync(globalDir, { recursive: true });
 
 			process.env.HEDDLE_HOME = globalDir;
-			delete process.env.OPENROUTER_API_KEY;
-			delete process.env.HEDDLE_MODEL;
 			const config = loadConfig(localDir);
 
-			expect(config.model).toBe("moonshotai/kimi-k2.5");
+			expect(config.model).toBe("openrouter/free");
 			expect(config.apiKey).toBeUndefined();
 		});
 
@@ -90,7 +90,7 @@ describe("config/loader", () => {
 			process.env.HEDDLE_HOME = globalDir;
 			// Should not throw — returns defaults
 			const config = loadConfig(join(TEST_DIR, "nonexistent-local"));
-			expect(config.model).toBe("moonshotai/kimi-k2.5");
+			expect(config.model).toBe("openrouter/free");
 		});
 
 		test("handles empty config file", () => {
@@ -100,7 +100,7 @@ describe("config/loader", () => {
 
 			process.env.HEDDLE_HOME = globalDir;
 			const config = loadConfig(join(TEST_DIR, "nonexistent-local"));
-			expect(config.model).toBe("moonshotai/kimi-k2.5");
+			expect(config.model).toBe("openrouter/free");
 		});
 
 		test("loads api_key from config file", () => {

@@ -9,8 +9,9 @@ Heddle gives LLMs the ability to read, write, edit, and search files, run shell 
 ```bash
 bun install
 
-# Add your API key
+# Add your API key and model (defaults to openrouter/free if not set)
 echo "OPENROUTER_API_KEY=sk-or-v1-your-key" > .env
+echo "HEDDLE_MODEL=openrouter/free" >> .env
 
 # Run the CLI
 bun run dev

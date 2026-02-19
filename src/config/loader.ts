@@ -10,7 +10,7 @@ export interface HeddleConfig {
 }
 
 const DEFAULTS: HeddleConfig = {
-	model: "moonshotai/kimi-k2.5",
+	model: "openrouter/free",
 };
 
 /** Parse a TOML file into a plain object. Returns {} on missing/malformed files. */
