@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +13,9 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { createWriteTool } from "../../src/tools/write.ts";
 import type { Message } from "../../src/types.ts";
 
+const INTEGRATION = process.env.HEDDLE_INTEGRATION_TESTS === "1";
 const SLOW_TESTS = process.env.HEDDLE_SLOW_TESTS === "1";
-const describeIf = SLOW_TESTS ? describe : describe.skip;
+const describeIf = INTEGRATION && SLOW_TESTS ? describe : describe.skip;
 
 async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
 	const events: AgentEvent[] = [];
@@ -23,10 +24,11 @@ async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEven
 }
 
 describeIf("Multi-turn integration (real model)", () => {
+	// Shared dir — tests use distinct filenames (data.txt, persist.txt, session.jsonl)
 	let dir: string;
 	let registry: ToolRegistry;
 
-	beforeEach(async () => {
+	beforeAll(async () => {
 		dir = await mkdtemp(join(tmpdir(), "heddle-mt-integ-"));
 		registry = new ToolRegistry();
 		registry.register(createReadTool());
@@ -34,7 +36,7 @@ describeIf("Multi-turn integration (real model)", () => {
 		registry.register(createWriteTool());
 	});
 
-	afterEach(async () => {
+	afterAll(async () => {
 		await rm(dir, { recursive: true });
 	});
 

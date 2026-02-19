@@ -10,7 +10,9 @@
     "build:linux-arm64": "bun build --compile --no-env-file --target=bun-linux-arm64 src/cli/index.ts --outfile dist/heddle-linux-arm64",
     "typecheck": "bun run tsc --noEmit",
     "lint": "bunx biome check --write src/ test/",
-    "test": "bun test"
+    "test": "bun test",
+    "test:integration": "HEDDLE_INTEGRATION_TESTS=1 bun test",
+    "test:all": "HEDDLE_INTEGRATION_TESTS=1 HEDDLE_SLOW_TESTS=1 bun test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.14",

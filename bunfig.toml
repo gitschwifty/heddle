@@ -1,0 +1,18 @@
+[test]
+randomize = true
+coverage = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "./coverage"
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/*.integration.test.ts",
+  "test/mocks/*.ts"
+]
+coverageThreshold = { lines = 0.8, functions = 0.9, statements = 0.8 }
+concurrentTestGlob = [
+  "**/*.integration.test.ts",
+  "**/e2e/*.test.ts",
+  "**/concurrent-*.test.ts",
+  "**/tools/*.test.ts"
+]
+# concurrency ??

@@ -1,46 +1,63 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGrepTool } from "../../src/tools/grep.ts";
 
-describe("grep tool (negative)", () => {
-	let dir: string;
+describe("grep tool", () => {
 	const tool = createGrepTool();
+	let dir: string;
 
-	beforeEach(async () => {
+	beforeAll(async () => {
 		dir = await mkdtemp(join(tmpdir(), "heddle-grep-"));
+		// Each test uses distinct filenames
+		await writeFile(join(dir, "match.txt"), "hello world\nfoo bar\nbaz\n");
+		await writeFile(join(dir, "code.ts"), "const x = 1;\n");
+		await writeFile(join(dir, "notes.txt"), "const y = 2;\n");
+		await writeFile(join(dir, "nomatch.txt"), "nothing interesting here\n");
+		await writeFile(join(dir, "regex.txt"), "hello\n");
+		await writeFile(join(dir, "globtest.txt"), "hello world\n");
 	});
 
-	afterEach(() => {
-		rmSync(dir, { recursive: true, force: true });
+	afterAll(async () => {
+		await rm(dir, { recursive: true });
+	});
+
+	test("returns matching lines with file paths", async () => {
+		const result = await tool.execute({ pattern: "foo", path: dir });
+		expect(result).toContain("foo bar");
+		expect(result).toContain("match.txt");
+	});
+
+	test("respects glob filter", async () => {
+		const result = await tool.execute({ pattern: "const", path: dir, glob: "*.ts" });
+		expect(result).toContain("code.ts");
+		expect(result).not.toContain("notes.txt");
 	});
 
 	test("returns no-match message when pattern not found", async () => {
-		await writeFile(join(dir, "file.txt"), "hello world\nfoo bar\n");
 		const result = await tool.execute({ pattern: "zzz_not_here", path: dir });
 		expect(result).toContain("No matches found");
 	});
 
-	test("returns no-match in empty directory", async () => {
-		const result = await tool.execute({ pattern: "anything", path: dir });
-		expect(result).toContain("No matches found");
-	});
-
 	test("returns error for invalid regex pattern", async () => {
-		await writeFile(join(dir, "file.txt"), "hello\n");
 		const result = await tool.execute({ pattern: "[invalid", path: dir });
-		expect(result).toMatch(/Error|No matches/);
+		// grep exit code 2 for invalid regex — hits the exitCode > 1 branch
+		expect(result).toContain("Error");
 	});
 
 	test("returns no-match when glob filter excludes all files", async () => {
-		await writeFile(join(dir, "file.txt"), "hello world\n");
 		const result = await tool.execute({
 			pattern: "hello",
 			path: dir,
 			glob: "*.py",
 		});
 		expect(result).toContain("No matches found");
+	});
+
+	test("returns error when path does not exist", async () => {
+		const result = await tool.execute({ pattern: "test", path: "/tmp/heddle-nonexistent-path-xyz" });
+		// grep exits with code 2 for nonexistent paths
+		expect(result).toContain("Error");
 	});
 });

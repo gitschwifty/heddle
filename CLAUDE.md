@@ -26,12 +26,25 @@ Write failing tests before implementation. This project was built test-first and
 ### Running Tests
 
 ```bash
-bun test                              # full suite
+bun test                              # unit tests only (integration skipped)
+bun run test:integration              # include provider integration tests
+bun run test:all                      # everything including slow multi-turn tests
 bun test test/tools/                  # specific directory
 bun test test/provider/openrouter.unit.test.ts  # specific file
 ```
 
-Integration tests hit real APIs and need env vars (auto-loaded from `.env.test`).
+Integration tests hit real APIs and need env vars (auto-loaded from `.env.test`). Gated by `HEDDLE_INTEGRATION_TESTS=1` (set to `0` in `.env.test` by default). Slow multi-turn integration tests additionally require `HEDDLE_SLOW_TESTS=1`.
+
+### Test Concurrency
+
+Tests run concurrently via `concurrentTestGlob` in `bunfig.toml`. Design all tests to be concurrency-safe:
+
+- **No shared mutable state between tests.** Never use `let dir` with `beforeEach`/`afterEach` — concurrent tests race on the shared variable.
+- **Use `withTmpDir()` or `beforeAll`/`afterAll`** for temp directories:
+  - `withTmpDir(async (dir) => { ... })` — each test gets its own isolated dir (best for tests that use the same filenames).
+  - `beforeAll`/`afterAll` with distinct filenames per test — one shared dir, no filename collisions (best when tests use different files).
+- **Use distinct filenames** across tests in the same describe block (e.g., `data.txt`, `chain.txt`, `session.jsonl`) so they can share a directory without conflicts.
+- **Tests that don't touch the filesystem** (pure mock/in-memory) are inherently safe.
 
 ## Platform & Shell
 

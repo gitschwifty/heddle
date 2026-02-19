@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,14 +35,27 @@ async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEven
 	return events;
 }
 
+function echoRegistry(): ToolRegistry {
+	const registry = new ToolRegistry();
+	registry.register({
+		name: "echo",
+		description: "Returns the input",
+		parameters: Type.Object({ text: Type.String() }),
+		execute: async (params) => (params as { text: string }).text,
+	});
+	return registry;
+}
+
 describe("Multi-turn conversations", () => {
+	// Shared dir for file-based tests. Each test uses distinct filenames
+	// (data.txt, chain.txt, session.jsonl) so they don't collide under concurrency.
 	let dir: string;
 
-	beforeEach(async () => {
+	beforeAll(async () => {
 		dir = await mkdtemp(join(tmpdir(), "heddle-multiturn-"));
 	});
 
-	afterEach(async () => {
+	afterAll(async () => {
 		await rm(dir, { recursive: true });
 	});
 
@@ -57,15 +70,7 @@ describe("Multi-turn conversations", () => {
 			mockTextResponse("The answer is 4."),
 		]);
 
-		const registry = new ToolRegistry();
-		registry.register({
-			name: "echo",
-			description: "Returns the input",
-			parameters: Type.Object({ text: Type.String() }),
-			execute: async (params) => (params as { text: string }).text,
-		});
-
-		await collectEvents(runAgentLoop(turn1Provider, registry, messages));
+		await collectEvents(runAgentLoop(turn1Provider, echoRegistry(), messages));
 
 		// system + user + assistant(tool_call) + tool_result + assistant(text) = 5
 		expect(messages).toHaveLength(5);
@@ -80,7 +85,7 @@ describe("Multi-turn conversations", () => {
 
 		const turn2Provider = mockProvider([mockTextResponse("The answer is 6.")]);
 
-		await collectEvents(runAgentLoop(turn2Provider, registry, messages));
+		await collectEvents(runAgentLoop(turn2Provider, echoRegistry(), messages));
 
 		// 5 + user + assistant(text) = 7
 		expect(messages).toHaveLength(7);
@@ -201,29 +206,19 @@ describe("Multi-turn conversations", () => {
 	});
 
 	test("no duplicate messages across turns", async () => {
-		const registry = new ToolRegistry();
-		registry.register({
-			name: "echo",
-			description: "Returns the input",
-			parameters: Type.Object({ text: Type.String() }),
-			execute: async (params) => (params as { text: string }).text,
-		});
-
 		const messages: Message[] = [{ role: "system", content: "You are a helpful assistant." }];
 
 		// Turn 1
 		messages.push({ role: "user", content: "Say hello" });
 		const turn1Provider = mockProvider([mockTextResponse("Hello!")]);
-		await collectEvents(runAgentLoop(turn1Provider, registry, messages));
+		await collectEvents(runAgentLoop(turn1Provider, echoRegistry(), messages));
 
 		// Turn 2
 		messages.push({ role: "user", content: "Say goodbye" });
 		const turn2Provider = mockProvider([mockTextResponse("Goodbye!")]);
-		await collectEvents(runAgentLoop(turn2Provider, registry, messages));
+		await collectEvents(runAgentLoop(turn2Provider, echoRegistry(), messages));
 
 		// Check for duplicates: serialize each message and check uniqueness
-		// Note: system messages are inherently unique (only one), and each user/assistant
-		// message should have unique content in this test
 		const serialized = messages.map((m) => JSON.stringify(m));
 		const uniqueSet = new Set(serialized);
 
@@ -232,13 +227,7 @@ describe("Multi-turn conversations", () => {
 	});
 
 	test("session round-trip — write to JSONL and reload", async () => {
-		const registry = new ToolRegistry();
-		registry.register({
-			name: "echo",
-			description: "Returns the input",
-			parameters: Type.Object({ text: Type.String() }),
-			execute: async (params) => (params as { text: string }).text,
-		});
+		const registry = echoRegistry();
 
 		const messages: Message[] = [{ role: "system", content: "You are a helpful assistant." }];
 

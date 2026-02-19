@@ -21,11 +21,11 @@ export function createGrepTool(): HeddleTool {
 				const stdout = await new Response(proc.stdout).text();
 				const exitCode = await proc.exited;
 
-				if (exitCode === 1 || !stdout.trim()) return "No matches found.";
 				if (exitCode > 1) {
 					const stderr = await new Response(proc.stderr).text();
 					return `Error: grep exited with code ${exitCode}: ${stderr}`;
 				}
+				if (exitCode === 1 || !stdout.trim()) return "No matches found.";
 				return stdout.trim();
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);

@@ -9,3 +9,4 @@ dist
 .heddle-dev
 .heddle-test
 .zed
+coverage
