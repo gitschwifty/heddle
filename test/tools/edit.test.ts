@@ -105,4 +105,53 @@ describe("edit tool", () => {
 		const content = await Bun.file(filePath).text();
 		expect(content).toBe("line1\nREPLACED\nline4");
 	});
+
+	test("fuzzy fallback: whitespace-normalized match when exact fails", async () => {
+		const filePath = join(dir, "test.txt");
+		// File has extra spaces between tokens
+		await writeFile(filePath, "hello  world\nfoo  bar  baz\nend");
+
+		const tool = createEditTool();
+		const result = await tool.execute({
+			file_path: filePath,
+			old_string: "foo bar baz",
+			new_string: "REPLACED",
+		});
+
+		expect(result).toContain("Applied edit");
+		expect(result).toContain("whitespace-normalized");
+		const content = await Bun.file(filePath).text();
+		expect(content).toBe("hello  world\nREPLACED\nend");
+	});
+
+	test("fuzzy fallback message includes match level", async () => {
+		const filePath = join(dir, "test.txt");
+		// File has tab indentation, search uses spaces
+		await writeFile(filePath, "function test() {\n\treturn 1;\n}");
+
+		const tool = createEditTool();
+		const result = await tool.execute({
+			file_path: filePath,
+			old_string: "function test() {\n  return 1;\n}",
+			new_string: "function test() {\n\treturn 2;\n}",
+		});
+
+		expect(result).toContain("Applied edit");
+		// Should mention the fuzzy match level used
+		expect(result).toMatch(/indent-flexible|whitespace-normalized|line-fuzzy/);
+	});
+
+	test("fuzzy fallback: all levels fail shows closest match info", async () => {
+		const filePath = join(dir, "test.txt");
+		await writeFile(filePath, "alpha\nbeta\ngamma\ndelta\nepsilon");
+
+		const tool = createEditTool();
+		const result = await tool.execute({
+			file_path: filePath,
+			old_string: "totally_nonexistent_string",
+			new_string: "replacement",
+		});
+
+		expect(result).toContain("not found");
+	});
 });
