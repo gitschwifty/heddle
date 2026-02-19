@@ -58,6 +58,7 @@ Tests run concurrently via `concurrentTestGlob` in `bunfig.toml`. Design all tes
 ## Code Style
 
 - Tabs for indentation, double quotes for strings (Biome enforces this).
+- Follow Biome rules - no non-null assertions (fine in test), use template literal strings, use flat map, etc.
 - Keep functions small. Prefer factory functions (`createXTool()`) over classes for tools.
 - Use `async function*` generators for streaming patterns (provider streams, agent loop).
 - Return error strings from tool `execute()` rather than throwing — the agent loop sends these back to the LLM as tool results. Only throw for truly unrecoverable errors (unknown tool name, invalid JSON args).
@@ -71,7 +72,7 @@ Tests run concurrently via `concurrentTestGlob` in `bunfig.toml`. Design all tes
 
 ## Config Directory
 
-Two-layer config: global (`~/.heddle/`) and local (`./.heddle/` in project dir).
+Two-layer config: global (`~/.heddle/`) and local (`./.heddle/` in project dir). We also follow the AGENTS.md standard, with the closest to cwd the most important, but all from cwd to home, and ~/.heddle/AGENTS.md included.
 
 ### Global: `~/.heddle/`
 
