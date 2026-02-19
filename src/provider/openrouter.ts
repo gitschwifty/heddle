@@ -10,7 +10,8 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 		return {
 			Authorization: `Bearer ${config.apiKey}`,
 			"Content-Type": "application/json",
-			"HTTP-Referer": "https://github.com/heddle",
+			"HTTP-Referer": "https://github.com/gitschwifty/heddle",
+			"X-Title": "Heddle",
 		};
 	}
 
@@ -19,6 +20,7 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 			model: config.model,
 			messages,
 			stream,
+			...config.requestParams,
 		};
 		if (tools?.length) {
 			body.tools = tools;

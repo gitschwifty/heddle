@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { loadSession } from "../../src/session/jsonl.ts";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { loadSession } from "../../src/session/jsonl.ts";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-session-neg-test");
 

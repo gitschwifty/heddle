@@ -1,6 +1,6 @@
-import { join, isAbsolute, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 
 /** Global heddle config directory. Respects HEDDLE_HOME env var. */
 export function getHeddleHome(): string {
@@ -29,9 +29,21 @@ export function getConfigPath(): string {
 	return join(getHeddleHome(), "config.toml");
 }
 
-/** Global sessions directory. */
-export function getSessionsDir(): string {
-	return join(getHeddleHome(), "sessions");
+/** Encode an absolute path as a dash-separated directory name. */
+export function encodePath(absolutePath: string): string {
+	// Remove trailing slash, then replace all / with -
+	return absolutePath.replace(/\/+$/, "").replace(/\//g, "-");
+}
+
+/** Project-specific directory under ~/.heddle/projects/{encoded-path}/. */
+export function getProjectDir(projectPath?: string): string {
+	const encoded = encodePath(projectPath ?? process.cwd());
+	return join(getHeddleHome(), "projects", encoded);
+}
+
+/** Sessions directory for the current project. */
+export function getProjectSessionsDir(projectPath?: string): string {
+	return join(getProjectDir(projectPath), "sessions");
 }
 
 /** Global agents directory. */
@@ -44,10 +56,10 @@ export function getSkillsDir(): string {
 	return join(getHeddleHome(), "skills");
 }
 
-/** Create the global heddle directory structure if it doesn't exist. */
+/** Create the global heddle directory structure and current project dirs. */
 export function ensureHeddleDirs(): void {
 	const home = getHeddleHome();
-	mkdirSync(join(home, "sessions"), { recursive: true });
 	mkdirSync(join(home, "agents"), { recursive: true });
 	mkdirSync(join(home, "skills"), { recursive: true });
+	mkdirSync(getProjectSessionsDir(), { recursive: true });
 }

@@ -1,14 +1,16 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
 import {
+	encodePath,
+	ensureHeddleDirs,
+	getAgentsDir,
+	getConfigPath,
 	getHeddleHome,
 	getLocalHeddleDir,
-	getConfigPath,
-	getSessionsDir,
-	getAgentsDir,
+	getProjectDir,
+	getProjectSessionsDir,
 	getSkillsDir,
-	ensureHeddleDirs,
 } from "../../src/config/paths.ts";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-paths-test");
@@ -61,25 +63,60 @@ describe("config/paths", () => {
 
 	describe("getConfigPath()", () => {
 		test("returns local config.toml when it exists", () => {
-			const localDir = join(process.cwd(), ".heddle");
-			// Just check that it would prefer local over global
 			const result = getConfigPath();
-			// Should be either local or global path ending in config.toml
 			expect(result.endsWith("config.toml")).toBe(true);
 		});
 	});
 
-	describe("getSessionsDir()", () => {
-		test("returns sessions dir under heddle home", () => {
+	describe("encodePath()", () => {
+		test("encodes absolute path with dashes", () => {
+			expect(encodePath("/home/user/repos/heddle")).toBe("-home-user-repos-heddle");
+		});
+
+		test("encodes path with trailing slash", () => {
+			expect(encodePath("/home/user/repos/heddle/")).toBe("-home-user-repos-heddle");
+		});
+
+		test("handles single segment", () => {
+			expect(encodePath("/tmp")).toBe("-tmp");
+		});
+	});
+
+	describe("getProjectDir()", () => {
+		test("returns project dir under heddle home", () => {
 			delete process.env.HEDDLE_HOME;
-			const result = getSessionsDir();
-			expect(result).toBe(join(process.env.HOME!, ".heddle", "sessions"));
+			const cwd = process.cwd();
+			const encoded = encodePath(cwd);
+			expect(getProjectDir()).toBe(join(process.env.HOME!, ".heddle", "projects", encoded));
+		});
+
+		test("accepts explicit path argument", () => {
+			delete process.env.HEDDLE_HOME;
+			const result = getProjectDir("/home/user/repos/heddle");
+			expect(result).toBe(join(process.env.HOME!, ".heddle", "projects", "-home-user-repos-heddle"));
 		});
 
 		test("respects HEDDLE_HOME", () => {
 			const customDir = join(TEST_DIR, "custom-home");
 			process.env.HEDDLE_HOME = customDir;
-			expect(getSessionsDir()).toBe(join(customDir, "sessions"));
+			const result = getProjectDir("/foo/bar");
+			expect(result).toBe(join(customDir, "projects", "-foo-bar"));
+		});
+	});
+
+	describe("getProjectSessionsDir()", () => {
+		test("returns sessions dir under project dir", () => {
+			delete process.env.HEDDLE_HOME;
+			const cwd = process.cwd();
+			const encoded = encodePath(cwd);
+			expect(getProjectSessionsDir()).toBe(join(process.env.HOME!, ".heddle", "projects", encoded, "sessions"));
+		});
+
+		test("respects HEDDLE_HOME", () => {
+			const customDir = join(TEST_DIR, "custom-home");
+			process.env.HEDDLE_HOME = customDir;
+			const encoded = encodePath(process.cwd());
+			expect(getProjectSessionsDir()).toBe(join(customDir, "projects", encoded, "sessions"));
 		});
 	});
 
@@ -98,16 +135,19 @@ describe("config/paths", () => {
 	});
 
 	describe("ensureHeddleDirs()", () => {
-		test("creates global directory structure", () => {
+		test("creates global and project directory structure", () => {
 			const homeDir = join(TEST_DIR, "ensure-test");
 			process.env.HEDDLE_HOME = homeDir;
 
 			ensureHeddleDirs();
 
 			expect(existsSync(homeDir)).toBe(true);
-			expect(existsSync(join(homeDir, "sessions"))).toBe(true);
 			expect(existsSync(join(homeDir, "agents"))).toBe(true);
 			expect(existsSync(join(homeDir, "skills"))).toBe(true);
+			// Project-specific dirs
+			const encoded = encodePath(process.cwd());
+			const projectDir = join(homeDir, "projects", encoded);
+			expect(existsSync(join(projectDir, "sessions"))).toBe(true);
 		});
 
 		test("is idempotent — calling twice doesn't error", () => {
@@ -115,7 +155,7 @@ describe("config/paths", () => {
 			process.env.HEDDLE_HOME = homeDir;
 
 			ensureHeddleDirs();
-			ensureHeddleDirs(); // second call should not throw
+			ensureHeddleDirs();
 			expect(existsSync(homeDir)).toBe(true);
 		});
 	});

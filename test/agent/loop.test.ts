@@ -3,9 +3,9 @@ import { Type } from "@sinclair/typebox";
 import { runAgentLoop } from "../../src/agent/loop.ts";
 import type { AgentEvent } from "../../src/agent/types.ts";
 import type { Provider } from "../../src/provider/types.ts";
-import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import type { HeddleTool } from "../../src/tools/types.ts";
+import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
 import { mockTextResponse, mockToolCallResponse } from "../mocks/openrouter.ts";
 
 /** Create a mock provider from an array of responses (returned in order). */
@@ -49,9 +49,7 @@ describe("Agent Loop", () => {
 		const provider = mockProvider([mockTextResponse("Hello!")]);
 		const registry = new ToolRegistry();
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]));
 
 		expect(events).toHaveLength(1);
 		expect(events[0]?.type).toBe("assistant_message");
@@ -71,9 +69,7 @@ describe("Agent Loop", () => {
 		const registry = new ToolRegistry();
 		registry.register(echoTool());
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "echo ping" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "echo ping" }]));
 
 		// Expect: assistant_message (tool_call), tool_start, tool_end, assistant_message (text)
 		expect(events).toHaveLength(4);
@@ -107,9 +103,7 @@ describe("Agent Loop", () => {
 		const registry = new ToolRegistry();
 		registry.register(echoTool());
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "do two things" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "do two things" }]));
 
 		// 2 tool rounds × (assistant + tool_start + tool_end) + 1 final assistant = 7
 		expect(events).toHaveLength(7);
@@ -161,9 +155,7 @@ describe("Agent Loop", () => {
 		const registry = new ToolRegistry();
 		registry.register(echoTool());
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "parallel" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "parallel" }]));
 
 		// assistant_message, tool_start×2, tool_end×2, assistant_message
 		expect(events).toHaveLength(6);

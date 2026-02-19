@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { runAgentLoop } from "../../src/agent/loop.ts";
 import type { AgentEvent } from "../../src/agent/types.ts";
 import type { Provider } from "../../src/provider/types.ts";
-import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
-import { ToolRegistry } from "../../src/tools/registry.ts";
-import { createReadTool } from "../../src/tools/read.ts";
 import { createEditTool } from "../../src/tools/edit.ts";
+import { createReadTool } from "../../src/tools/read.ts";
+import { ToolRegistry } from "../../src/tools/registry.ts";
+import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
 import { mockTextResponse, mockToolCallResponse } from "../mocks/openrouter.ts";
 
 /** Create a mock provider from ordered responses */
@@ -106,9 +106,7 @@ describe("E2E: simple task", () => {
 		registry.register(createEditTool());
 
 		const events = await collectEvents(
-			runAgentLoop(provider, registry, [
-				{ role: "user", content: "Change the greeting to world" },
-			]),
+			runAgentLoop(provider, registry, [{ role: "user", content: "Change the greeting to world" }]),
 		);
 
 		expect(events).toHaveLength(4);
@@ -150,9 +148,7 @@ describe("E2E: simple task", () => {
 		registry.register(createEditTool());
 
 		const events = await collectEvents(
-			runAgentLoop(provider, registry, [
-				{ role: "user", content: "Increment the count in data.txt" },
-			]),
+			runAgentLoop(provider, registry, [{ role: "user", content: "Increment the count in data.txt" }]),
 		);
 
 		// 2 tool rounds + 1 final = 7 events

@@ -38,9 +38,7 @@ describe("OpenRouter Provider (negative)", () => {
 		});
 
 		test("includes error body in error message", async () => {
-			fetchMock.mockResolvedValueOnce(
-				new Response("Internal server error", { status: 500 }),
-			);
+			fetchMock.mockResolvedValueOnce(new Response("Internal server error", { status: 500 }));
 
 			expect(provider.send(messages)).rejects.toThrow("Internal server error");
 		});

@@ -1,7 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { loadConfig, type HeddleConfig } from "../../src/config/loader.ts";
+import { join } from "node:path";
+import { type HeddleConfig, loadConfig } from "../../src/config/loader.ts";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-loader-test");
 
@@ -43,10 +43,7 @@ describe("config/loader", () => {
 		test("loads global config.toml", () => {
 			const globalDir = join(TEST_DIR, "global-only");
 			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "config.toml"),
-				'model = "anthropic/claude-sonnet"\n',
-			);
+			writeFileSync(join(globalDir, "config.toml"), 'model = "anthropic/claude-sonnet"\n');
 
 			process.env.HEDDLE_HOME = globalDir;
 			const config = loadConfig(join(TEST_DIR, "nonexistent-local"));
@@ -60,14 +57,8 @@ describe("config/loader", () => {
 			mkdirSync(globalDir, { recursive: true });
 			mkdirSync(localDir, { recursive: true });
 
-			writeFileSync(
-				join(globalDir, "config.toml"),
-				'model = "global-model"\nsystem_prompt = "global prompt"\n',
-			);
-			writeFileSync(
-				join(localDir, "config.toml"),
-				'model = "local-model"\n',
-			);
+			writeFileSync(join(globalDir, "config.toml"), 'model = "global-model"\nsystem_prompt = "global prompt"\n');
+			writeFileSync(join(localDir, "config.toml"), 'model = "local-model"\n');
 
 			process.env.HEDDLE_HOME = globalDir;
 			const config = loadConfig(localDir);
@@ -79,10 +70,7 @@ describe("config/loader", () => {
 		test("env vars override config files", () => {
 			const globalDir = join(TEST_DIR, "env-override");
 			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "config.toml"),
-				'model = "file-model"\n',
-			);
+			writeFileSync(join(globalDir, "config.toml"), 'model = "file-model"\n');
 
 			process.env.HEDDLE_HOME = globalDir;
 			process.env.HEDDLE_MODEL = "env-model";
@@ -97,10 +85,7 @@ describe("config/loader", () => {
 		test("handles malformed TOML gracefully", () => {
 			const globalDir = join(TEST_DIR, "malformed");
 			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "config.toml"),
-				"this is not valid toml [[[",
-			);
+			writeFileSync(join(globalDir, "config.toml"), "this is not valid toml [[[");
 
 			process.env.HEDDLE_HOME = globalDir;
 			// Should not throw — returns defaults
@@ -121,10 +106,7 @@ describe("config/loader", () => {
 		test("loads api_key from config file", () => {
 			const globalDir = join(TEST_DIR, "api-key");
 			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "config.toml"),
-				'api_key = "sk-from-config"\n',
-			);
+			writeFileSync(join(globalDir, "config.toml"), 'api_key = "sk-from-config"\n');
 
 			process.env.HEDDLE_HOME = globalDir;
 			delete process.env.OPENROUTER_API_KEY;

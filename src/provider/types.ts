@@ -4,6 +4,8 @@ export interface ProviderConfig {
 	apiKey: string;
 	model: string;
 	baseUrl?: string;
+	/** Extra fields merged into every request body (e.g., OpenRouter-specific: reasoning, transforms). */
+	requestParams?: Record<string, unknown>;
 }
 
 export interface Provider {

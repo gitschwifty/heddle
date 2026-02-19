@@ -4,8 +4,7 @@ import type { HeddleTool } from "./types.ts";
 export function createGrepTool(): HeddleTool {
 	return {
 		name: "grep",
-		description:
-			"Search for a regex pattern in files. Uses ripgrep-style output with file paths and line numbers.",
+		description: "Search for a regex pattern in files. Uses ripgrep-style output with file paths and line numbers.",
 		parameters: Type.Object({
 			pattern: Type.String({ description: "Regex pattern to search for" }),
 			path: Type.Optional(Type.String({ description: "File or directory to search in (defaults to cwd)" })),

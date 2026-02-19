@@ -3,10 +3,10 @@ import { Type } from "@sinclair/typebox";
 import { runAgentLoop } from "../../src/agent/loop.ts";
 import type { AgentEvent } from "../../src/agent/types.ts";
 import type { Provider } from "../../src/provider/types.ts";
-import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import type { HeddleTool } from "../../src/tools/types.ts";
-import { mockToolCallResponse, mockTextResponse } from "../mocks/openrouter.ts";
+import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
+import { mockTextResponse, mockToolCallResponse } from "../mocks/openrouter.ts";
 
 function mockProvider(responses: ChatCompletionResponse[]): Provider {
 	let callIndex = 0;
@@ -43,9 +43,9 @@ describe("Agent Loop (negative)", () => {
 		};
 		const registry = new ToolRegistry();
 
-		expect(
-			collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }])),
-		).rejects.toThrow("API is down");
+		expect(collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]))).rejects.toThrow(
+			"API is down",
+		);
 	});
 
 	test("yields error when response has empty choices array", async () => {
@@ -54,9 +54,7 @@ describe("Agent Loop (negative)", () => {
 		]);
 		const registry = new ToolRegistry();
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]));
 
 		const errorEvents = events.filter((e) => e.type === "error");
 		expect(errorEvents).toHaveLength(1);
@@ -72,9 +70,9 @@ describe("Agent Loop (negative)", () => {
 		]);
 		const registry = new ToolRegistry();
 
-		expect(
-			collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "call a tool" }])),
-		).rejects.toThrow("Unknown tool: nonexistent_tool");
+		expect(collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "call a tool" }]))).rejects.toThrow(
+			"Unknown tool: nonexistent_tool",
+		);
 	});
 
 	test("tool that returns error string doesn't crash the loop", async () => {
@@ -95,9 +93,7 @@ describe("Agent Loop (negative)", () => {
 		const registry = new ToolRegistry();
 		registry.register(failTool);
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "try it" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "try it" }]));
 
 		// The loop should complete — registry.execute catches throws and returns error string
 		const toolEnds = events.filter((e) => e.type === "tool_end");

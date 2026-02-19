@@ -1,20 +1,17 @@
-import * as readline from "node:readline";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import * as readline from "node:readline";
+import { runAgentLoop } from "../agent/loop.ts";
+import { loadConfig } from "../config/loader.ts";
+import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
 import { createOpenRouterProvider } from "../provider/openrouter.ts";
-import { ToolRegistry } from "../tools/registry.ts";
-import { createReadTool } from "../tools/read.ts";
-import { createWriteTool } from "../tools/write.ts";
+import { appendMessage, writeSessionMeta } from "../session/jsonl.ts";
 import { createEditTool } from "../tools/edit.ts";
 import { createGlobTool } from "../tools/glob.ts";
-import { runAgentLoop } from "../agent/loop.ts";
-import { appendMessage } from "../session/jsonl.ts";
-import { ensureHeddleDirs, getSessionsDir } from "../config/paths.ts";
-import { loadConfig } from "../config/loader.ts";
+import { createReadTool } from "../tools/read.ts";
+import { ToolRegistry } from "../tools/registry.ts";
+import { createWriteTool } from "../tools/write.ts";
 import type { Message } from "../types.ts";
-
-function timestamp(): string {
-	return new Date().toISOString().replace(/[:.]/g, "-");
-}
 
 export async function startCli(): Promise<void> {
 	ensureHeddleDirs();
@@ -34,8 +31,18 @@ export async function startCli(): Promise<void> {
 	registry.register(createEditTool());
 	registry.register(createGlobTool());
 
-	const sessionDir = getSessionsDir();
-	const sessionFile = join(sessionDir, `${timestamp()}.jsonl`);
+	const sessionId = randomUUID();
+	const sessionDir = getProjectSessionsDir();
+	const sessionFile = join(sessionDir, `${sessionId}.jsonl`);
+
+	await writeSessionMeta(sessionFile, {
+		type: "session_meta",
+		id: sessionId,
+		cwd: process.cwd(),
+		model: config.model,
+		created: new Date().toISOString(),
+		heddle_version: "0.1.0",
+	});
 
 	const messages: Message[] = [
 		{

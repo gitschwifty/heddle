@@ -131,9 +131,7 @@ describe("OpenRouter Provider", () => {
 
 	describe("stream()", () => {
 		test("sends stream: true in request body", async () => {
-			fetchMock.mockResolvedValueOnce(
-				mockStreamResponse([textChunk("Hello"), finishChunk("stop")]),
-			);
+			fetchMock.mockResolvedValueOnce(mockStreamResponse([textChunk("Hello"), finishChunk("stop")]));
 
 			const gen = provider.stream(messages);
 			// Consume the generator to trigger the fetch
