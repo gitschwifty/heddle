@@ -41,6 +41,15 @@ function normalizeLine(line: string): string {
 	return leading + rest.replace(/\s+/g, " ").trimEnd();
 }
 
+/** Sum lengths of lines[0..end) plus newlines between them. */
+function sumLineLengths(lines: string[], end: number): number {
+	let total = 0;
+	for (let i = 0; i < end; i++) {
+		total += (lines[i] ?? "").length + 1;
+	}
+	return total;
+}
+
 function matchWhitespaceNormalized(content: string, search: string): MatchResult | null {
 	const contentLines = content.split("\n");
 	const searchLines = search.split("\n");
@@ -62,8 +71,8 @@ function matchWhitespaceNormalized(content: string, search: string): MatchResult
 	let endCharInLine = -1;
 
 	for (let i = 0; i < normContentLines.length; i++) {
-		const lineLen = normContentLines[i]!.length;
-		const lineEnd = pos + lineLen;
+		const normLine = normContentLines[i] ?? "";
+		const lineEnd = pos + normLine.length;
 
 		if (startLine === -1 && matchStart >= pos && matchStart <= lineEnd) {
 			startLine = i;
@@ -80,20 +89,16 @@ function matchWhitespaceNormalized(content: string, search: string): MatchResult
 
 	if (startLine === -1 || endLine === -1) return null;
 
-	const origStart = mapCharInLine(contentLines[startLine]!, normContentLines[startLine]!, startCharInLine, "start");
-	const origEnd = mapCharInLine(contentLines[endLine]!, normContentLines[endLine]!, endCharInLine, "end");
+	const origStartLine = contentLines[startLine] ?? "";
+	const normStartLine = normContentLines[startLine] ?? "";
+	const origEndLine = contentLines[endLine] ?? "";
+	const normEndLine = normContentLines[endLine] ?? "";
 
-	let absStart = 0;
-	for (let i = 0; i < startLine; i++) {
-		absStart += contentLines[i]!.length + 1;
-	}
-	absStart += origStart;
+	const origStart = mapCharInLine(origStartLine, normStartLine, startCharInLine, "start");
+	const origEnd = mapCharInLine(origEndLine, normEndLine, endCharInLine, "end");
 
-	let absEnd = 0;
-	for (let i = 0; i < endLine; i++) {
-		absEnd += contentLines[i]!.length + 1;
-	}
-	absEnd += origEnd;
+	const absStart = sumLineLengths(contentLines, startLine) + origStart;
+	const absEnd = sumLineLengths(contentLines, endLine) + origEnd;
 
 	return {
 		level: 1,
@@ -122,10 +127,11 @@ function mapCharInLine(origLine: string, normLine: string, normCharPos: number, 
 	let normPos = leading.length;
 
 	while (normPos < normCharPos && origPos < origLine.length) {
-		if (normLine[normPos] === " " && /\s/.test(origLine[origPos]!)) {
+		const origChar = origLine[origPos] ?? "";
+		if (normLine[normPos] === " " && /\s/.test(origChar)) {
 			normPos++;
 			origPos++;
-			while (origPos < origLine.length && /\s/.test(origLine[origPos]!)) {
+			while (origPos < origLine.length && /\s/.test(origLine[origPos] ?? "")) {
 				origPos++;
 			}
 		} else {
@@ -137,18 +143,18 @@ function mapCharInLine(origLine: string, normLine: string, normCharPos: number, 
 	return origPos;
 }
 
-function matchIndentFlexible(content: string, search: string): MatchResult | null {
-	const contentLines = content.split("\n");
-	const searchLines = search.split("\n");
-
+function matchLineBlock(
+	contentLines: string[],
+	searchLines: string[],
+	level: number,
+	compareFn: (contentLine: string, searchLine: string) => boolean,
+): MatchResult | null {
 	if (searchLines.length === 0) return null;
-
-	const strippedSearch = searchLines.map((l) => l.trimStart());
 
 	for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
 		let matches = true;
 		for (let j = 0; j < searchLines.length; j++) {
-			if (contentLines[i + j]!.trimStart() !== strippedSearch[j]) {
+			if (!compareFn(contentLines[i + j] ?? "", searchLines[j] ?? "")) {
 				matches = false;
 				break;
 			}
@@ -156,49 +162,25 @@ function matchIndentFlexible(content: string, search: string): MatchResult | nul
 		if (matches) {
 			const matchedLines = contentLines.slice(i, i + searchLines.length);
 			const matchedText = matchedLines.join("\n");
-
-			let startIndex = 0;
-			for (let k = 0; k < i; k++) {
-				startIndex += contentLines[k]!.length + 1;
-			}
-
-			return { level: 2, startIndex, matchedText };
+			const startIndex = sumLineLengths(contentLines, i);
+			return { level, startIndex, matchedText };
 		}
 	}
 
 	return null;
 }
 
+function matchIndentFlexible(content: string, search: string): MatchResult | null {
+	return matchLineBlock(content.split("\n"), search.split("\n"), 2, (c, s) => c.trimStart() === s.trimStart());
+}
+
 function matchLineFuzzy(content: string, search: string): MatchResult | null {
-	const contentLines = content.split("\n");
-	const searchLines = search.split("\n");
-
-	if (searchLines.length === 0) return null;
-
-	const trimmedSearch = searchLines.map((l) => l.replace(/\s+/g, ""));
-
-	for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
-		let matches = true;
-		for (let j = 0; j < searchLines.length; j++) {
-			if (contentLines[i + j]!.replace(/\s+/g, "") !== trimmedSearch[j]) {
-				matches = false;
-				break;
-			}
-		}
-		if (matches) {
-			const matchedLines = contentLines.slice(i, i + searchLines.length);
-			const matchedText = matchedLines.join("\n");
-
-			let startIndex = 0;
-			for (let k = 0; k < i; k++) {
-				startIndex += contentLines[k]!.length + 1;
-			}
-
-			return { level: 3, startIndex, matchedText };
-		}
-	}
-
-	return null;
+	return matchLineBlock(
+		content.split("\n"),
+		search.split("\n"),
+		3,
+		(c, s) => c.replace(/\s+/g, "") === s.replace(/\s+/g, ""),
+	);
 }
 
 /**
@@ -207,7 +189,7 @@ function matchLineFuzzy(content: string, search: string): MatchResult | null {
 export function findClosestMatch(content: string, search: string): { line: number; snippet: string } | null {
 	const contentLines = content.split("\n");
 	const searchLines = search.split("\n");
-	const firstSearchLine = searchLines[0]!.trim().toLowerCase();
+	const firstSearchLine = (searchLines[0] ?? "").trim().toLowerCase();
 
 	if (firstSearchLine.length === 0) return null;
 
@@ -218,7 +200,7 @@ export function findClosestMatch(content: string, search: string): { line: numbe
 	let bestScore = 0;
 
 	for (let i = 0; i < contentLines.length; i++) {
-		const lineLower = contentLines[i]!.trim().toLowerCase();
+		const lineLower = (contentLines[i] ?? "").trim().toLowerCase();
 		if (lineLower.length === 0) continue;
 
 		let score = 0;
