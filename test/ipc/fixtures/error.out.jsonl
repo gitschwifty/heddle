@@ -1,4 +1,4 @@
-{"type":"init_ok","id":"1","session_id":"sess-err","protocol_version":"1.0.0"}
-{"type":"event","event":"error","error":"Model error","code":"provider_error"}
-{"type":"result","id":"2","status":"error","error":"Model error"}
+{"type":"init_ok","id":"1","session_id":"sess-err","protocol_version":"0.1.0"}
+{"type":"event","event":{"event":"error","error":"OpenRouter API error (500): {\"error\":{\"message\":\"Model error\",\"type\":\"error\",\"code\":500}}","code":"provider_error"}}
+{"type":"result","id":"2","status":"error","error":"OpenRouter API error (500): {\"error\":{\"message\":\"Model error\",\"type\":\"error\",\"code\":500}}","tool_calls_made":[],"iterations":0}
 {"type":"shutdown_ok","id":"3"}

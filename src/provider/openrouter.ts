@@ -106,12 +106,12 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 
 		if (!response.ok) {
 			const errorBody = await response.text();
-			debug("provider", `error ${response.status}: ${errorBody}`)
+			debug("provider", `error ${response.status}: ${errorBody}`);
 			throw new Error(`OpenRouter API error (${response.status}): ${errorBody}`);
 		}
 
-    const body = await response.json();
-		debug("provider", "response", body)
+		const body = await response.json();
+		debug("provider", "response", body);
 		return body as ChatCompletionResponse;
 	}
 
@@ -155,7 +155,7 @@ export function createOpenRouterProvider(config: ProviderConfig): Provider {
 				if (data === "[DONE]") return;
 
 				const chunk = JSON.parse(data) as StreamChunk;
-        debug("provider", "chunk", chunk);
+				debug("provider", "chunk", chunk);
 				yield chunk;
 			}
 		}

@@ -29,9 +29,7 @@ export function setHeadless(value: boolean): void {
 }
 
 function formatArgs(args: unknown[]): string {
-	return args
-		.map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
-		.join(" ");
+	return args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
 }
 
 export function debug(channel: string, ...args: unknown[]): void {

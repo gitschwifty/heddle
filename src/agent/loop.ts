@@ -163,7 +163,7 @@ export async function* runAgentLoopStreaming(
 
 			if (chunk.usage) {
 				streamUsage = chunk.usage;
-				debug("agent", "usage", streamUsage)
+				debug("agent", "usage", streamUsage);
 			}
 		}
 
