@@ -55,10 +55,11 @@ describe("Agent Loop", () => {
 
 		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]));
 
-		expect(events).toHaveLength(1);
-		expect(events[0]?.type).toBe("assistant_message");
-		if (events[0]?.type === "assistant_message") {
-			expect(events[0].message.content).toBe("Hello!");
+		expect(events).toHaveLength(2);
+		expect(events[0]?.type).toBe("usage");
+		expect(events[1]?.type).toBe("assistant_message");
+		if (events[1]?.type === "assistant_message") {
+			expect(events[1].message.content).toBe("Hello!");
 		}
 	});
 
@@ -75,22 +76,24 @@ describe("Agent Loop", () => {
 
 		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "echo ping" }]));
 
-		// Expect: assistant_message (tool_call), tool_start, tool_end, assistant_message (text)
-		expect(events).toHaveLength(4);
-		expect(events[0]?.type).toBe("assistant_message");
-		expect(events[1]?.type).toBe("tool_start");
-		expect(events[2]?.type).toBe("tool_end");
-		expect(events[3]?.type).toBe("assistant_message");
+		// Expect: usage, assistant_message (tool_call), tool_start, tool_end, usage, assistant_message (text)
+		expect(events).toHaveLength(6);
+		expect(events[0]?.type).toBe("usage");
+		expect(events[1]?.type).toBe("assistant_message");
+		expect(events[2]?.type).toBe("tool_start");
+		expect(events[3]?.type).toBe("tool_end");
+		expect(events[4]?.type).toBe("usage");
+		expect(events[5]?.type).toBe("assistant_message");
 
-		if (events[1]?.type === "tool_start") {
-			expect(events[1].name).toBe("echo");
-		}
-		if (events[2]?.type === "tool_end") {
+		if (events[2]?.type === "tool_start") {
 			expect(events[2].name).toBe("echo");
-			expect(events[2].result).toBe("ping");
 		}
-		if (events[3]?.type === "assistant_message") {
-			expect(events[3].message.content).toBe("Got: ping");
+		if (events[3]?.type === "tool_end") {
+			expect(events[3].name).toBe("echo");
+			expect(events[3].result).toBe("ping");
+		}
+		if (events[5]?.type === "assistant_message") {
+			expect(events[5].message.content).toBe("Got: ping");
 		}
 	});
 
@@ -109,17 +112,20 @@ describe("Agent Loop", () => {
 
 		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "do two things" }]));
 
-		// 2 tool rounds × (assistant + tool_start + tool_end) + 1 final assistant = 7
-		expect(events).toHaveLength(7);
+		// 2 tool rounds × (usage + assistant + tool_start + tool_end) + 1 final (usage + assistant) = 10
+		expect(events).toHaveLength(10);
 
 		const types = events.map((e) => e.type);
 		expect(types).toEqual([
+			"usage",
 			"assistant_message",
 			"tool_start",
 			"tool_end",
+			"usage",
 			"assistant_message",
 			"tool_start",
 			"tool_end",
+			"usage",
 			"assistant_message",
 		]);
 	});
@@ -161,8 +167,8 @@ describe("Agent Loop", () => {
 
 		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "parallel" }]));
 
-		// assistant_message, tool_start×2, tool_end×2, assistant_message
-		expect(events).toHaveLength(6);
+		// usage, assistant_message, tool_start×2, tool_end×2, usage, assistant_message
+		expect(events).toHaveLength(8);
 		const toolStarts = events.filter((e) => e.type === "tool_start");
 		const toolEnds = events.filter((e) => e.type === "tool_end");
 		expect(toolStarts).toHaveLength(2);
@@ -210,6 +216,67 @@ describe("Agent Loop", () => {
 		const overrides = { temperature: 0.7 };
 		await collectEvents(runAgentLoop(p, registry, [{ role: "user", content: "Hi" }], { requestOverrides: overrides }));
 		expect(capturedOverrides).toEqual(overrides);
+	});
+
+	test("usage event yielded with correct token counts", async () => {
+		const provider = mockProvider([mockTextResponse("Hello!")]);
+		const registry = new ToolRegistry();
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(1);
+		if (usageEvents[0]?.type === "usage") {
+			expect(usageEvents[0].usage.prompt_tokens).toBe(10);
+			expect(usageEvents[0].usage.completion_tokens).toBe(5);
+			expect(usageEvents[0].usage.total_tokens).toBe(15);
+		}
+	});
+
+	test("no usage event when response.usage undefined", async () => {
+		const noUsageResponse: ChatCompletionResponse = {
+			id: "chatcmpl-test",
+			choices: [
+				{ index: 0, message: { role: "assistant", content: "Hi", tool_calls: undefined }, finish_reason: "stop" },
+			],
+		};
+		const provider = mockProvider([noUsageResponse]);
+		const registry = new ToolRegistry();
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(0);
+	});
+
+	test("multi-turn: 2 LLM calls produce 2 usage events", async () => {
+		const provider = mockProvider([
+			mockToolCallResponse([{ name: "echo", arguments: { text: "ping" } }]),
+			mockTextResponse("Done"),
+		]);
+		const registry = new ToolRegistry();
+		registry.register(echoTool());
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "echo" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(2);
+	});
+
+	test("usage includes cost when present", async () => {
+		const responseWithCost: ChatCompletionResponse = {
+			id: "chatcmpl-test",
+			choices: [
+				{ index: 0, message: { role: "assistant", content: "Hi", tool_calls: undefined }, finish_reason: "stop" },
+			],
+			usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.001 },
+		};
+		const provider = mockProvider([responseWithCost]);
+		const registry = new ToolRegistry();
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "Hi" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(1);
+		if (usageEvents[0]?.type === "usage") {
+			expect(usageEvents[0].usage.cost).toBe(0.001);
+		}
 	});
 
 	test("mutates the passed-in messages array", async () => {

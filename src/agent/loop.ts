@@ -1,6 +1,6 @@
 import type { Provider, RequestOverrides } from "../provider/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
-import type { AssistantMessage, Message, ToolCall, ToolMessage } from "../types.ts";
+import type { AssistantMessage, Message, ToolCall, ToolMessage, Usage } from "../types.ts";
 import type { AgentEvent } from "./types.ts";
 
 export interface AgentLoopOptions {
@@ -54,6 +54,11 @@ export async function* runAgentLoop(
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
 		const response = await provider.send(messages, tools.length > 0 ? tools : undefined, overrides);
+
+		if (response.usage) {
+			yield { type: "usage", usage: response.usage };
+		}
+
 		const choice = response.choices[0];
 		if (!choice) {
 			yield { type: "error", error: new Error("No choice in response") };
@@ -127,6 +132,7 @@ export async function* runAgentLoopStreaming(
 		// Accumulate content and tool call deltas from the stream
 		let contentParts = "";
 		const assembledToolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
+		let streamUsage: Usage | undefined;
 
 		for await (const chunk of provider.stream(messages, tools.length > 0 ? tools : undefined, overrides)) {
 			const choice = chunk.choices[0];
@@ -153,6 +159,10 @@ export async function* runAgentLoopStreaming(
 					if (tc.function?.arguments) entry.arguments += tc.function.arguments;
 				}
 			}
+
+			if (chunk.usage) {
+				streamUsage = chunk.usage;
+			}
 		}
 
 		// Build assembled tool calls array (sorted by index)
@@ -172,6 +182,10 @@ export async function* runAgentLoopStreaming(
 		};
 
 		yield { type: "assistant_message", message: assistantMsg };
+		if (streamUsage) {
+			yield { type: "usage", usage: streamUsage };
+			streamUsage = undefined;
+		}
 		messages.push(assistantMsg);
 
 		// No tool calls — done

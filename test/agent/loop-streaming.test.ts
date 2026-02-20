@@ -6,7 +6,14 @@ import type { Provider } from "../../src/provider/types.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import type { HeddleTool } from "../../src/tools/types.ts";
 import type { ChatCompletionResponse, Message, StreamChunk, ToolDefinition } from "../../src/types.ts";
-import { finishChunk, mockTextResponse, mockToolCallResponse, textChunk, toolCallChunk } from "../mocks/openrouter.ts";
+import {
+	finishChunk,
+	mockTextResponse,
+	mockToolCallResponse,
+	textChunk,
+	toolCallChunk,
+	usageChunk,
+} from "../mocks/openrouter.ts";
 
 /** Create a mock streaming provider from arrays of stream chunks (one per call). */
 function mockStreamProvider(streamSets: StreamChunk[][]): Provider {
@@ -211,6 +218,7 @@ describe("Streaming Agent Loop", () => {
 			"content_delta", // "Got first"
 			"assistant_message", // final text
 		]);
+		// No usage events since no usageChunk was provided
 
 		// Verify messages array was mutated correctly
 		expect(messages).toHaveLength(4); // user, assistant(tool), tool_result, assistant(text)
@@ -285,6 +293,73 @@ describe("Streaming Agent Loop", () => {
 
 		const loopEvents = events.filter((e) => e.type === "loop_detected");
 		expect(loopEvents).toHaveLength(0);
+	});
+
+	test("usage event from streaming (via usageChunk)", async () => {
+		const provider = mockStreamProvider([
+			[
+				textChunk("Hello"),
+				finishChunk("stop"),
+				usageChunk({ prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }),
+			],
+		]);
+		const registry = new ToolRegistry();
+		const events = await collectEvents(runAgentLoopStreaming(provider, registry, [{ role: "user", content: "Hi" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(1);
+		if (usageEvents[0]?.type === "usage") {
+			expect(usageEvents[0].usage.prompt_tokens).toBe(20);
+			expect(usageEvents[0].usage.total_tokens).toBe(30);
+		}
+	});
+
+	test("no usage event when no chunk has usage", async () => {
+		const provider = mockStreamProvider([[textChunk("Hello"), finishChunk("stop")]]);
+		const registry = new ToolRegistry();
+		const events = await collectEvents(runAgentLoopStreaming(provider, registry, [{ role: "user", content: "Hi" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(0);
+	});
+
+	test("usage event comes after assistant_message", async () => {
+		const provider = mockStreamProvider([
+			[
+				textChunk("Hello"),
+				finishChunk("stop"),
+				usageChunk({ prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }),
+			],
+		]);
+		const registry = new ToolRegistry();
+		const events = await collectEvents(runAgentLoopStreaming(provider, registry, [{ role: "user", content: "Hi" }]));
+
+		const types = events.map((e) => e.type);
+		const assistantIdx = types.indexOf("assistant_message");
+		const usageIdx = types.indexOf("usage");
+		expect(usageIdx).toBeGreaterThan(assistantIdx);
+	});
+
+	test("multi-turn streaming: 2 rounds produce 2 usage events", async () => {
+		const provider = mockStreamProvider([
+			[
+				toolCallChunk(0, { id: "call_0", name: "echo" }),
+				toolCallChunk(0, { arguments: '{"text":"ping"}' }),
+				finishChunk("tool_calls"),
+				usageChunk({ prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }),
+			],
+			[
+				textChunk("Done"),
+				finishChunk("stop"),
+				usageChunk({ prompt_tokens: 30, completion_tokens: 15, total_tokens: 45 }),
+			],
+		]);
+		const registry = new ToolRegistry();
+		registry.register(echoTool());
+		const events = await collectEvents(runAgentLoopStreaming(provider, registry, [{ role: "user", content: "echo" }]));
+
+		const usageEvents = events.filter((e) => e.type === "usage");
+		expect(usageEvents).toHaveLength(2);
 	});
 
 	test("doom loop: different calls does NOT trigger", async () => {

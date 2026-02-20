@@ -148,6 +148,8 @@ export async function startCli(): Promise<void> {
 							});
 							break;
 						}
+						case "usage":
+							break;
 						case "loop_detected": {
 							console.error(
 								`\n  [warning] Doom loop detected: ${event.count} identical tool call iterations. Stopping.`,

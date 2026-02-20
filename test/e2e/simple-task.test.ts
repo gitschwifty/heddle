@@ -68,21 +68,23 @@ describe("E2E: simple task", () => {
 				runAgentLoop(provider, registry, [{ role: "user", content: `Read the file at ${filePath}` }]),
 			);
 
-			// Should have: assistant_message (tool call), tool_start, tool_end, assistant_message (text)
-			expect(events).toHaveLength(4);
-			expect(events[0]?.type).toBe("assistant_message");
-			expect(events[1]?.type).toBe("tool_start");
-			expect(events[2]?.type).toBe("tool_end");
-			expect(events[3]?.type).toBe("assistant_message");
+			// Should have: usage, assistant_message (tool call), tool_start, tool_end, usage, assistant_message (text)
+			expect(events).toHaveLength(6);
+			expect(events[0]?.type).toBe("usage");
+			expect(events[1]?.type).toBe("assistant_message");
+			expect(events[2]?.type).toBe("tool_start");
+			expect(events[3]?.type).toBe("tool_end");
+			expect(events[4]?.type).toBe("usage");
+			expect(events[5]?.type).toBe("assistant_message");
 
 			// Verify the tool actually read the file
-			if (events[2]?.type === "tool_end") {
-				expect(events[2].result).toContain("Hello from the test file!");
+			if (events[3]?.type === "tool_end") {
+				expect(events[3].result).toContain("Hello from the test file!");
 			}
 
 			// Verify the model's final response
-			if (events[3]?.type === "assistant_message") {
-				expect(events[3].message.content).toContain("Hello from the test file!");
+			if (events[5]?.type === "assistant_message") {
+				expect(events[5].message.content).toContain("Hello from the test file!");
 			}
 		});
 	});
@@ -115,15 +117,15 @@ describe("E2E: simple task", () => {
 				runAgentLoop(provider, registry, [{ role: "user", content: "Change the greeting to world" }]),
 			);
 
-			expect(events).toHaveLength(4);
+			expect(events).toHaveLength(6);
 
 			// Verify the file was actually modified
 			const content = await Bun.file(filePath).text();
 			expect(content).toBe('const greeting = "world";\nconsole.log(greeting);');
 
 			// Verify tool_end reported success
-			if (events[2]?.type === "tool_end") {
-				expect(events[2].result).toContain("Applied edit");
+			if (events[3]?.type === "tool_end") {
+				expect(events[3].result).toContain("Applied edit");
 			}
 		});
 	});
@@ -159,17 +161,20 @@ describe("E2E: simple task", () => {
 				runAgentLoop(provider, registry, [{ role: "user", content: "Increment the count in data.txt" }]),
 			);
 
-			// 2 tool rounds + 1 final = 7 events
-			expect(events).toHaveLength(7);
+			// 2 tool rounds × (usage + assistant + tool_start + tool_end) + 1 final (usage + assistant) = 10
+			expect(events).toHaveLength(10);
 
 			const types = events.map((e) => e.type);
 			expect(types).toEqual([
+				"usage",
 				"assistant_message",
 				"tool_start",
 				"tool_end",
+				"usage",
 				"assistant_message",
 				"tool_start",
 				"tool_end",
+				"usage",
 				"assistant_message",
 			]);
 
