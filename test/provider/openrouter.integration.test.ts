@@ -3,7 +3,22 @@ import { createOpenRouterProvider } from "../../src/provider/openrouter.ts";
 
 const INTEGRATION = process.env.HEDDLE_INTEGRATION_TESTS === "1";
 const API_KEY = process.env.OPENROUTER_API_KEY;
-const TEST_MODEL = process.env.TEST_MODEL ?? "openrouter/free";
+
+// Free model fallback arrays — if primary is rate-limited, try the next
+// OpenRouter limits `models` to 3 fallback entries
+const FREE_MODELS = [
+	"liquid/lfm-2.5-1.2b-instruct:free",
+	"arcee-ai/trinity-large-preview:free",
+	"arcee-ai/trinity-mini:free",
+	"openrouter/free",
+];
+
+const REASONING_MODELS = [
+	"arcee-ai/trinity-mini:free",
+	"stepfun/step-3.5-flash:free",
+	"nvidia/nemotron-3-nano-30b-a3b:free",
+	"openrouter/free",
+];
 
 // Skip integration tests if disabled or no API key
 const describeIntegration = INTEGRATION && API_KEY ? describe : describe.skip;
@@ -11,14 +26,18 @@ const describeIntegration = INTEGRATION && API_KEY ? describe : describe.skip;
 describeIntegration("OpenRouter Integration", () => {
 	const provider = createOpenRouterProvider({
 		apiKey: API_KEY!,
-		model: "z-ai/glm-4.5-air:free",
-		requestParams: { reasoning: { enabled: false } },
+		model: FREE_MODELS[0]!,
+		requestParams: { models: FREE_MODELS.slice(1), route: "fallback" },
 	});
 
 	const reasoningProvider = createOpenRouterProvider({
 		apiKey: API_KEY!,
-		model: TEST_MODEL,
-		requestParams: { reasoning: { enabled: true } },
+		model: REASONING_MODELS[0]!,
+		requestParams: {
+			models: REASONING_MODELS.slice(1),
+			route: "fallback",
+			reasoning: { enabled: true },
+		},
 	});
 
 	test(

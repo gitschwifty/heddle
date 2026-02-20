@@ -33,6 +33,7 @@ describe("OpenRouter Provider", () => {
 	const provider = createOpenRouterProvider({
 		apiKey: TEST_KEY,
 		model: TEST_MODEL,
+		retry: { maxRetries: 3, baseDelayMs: 10 },
 	});
 
 	const messages: Message[] = [{ role: "user", content: "Hello" }];
@@ -122,10 +123,14 @@ describe("OpenRouter Provider", () => {
 			expect(provider.send(messages)).rejects.toThrow();
 		});
 
-		test("throws on 429 rate limit", async () => {
-			fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limit exceeded"));
+		test("throws on 429 after exhausting retries", async () => {
+			// Default retry is 3, so 4 total attempts (1 + 3 retries)
+			for (let i = 0; i < 4; i++) {
+				fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limit exceeded"));
+			}
 
-			expect(provider.send(messages)).rejects.toThrow();
+			await expect(provider.send(messages)).rejects.toThrow("429");
+			expect(fetchMock).toHaveBeenCalledTimes(4);
 		});
 
 		test("send() with overrides merges into request body", async () => {
@@ -266,6 +271,62 @@ describe("OpenRouter Provider", () => {
 			const body = JSON.parse(opts.body as string);
 			expect(body.temperature).toBe(0.8); // per-call wins
 			expect(body.top_p).toBe(0.9); // base preserved
+		});
+	});
+
+	describe("429 retry", () => {
+		test("retries on 429 and succeeds", async () => {
+			fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limited"));
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Hi")));
+
+			const response = await provider.send(messages);
+			expect(response.choices[0]?.message.content).toBe("Hi");
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		});
+
+		test("retries multiple 429s then succeeds", async () => {
+			fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limited"));
+			fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limited"));
+			fetchMock.mockResolvedValueOnce(mockJsonResponse(mockTextResponse("Finally")));
+
+			const response = await provider.send(messages);
+			expect(response.choices[0]?.message.content).toBe("Finally");
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+		});
+
+		test("does not retry non-429 errors", async () => {
+			fetchMock.mockResolvedValueOnce(mockErrorResponse(500, "Server error"));
+
+			await expect(provider.send(messages)).rejects.toThrow("500");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		test("retry disabled when retry: false", async () => {
+			const noRetryProvider = createOpenRouterProvider({
+				apiKey: TEST_KEY,
+				model: TEST_MODEL,
+				retry: false,
+			});
+
+			fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limited"));
+
+			await expect(noRetryProvider.send(messages)).rejects.toThrow("429");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		test("stream retries on 429", async () => {
+			fetchMock.mockResolvedValueOnce(mockErrorResponse(429, "Rate limited"));
+			fetchMock.mockResolvedValueOnce(mockStreamResponse([textChunk("Hi"), finishChunk("stop")]));
+
+			const chunks: string[] = [];
+			for await (const chunk of provider.stream(messages)) {
+				if (chunk.choices[0]?.delta.content) {
+					chunks.push(chunk.choices[0].delta.content);
+				}
+			}
+
+			expect(chunks).toEqual(["Hi"]);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
 		});
 	});
 

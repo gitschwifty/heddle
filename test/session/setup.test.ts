@@ -201,4 +201,30 @@ describe("createSession()", () => {
 		setupEnv();
 		await expect(createSession({ cwd: join(TEST_DIR, "nonexistent-dir") })).rejects.toThrow();
 	});
+
+	test("weakModel in config: weakProvider set", async () => {
+		setupEnv({ HEDDLE_WEAK_MODEL: "openrouter/free-weak" });
+		const ctx = await createSession();
+
+		expect(ctx.weakProvider).toBeDefined();
+		expect(typeof ctx.weakProvider?.send).toBe("function");
+	});
+
+	test("no weakModel: weakProvider undefined", async () => {
+		setupEnv();
+		const ctx = await createSession();
+
+		expect(ctx.weakProvider).toBeUndefined();
+	});
+
+	test("editorModel in config: editorProvider set", async () => {
+		setupEnv();
+		const homeDir = process.env.HEDDLE_HOME!;
+		const { writeFileSync } = require("node:fs");
+		writeFileSync(join(homeDir, "config.toml"), 'editor_model = "openrouter/free-editor"\n');
+		const ctx = await createSession();
+
+		expect(ctx.editorProvider).toBeDefined();
+		expect(typeof ctx.editorProvider?.send).toBe("function");
+	});
 });

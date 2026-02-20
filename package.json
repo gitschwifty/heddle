@@ -12,6 +12,7 @@
     "lint": "bunx biome check --write src/ test/",
     "test": "bun test",
     "test:integration": "HEDDLE_INTEGRATION_TESTS=1 bun test",
+    "test:integration-only": "HEDDLE_INTEGRATION_TESTS=1 HEDDLE_SLOW_TESTS=1 bun test test/provider/openrouter.integration.test.ts test/integration/",
     "test:all": "HEDDLE_INTEGRATION_TESTS=1 HEDDLE_SLOW_TESTS=1 bun test"
   },
   "devDependencies": {

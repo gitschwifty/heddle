@@ -113,9 +113,15 @@ export function validateOverrides(raw: Record<string, unknown>): OpenRouterOverr
 	// Route
 	if (raw.route === "fallback" || raw.route === "sort") result.route = raw.route;
 
-	// Models array
+	// Models array (OpenRouter limits to 3 fallback entries)
 	if (Array.isArray(raw.models) && raw.models.every((m) => typeof m === "string")) {
-		result.models = raw.models as string[];
+		const models = raw.models as string[];
+		if (models.length > 3) {
+			debug("provider", `models array has ${models.length} entries, truncating to 3 (OpenRouter limit)`);
+			result.models = models.slice(0, 3);
+		} else {
+			result.models = models;
+		}
 	}
 
 	// Numeric fields with range validation

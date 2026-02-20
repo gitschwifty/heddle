@@ -17,10 +17,28 @@ const INTEGRATION = process.env.HEDDLE_INTEGRATION_TESTS === "1";
 const SLOW_TESTS = process.env.HEDDLE_SLOW_TESTS === "1";
 const describeIf = INTEGRATION && SLOW_TESTS ? describe : describe.skip;
 
+// Free model fallback array for multi-turn tests (needs tool use support)
+// OpenRouter limits `models` to 3 fallback entries
+const FREE_MODELS = [
+	"liquid/lfm-2.5-1.2b-instruct:free",
+	"arcee-ai/trinity-large-preview:free",
+	"arcee-ai/trinity-mini:free",
+	"openrouter/free",
+];
+
 async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
 	const events: AgentEvent[] = [];
 	for await (const event of gen) events.push(event);
 	return events;
+}
+
+function createTestProvider() {
+	const config = loadConfig();
+	return createOpenRouterProvider({
+		apiKey: config.apiKey ?? process.env.OPENROUTER_API_KEY ?? "",
+		model: FREE_MODELS[0]!,
+		requestParams: { models: FREE_MODELS.slice(1), route: "fallback" },
+	});
 }
 
 describeIf("Multi-turn integration (real model)", () => {
@@ -41,11 +59,7 @@ describeIf("Multi-turn integration (real model)", () => {
 	});
 
 	test("2-turn tool chain — read then edit", async () => {
-		const config = loadConfig();
-		const provider = createOpenRouterProvider({
-			apiKey: config.apiKey ?? process.env.OPENROUTER_API_KEY ?? "",
-			model: config.model,
-		});
+		const provider = createTestProvider();
 
 		const filePath = join(dir, "data.txt");
 		await Bun.write(filePath, "count: 0");
@@ -87,10 +101,7 @@ describeIf("Multi-turn integration (real model)", () => {
 
 	test("session persistence round-trip", async () => {
 		const config = loadConfig();
-		const provider = createOpenRouterProvider({
-			apiKey: config.apiKey ?? process.env.OPENROUTER_API_KEY ?? "",
-			model: config.model,
-		});
+		const provider = createTestProvider();
 
 		const filePath = join(dir, "persist.txt");
 		await Bun.write(filePath, "original content");

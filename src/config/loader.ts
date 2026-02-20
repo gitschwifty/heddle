@@ -39,6 +39,17 @@ export type SessionFields = Pick<
 	"systemPrompt" | "approvalMode" | "instructions" | "tools" | "doomLoopThreshold" | "budgetLimit"
 >;
 
+const SENSITIVE_KEYS = new Set(["apiKey"]);
+
+/** Redact sensitive fields for debug logging. */
+function redactSecrets(config: HeddleConfig): Record<string, unknown> {
+	const redacted: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(config)) {
+		redacted[key] = SENSITIVE_KEYS.has(key) && value ? "[REDACTED]" : value;
+	}
+	return redacted;
+}
+
 const DEFAULTS: HeddleConfig = {
 	model: "openrouter/free",
 };
@@ -142,6 +153,6 @@ export function loadConfig(localDir?: string): HeddleConfig {
 		if (parsed.length > 0) merged.tools = parsed;
 	}
 
-	debug("config", "loaded:", merged);
+	debug("config", "loaded:", redactSecrets(merged));
 	return merged;
 }
