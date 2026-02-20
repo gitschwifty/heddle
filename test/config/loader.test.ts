@@ -23,6 +23,9 @@ describe("config/loader", () => {
 		delete process.env.HEDDLE_BASE_URL;
 		delete process.env.HEDDLE_MAX_TOKENS;
 		delete process.env.HEDDLE_TEMPERATURE;
+		delete process.env.HEDDLE_WEAK_MODEL;
+		delete process.env.HEDDLE_APPROVAL_MODE;
+		delete process.env.HEDDLE_TOOLS;
 	});
 
 	afterEach(() => {
@@ -333,6 +336,117 @@ describe("config/loader", () => {
 			const config = loadConfig(join(TEST_DIR, "nonexistent"));
 			expect(config.maxTokens).toBeUndefined();
 			expect(config.temperature).toBeUndefined();
+		});
+
+		// ── HEDDLE_WEAK_MODEL env var ──
+
+		test("HEDDLE_WEAK_MODEL env var overrides config", () => {
+			const globalDir = join(TEST_DIR, "env-weak-model");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), 'weak_model = "toml-weak"\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_WEAK_MODEL = "env-weak";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.weakModel).toBe("env-weak");
+		});
+
+		// ── HEDDLE_APPROVAL_MODE env var ──
+
+		test("HEDDLE_APPROVAL_MODE env var overrides config", () => {
+			const globalDir = join(TEST_DIR, "env-approval");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), 'approval_mode = "suggest"\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_APPROVAL_MODE = "full-auto";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.approvalMode).toBe("full-auto");
+		});
+
+		test("HEDDLE_APPROVAL_MODE env var with invalid value is silently dropped", () => {
+			const globalDir = join(TEST_DIR, "env-approval-invalid");
+			mkdirSync(globalDir, { recursive: true });
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_APPROVAL_MODE = "banana";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.approvalMode).toBeUndefined();
+		});
+
+		// ── tools field ──
+
+		test("loads tools as TOML array of strings", () => {
+			const globalDir = join(TEST_DIR, "tools-array");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), 'tools = ["read_file", "glob", "grep"]\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toEqual(["read_file", "glob", "grep"]);
+		});
+
+		test("tools as bare string is rejected (must be array)", () => {
+			const globalDir = join(TEST_DIR, "tools-string");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), 'tools = "read_file"\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toBeUndefined();
+		});
+
+		test("tools defaults to undefined", () => {
+			const globalDir = join(TEST_DIR, "tools-default");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), "");
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toBeUndefined();
+		});
+
+		// ── HEDDLE_TOOLS env var (comma-separated) ──
+
+		test("HEDDLE_TOOLS env var as comma-separated list", () => {
+			const globalDir = join(TEST_DIR, "env-tools");
+			mkdirSync(globalDir, { recursive: true });
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_TOOLS = "read_file,glob,grep";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toEqual(["read_file", "glob", "grep"]);
+		});
+
+		test("HEDDLE_TOOLS env var trims whitespace around tool names", () => {
+			const globalDir = join(TEST_DIR, "env-tools-spaces");
+			mkdirSync(globalDir, { recursive: true });
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_TOOLS = " read_file , glob , grep ";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toEqual(["read_file", "glob", "grep"]);
+		});
+
+		test("HEDDLE_TOOLS env var overrides TOML tools", () => {
+			const globalDir = join(TEST_DIR, "env-tools-override");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), 'tools = ["read_file", "write_file"]\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_TOOLS = "glob,grep";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toEqual(["glob", "grep"]);
+		});
+
+		test("empty HEDDLE_TOOLS env var doesn't set tools", () => {
+			const globalDir = join(TEST_DIR, "env-tools-empty");
+			mkdirSync(globalDir, { recursive: true });
+
+			process.env.HEDDLE_HOME = globalDir;
+			process.env.HEDDLE_TOOLS = "";
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.tools).toBeUndefined();
 		});
 	});
 });

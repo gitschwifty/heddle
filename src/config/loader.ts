@@ -24,6 +24,7 @@ export interface HeddleConfig {
 	systemPrompt?: string;
 	approvalMode?: ApprovalMode;
 	instructions?: string[];
+	tools?: string[];
 	doomLoopThreshold?: number;
 	budgetLimit?: number;
 }
@@ -35,7 +36,7 @@ export type ProviderFields = Pick<
 >;
 export type SessionFields = Pick<
 	HeddleConfig,
-	"systemPrompt" | "approvalMode" | "instructions" | "doomLoopThreshold" | "budgetLimit"
+	"systemPrompt" | "approvalMode" | "instructions" | "tools" | "doomLoopThreshold" | "budgetLimit"
 >;
 
 const DEFAULTS: HeddleConfig = {
@@ -83,6 +84,12 @@ function toConfig(raw: Record<string, unknown>): Partial<HeddleConfig> {
 		if (filtered.length > 0) config.instructions = filtered;
 	}
 
+	// Tools — must be an array of strings
+	if (Array.isArray(raw.tools)) {
+		const filtered = raw.tools.filter((item): item is string => typeof item === "string");
+		if (filtered.length > 0) config.tools = filtered;
+	}
+
 	return config;
 }
 
@@ -117,6 +124,22 @@ export function loadConfig(localDir?: string): HeddleConfig {
 	const temperatureEnv = process.env.HEDDLE_TEMPERATURE;
 	if (temperatureEnv && !Number.isNaN(Number(temperatureEnv))) {
 		merged.temperature = Number(temperatureEnv);
+	}
+
+	if (process.env.HEDDLE_WEAK_MODEL) merged.weakModel = process.env.HEDDLE_WEAK_MODEL;
+
+	const approvalModeEnv = process.env.HEDDLE_APPROVAL_MODE;
+	if (approvalModeEnv && VALID_APPROVAL_MODES.has(approvalModeEnv)) {
+		merged.approvalMode = approvalModeEnv as ApprovalMode;
+	}
+
+	const toolsEnv = process.env.HEDDLE_TOOLS;
+	if (toolsEnv) {
+		const parsed = toolsEnv
+			.split(",")
+			.map((t) => t.trim())
+			.filter(Boolean);
+		if (parsed.length > 0) merged.tools = parsed;
 	}
 
 	debug("config", "loaded:", merged);
