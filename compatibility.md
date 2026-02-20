@@ -21,6 +21,7 @@
 
 ## Contract Tests
 - Golden transcripts are the source of truth for expected behavior.
+- Tests should be **strict line-by-line** with an allowlist of non-deterministic fields.
 - Any IPC change must update:
   - JSON Schema
   - `protocol_version`
