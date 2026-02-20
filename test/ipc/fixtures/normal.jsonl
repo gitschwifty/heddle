@@ -1,0 +1,9 @@
+{"type":"init","id":"1","protocol_version":"1.0.0","config":{"model":"openrouter/auto","system_prompt":"You are a helpful assistant.","tools":["read_file","glob","grep"],"max_iterations":10}}
+{"type":"init_ok","id":"1","session_id":"sess-123","protocol_version":"1.0.0"}
+{"type":"send","id":"2","message":"List files in the current directory."}
+{"type":"event","event":"tool_start","name":"glob","args":{"pattern":"*"}}
+{"type":"event","event":"tool_end","name":"glob","result_preview":"[\"Cargo.toml\",\"src\"]"}
+{"type":"event","event":"content_delta","text":"Here are the files..."}
+{"type":"result","id":"2","status":"ok","response":"Here are the files...","tool_calls_made":[{"name":"glob","args":{"pattern":"*"}}],"usage":{"prompt_tokens":42,"completion_tokens":15,"total_tokens":57},"iterations":1}
+{"type":"shutdown","id":"3"}
+{"type":"shutdown_ok","id":"3"}
