@@ -1,7 +1,3 @@
 {"type":"init","id":"1","protocol_version":"1.0.0","config":{"model":"openrouter/auto","system_prompt":"You are a helpful assistant.","tools":["read_file"],"max_iterations":2}}
-{"type":"init_ok","id":"1","session_id":"sess-err","protocol_version":"1.0.0"}
 {"type":"send","id":"2","message":"Do the thing."}
-{"type":"event","event":"error","error":"Model error","code":"provider_error"}
-{"type":"result","id":"2","status":"error","error":"Model error"}
 {"type":"shutdown","id":"3"}
-{"type":"shutdown_ok","id":"3"}

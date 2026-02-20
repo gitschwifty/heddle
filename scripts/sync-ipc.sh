@@ -13,6 +13,7 @@ mkdir -p "$HEDDLE_ROOT/test/ipc/fixtures"
 
 rsync -a --delete "$ORBOROS_ROOT/fixtures/ipc/" "$HEDDLE_ROOT/test/ipc/fixtures/"
 rsync -a "$ORBOROS_ROOT/compatibility.md" "$HEDDLE_ROOT/compatibility.md"
+rsync -a "$ORBOROS_ROOT/PROTOCOL_VERSION" "$HEDDLE_ROOT/PROTOCOL_VERSION"
 
 echo "Synced IPC fixtures and compatibility policy from Orboros."
 

@@ -1,0 +1,4 @@
+{"type":"init_ok","id":"1","session_id":"sess-err","protocol_version":"1.0.0"}
+{"type":"event","event":"error","error":"Model error","code":"provider_error"}
+{"type":"result","id":"2","status":"error","error":"Model error"}
+{"type":"shutdown_ok","id":"3"}

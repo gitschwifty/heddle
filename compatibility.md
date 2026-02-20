@@ -25,7 +25,7 @@
 - `Send`
 - `Status`
 - `Shutdown`
-- `Cancel` (optional)
+- `Cancel`
 
 ### Responses/Events
 - `InitOk`
@@ -42,6 +42,8 @@
 ## Contract Tests
 - Golden transcripts are the source of truth for expected behavior.
 - Tests should be **strict line-by-line** with an allowlist of non-deterministic fields.
+- JSON Schema from TypeBox may be used for docs and for fixture validation in tests.
+- Avoid strict schema diffing between TypeBox and Rust generators; rely on fixtures + schema validation.
 - Any IPC change must update:
   - JSON Schema
   - `PROTOCOL_VERSION`

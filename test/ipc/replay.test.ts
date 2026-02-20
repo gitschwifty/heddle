@@ -15,23 +15,28 @@ const IGNORE_PATHS: string[] = [
   "usage.total_tokens",
 ];
 
-function stripIgnored(obj: unknown): unknown {
-  if (Array.isArray(obj)) return obj.map(stripIgnored);
-  if (obj && typeof obj === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      const pathKey = k;
-      if (IGNORE_PATHS.includes(pathKey)) continue;
-      out[k] = stripIgnored(v);
-    }
-    return out;
+function deletePath(obj: any, pathStr: string) {
+  const parts = pathStr.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!cur || typeof cur !== "object") return;
+    cur = cur[parts[i]];
   }
-  return obj;
+  if (cur && typeof cur === "object") delete cur[parts[parts.length - 1]];
 }
 
-async function runFixtureStrict(fixture: string): Promise<void> {
-  const fixturePath = path.join(FIXTURES_DIR, fixture);
-  const inputLines = fs.readFileSync(fixturePath, "utf8").split("\n").filter(Boolean);
+function stripIgnored(obj: unknown): unknown {
+  const clone = JSON.parse(JSON.stringify(obj));
+  for (const p of IGNORE_PATHS) deletePath(clone, p);
+  return clone;
+}
+
+async function runFixtureStrict(name: string): Promise<void> {
+  const inPath = path.join(FIXTURES_DIR, `${name}.in.jsonl`);
+  const outPath = path.join(FIXTURES_DIR, `${name}.out.jsonl`);
+
+  const inputLines = fs.readFileSync(inPath, "utf8").split("\n").filter(Boolean);
+  const expectedLines = fs.readFileSync(outPath, "utf8").split("\n").filter(Boolean);
 
   const child = spawn("bun", ["run", "headless"], {
     cwd: process.cwd(),
@@ -61,10 +66,11 @@ async function runFixtureStrict(fixture: string): Promise<void> {
 
   child.stdin.end();
 
-  // Compare outputs line-by-line with ignored paths stripped.
   expect(output.length).toBeGreaterThan(0);
-  for (let i = 0; i < Math.min(output.length, inputLines.length); i++) {
-    const expected = stripIgnored(JSON.parse(inputLines[i]));
+  expect(output.length).toBe(expectedLines.length);
+
+  for (let i = 0; i < expectedLines.length; i++) {
+    const expected = stripIgnored(JSON.parse(expectedLines[i]));
     const actual = stripIgnored(JSON.parse(output[i]));
     expect(actual).toEqual(expected);
   }
@@ -72,18 +78,18 @@ async function runFixtureStrict(fixture: string): Promise<void> {
 
 describe("ipc fixtures", () => {
   it("normal", async () => {
-    await runFixtureStrict("normal.jsonl");
+    await runFixtureStrict("normal");
   });
 
   it("error", async () => {
-    await runFixtureStrict("error.jsonl");
+    await runFixtureStrict("error");
   });
 
   it("cancel", async () => {
-    await runFixtureStrict("cancel.jsonl");
+    await runFixtureStrict("cancel");
   });
 
   it("version mismatch", async () => {
-    await runFixtureStrict("version-mismatch.jsonl");
+    await runFixtureStrict("version-mismatch");
   });
 });
