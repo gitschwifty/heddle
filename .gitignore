@@ -10,3 +10,4 @@ dist
 .heddle-test
 .zed
 coverage
+*.log
