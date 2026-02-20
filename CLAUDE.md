@@ -15,7 +15,7 @@ TypeScript LLM API harness — tool execution, streaming, edits, context managem
 
 Write failing tests before implementation. This project was built test-first and should stay that way.
 
-**Why:** Tests define the contract. Writing them first forces clear interface design, catches regressions immediately, and makes refactoring safe. The codebase has 155+ tests — keep that ratio healthy.
+**Why:** Tests define the contract. Writing them first forces clear interface design, catches regressions immediately, and makes refactoring safe. The codebase has 346+ tests — keep that ratio healthy.
 
 **In practice:**
 1. Write the test file with expected behavior (it will fail — that's the point)
@@ -45,6 +45,8 @@ Tests run concurrently via `concurrentTestGlob` in `bunfig.toml`. Design all tes
   - `beforeAll`/`afterAll` with distinct filenames per test — one shared dir, no filename collisions (best when tests use different files).
 - **Use distinct filenames** across tests in the same describe block (e.g., `data.txt`, `chain.txt`, `session.jsonl`) so they can share a directory without conflicts.
 - **Tests that don't touch the filesystem** (pure mock/in-memory) are inherently safe.
+- **Never overwrite `globalThis.fetch` at module scope.** If a test needs to mock fetch, save the original in `beforeAll` and restore it in `afterAll`. Module-scope overwrites leak to every concurrent test file and cause mysterious failures (wrong responses, fetch hitting wrong servers).
+- **Reset module state, not just env vars.** If a test sets `HEDDLE_DEBUG_FILE` or similar env vars that cause modules to cache internal state, call the module's reset function (e.g. `resetDebug()`) in `afterEach`. Restoring `process.env` alone doesn't clear the cached state.
 
 ## Platform & Shell
 
@@ -171,3 +173,11 @@ The agent loop yields events via `AsyncGenerator<AgentEvent>`:
 - Golden transcripts are the contract; update fixtures on any schema change.
 - IPC fixtures live in `fixtures/ipc/` (canonical in Orboros) and are synced into Heddle via `scripts/sync-ipc.sh`.
 - Pre-commit hooks enforce protocol version alignment and IPC sync.
+
+### Debugging IPC/Fixture Failures
+
+When replay or headless tests fail across the board:
+1. **Check `PROTOCOL_VERSION`** — if fixtures were synced from Orboros with a bumped version, the headless adapter will reject with `protocol_version_mismatch`. Verify the version in `PROTOCOL_VERSION` file matches what fixtures send in their `init` request.
+2. **Check fixture format** — fixtures are `.in.jsonl`/`.out.jsonl` pairs. Verify they parse as valid JSON per line and match the TypeBox schemas in `src/ipc/types.ts`. Non-deterministic fields (`session_id`, `timestamp`, `usage.*`, `event.details`, `event.provider`) are stripped before comparison via `IGNORE_PATHS` in `replay.test.ts`.
+3. **Check `globalThis.fetch`** — if headless/pricing tests get wrong responses (e.g. `{"id":"test","choices":[]}` instead of expected mock data), another test file may be overwriting `globalThis.fetch` without restoring it. Search for `globalThis.fetch =` across test files.
+4. **Check error normalization** — error fixtures expect normalized inner messages (e.g. `"Model error"` not `"OpenRouter API error (500): {json}"`). If the provider error format changes, update `normalizeError()` in `src/headless/index.ts` and the error fixtures.
