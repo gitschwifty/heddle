@@ -163,3 +163,11 @@ The agent loop yields events via `AsyncGenerator<AgentEvent>`:
 - `tool_start` / `tool_end` — tool execution lifecycle
 - `loop_detected` — doom loop warning (N identical iterations)
 - `error` — unrecoverable error
+
+## IPC Compatibility
+
+- Protocol rules live in `compatibility.md` and `PROTOCOL_VERSION`.
+- Always send `protocol_version` in `Init` when supported; always return it in `InitOk`.
+- Golden transcripts are the contract; update fixtures on any schema change.
+- IPC fixtures live in `fixtures/ipc/` (canonical in Orboros) and are synced into Heddle via `scripts/sync-ipc.sh`.
+- Pre-commit hooks enforce protocol version alignment and IPC sync.
