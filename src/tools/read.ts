@@ -7,7 +7,7 @@ export function createReadTool(): HeddleTool {
 		name: "read_file",
 		description: "Read the contents of a file at the given path.",
 		parameters: Type.Object({
-			file_path: Type.String({ description: "Absolute path to the file" }),
+			file_path: Type.String({ description: "Path to the file (absolute or relative to cwd)" }),
 		}),
 		execute: async (params) => {
 			const { file_path } = params as { file_path: string };

@@ -16,7 +16,7 @@ export function createEditTool(): HeddleTool {
 		description:
 			"Replace occurrences of old_string with new_string in a file. By default, old_string must appear exactly once (unique match). Set replace_all to true to replace every occurrence.",
 		parameters: Type.Object({
-			file_path: Type.String({ description: "Absolute path to the file" }),
+			file_path: Type.String({ description: "Path to the file (absolute or relative to cwd)" }),
 			old_string: Type.String({ description: "The text to find" }),
 			new_string: Type.String({ description: "The replacement text" }),
 			replace_all: Type.Optional(Type.Boolean({ description: "Replace all occurrences" })),

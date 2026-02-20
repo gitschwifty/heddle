@@ -1,3 +1,4 @@
+import { debug } from "../debug.ts";
 import type { Provider, RequestOverrides } from "../provider/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { AssistantMessage, Message, ToolCall, ToolMessage, Usage } from "../types.ts";
@@ -162,6 +163,7 @@ export async function* runAgentLoopStreaming(
 
 			if (chunk.usage) {
 				streamUsage = chunk.usage;
+				debug("agent", "usage", streamUsage)
 			}
 		}
 

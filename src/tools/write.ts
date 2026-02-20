@@ -8,7 +8,7 @@ export function createWriteTool(): HeddleTool {
 		name: "write_file",
 		description: "Write content to a file, creating parent directories if needed. Overwrites existing files.",
 		parameters: Type.Object({
-			file_path: Type.String({ description: "Absolute path to the file" }),
+			file_path: Type.String({ description: "Path to the file (absolute or relative to cwd)" }),
 			content: Type.String({ description: "Content to write" }),
 		}),
 		execute: async (params) => {
