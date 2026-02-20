@@ -11,6 +11,80 @@ import { createSession } from "../session/setup.ts";
 
 setHeadless(true);
 
+// ── Error normalization ────────────────────────────────────────────────
+
+const ERROR_CODE_LABELS: Record<string, string> = {
+	provider_error: "Provider error",
+	tool_error: "Tool error",
+	protocol_error: "Protocol error",
+	loop_detected: "Doom loop detected",
+	timeout: "Timeout",
+};
+
+/** Pattern: "OpenRouter API error (500): {json...}" or "OpenRouter API error (500): text" */
+// const PROVIDER_ERROR_RE = /^(\w+)\s+API error\s+\((\d+)\):\s*(.*)$/s;
+// const PROVIDER_ERROR_RE = /^([\\w.-]+)\\s+API error\\s+\\((\\d+)\\):\\s*(.*)$/s;
+const PROVIDER_ERROR_RE = /^(.+?)\s+API error\s+\((\d+)\):\s*([\s\S]*)$/;
+
+interface NormalizedError {
+	error: string;
+	code: string;
+	provider?: string;
+	details?: unknown;
+}
+
+function extractErrorMessage(err: unknown): string {
+	if (err instanceof Error) return err.message;
+	if (typeof err === "string") return err;
+	try {
+		return JSON.stringify(err);
+	} catch {
+		return String(err);
+	}
+}
+
+function normalizeError(err: unknown, code = "provider_error"): NormalizedError {
+	const raw = extractErrorMessage(err);
+	const match = PROVIDER_ERROR_RE.exec(raw);
+	if (!match) {
+    if (raw.includes("API error")) {
+      return { error: ERROR_CODE_LABELS[code] ?? "Provider error",
+          code, details: raw };
+    }
+		return { error: raw, code, details: typeof err === "string" ? undefined : err };
+	}
+
+	const provider = (match[1] ?? "unknown").toLowerCase();
+	const rawDetails = match[3] ?? "";
+
+	let details: unknown;
+	try {
+		details = JSON.parse(rawDetails);
+	} catch {
+		details = rawDetails;
+	}
+
+	let innerMsg: string | undefined;
+  if (typeof details === "string" && details.trim()) {
+    innerMsg = details.trim();
+  }
+
+	// Extract inner error message from parsed details (e.g. {error:{message:"Model error"}})
+	if (details && typeof details === "object" && "error" in (details as Record<string, unknown>)) {
+		const inner = (details as Record<string, unknown>).error;
+		if (inner && typeof inner === "object" && "message" in (inner as Record<string, unknown>)) {
+			innerMsg = String((inner as Record<string, unknown>).message);
+		} else if (typeof inner === "string") {
+			innerMsg = inner;
+		}
+	}
+
+	const label = ERROR_CODE_LABELS[code] ?? "Unknown error";
+	const error = innerMsg ?? label;
+
+	return { error, code, provider, details };
+}
+
 // ── State ──────────────────────────────────────────────────────────────
 let session: SessionContext | null = null;
 let activeId: string | null = null;
@@ -204,12 +278,20 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 			}
 		}
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		writeLine(wrapEvent({ event: "error", error: msg, code: "provider_error" }));
+		const normalized = normalizeError(err, "provider_error");
+		writeLine(
+			wrapEvent({
+				event: "error",
+				error: normalized.error,
+				code: normalized.code,
+				provider: normalized.provider,
+				details: normalized.details,
+			}),
+		);
 		writeLine(
 			buildResult(request.id, {
 				status: "error",
-				error: msg,
+				error: normalized.error,
 				toolCallsMade,
 				usage: totalUsage,
 				iterations,
@@ -306,8 +388,16 @@ function mapAgentEvent(event: AgentEvent): WorkerEvent | null {
 			};
 		case "loop_detected":
 			return { event: "error", error: `Doom loop detected: ${event.count} iterations`, code: "loop_detected" };
-		case "error":
-			return { event: "error", error: event.error.message };
+		case "error": {
+			const normalized = normalizeError(event.error, "provider_error");
+			return {
+				event: "error",
+				error: normalized.error,
+				code: normalized.code,
+				provider: normalized.provider,
+				details: normalized.details,
+			};
+		}
 		case "assistant_message":
 			return null;
 		default:

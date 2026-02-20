@@ -64,7 +64,13 @@ export class ModelPricing {
 		const res = await fetch(`${this.baseUrl}/models`, {
 			headers: { Authorization: `Bearer ${this.apiKey}` },
 		});
-		const json = (await res.json()) as { data: ApiModelEntry[] };
+		if (!res.ok) {
+			throw new Error(`Models API returned ${res.status}`);
+		}
+		const json = (await res.json()) as { data?: ApiModelEntry[] };
+		if (!Array.isArray(json.data)) {
+			throw new Error(`Models API returned unexpected shape: ${JSON.stringify(json).slice(0, 200)}`);
+		}
 		const map = new Map<string, ModelPricingInfo>();
 		for (const entry of json.data) {
 			map.set(entry.id, {

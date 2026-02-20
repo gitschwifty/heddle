@@ -15,6 +15,8 @@ const IGNORE_PATHS: string[] = [
 	"usage.completion_tokens",
 	"usage.total_tokens",
 	"event.result_preview",
+	"event.details",
+	"event.provider",
 ];
 
 function deletePath(obj: Record<string, unknown>, pathStr: string) {

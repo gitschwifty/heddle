@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { ModelPricing } from "../../src/cost/pricing.ts";
 
 const MOCK_MODELS_RESPONSE = {
@@ -25,22 +25,25 @@ const MOCK_MODELS_RESPONSE = {
 };
 
 let fetchCount = 0;
+let server: ReturnType<typeof Bun.serve>;
+let baseUrl: string;
 
-const server = Bun.serve({
-	port: 0,
-	fetch(req) {
-		const url = new URL(req.url);
-		if (url.pathname === "/models") {
-			fetchCount++;
-			return new Response(JSON.stringify(MOCK_MODELS_RESPONSE), {
-				headers: { "Content-Type": "application/json" },
-			});
-		}
-		return new Response("Not found", { status: 404 });
-	},
+beforeAll(() => {
+	server = Bun.serve({
+		port: 0,
+		fetch(req) {
+			const url = new URL(req.url);
+			if (url.pathname === "/models") {
+				fetchCount++;
+				return new Response(JSON.stringify(MOCK_MODELS_RESPONSE), {
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			return new Response("Not found", { status: 404 });
+		},
+	});
+	baseUrl = `http://127.0.0.1:${server.port}`;
 });
-
-const baseUrl = `http://localhost:${server.port}`;
 
 afterAll(() => {
 	server.stop(true);

@@ -332,11 +332,19 @@ describe("headless adapter", () => {
 					(m.event as Record<string, unknown>).event === "error",
 			);
 			expect(errorEvent).toBeDefined();
+			if (errorEvent) {
+				const evt = (errorEvent as { event: Record<string, unknown> }).event;
+				expect(evt.error).toBe("Model error");
+				expect(evt.code).toBe("provider_error");
+				expect(evt.provider).toBe("openrouter");
+				expect(evt.details).toBeDefined();
+			}
 
 			const result = messages.find((m) => m.type === "result");
 			expect(result).toBeDefined();
 			if (result) {
 				expect(result.status).toBe("error");
+				expect(result.error).toBe("Model error");
 			}
 		} finally {
 			h.close();

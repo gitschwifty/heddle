@@ -10,8 +10,9 @@ describe("debug utility", () => {
 	const origEnv = { ...process.env };
 	let debugMod: typeof import("../src/debug.ts");
 
-	afterEach(() => {
+	afterEach(async () => {
 		process.env = { ...origEnv };
+		if (debugMod) debugMod.resetDebug();
 	});
 
 	test("debug() is silent when HEDDLE_DEBUG is not set", async () => {

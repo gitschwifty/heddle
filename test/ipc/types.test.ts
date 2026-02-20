@@ -68,6 +68,22 @@ describe("IPC schemas", () => {
 		it("validates error with code", () => {
 			expect(Value.Check(WorkerEventSchema, { event: "error", error: "fail", code: "loop_detected" })).toBe(true);
 		});
+
+		it("validates error with provider and details", () => {
+			expect(
+				Value.Check(WorkerEventSchema, {
+					event: "error",
+					error: "Provider error (500)",
+					code: "provider_error",
+					provider: "openrouter",
+					details: { error: { message: "Model error", type: "error", code: 500 } },
+				}),
+			).toBe(true);
+		});
+
+		it("validates error without optional fields", () => {
+			expect(Value.Check(WorkerEventSchema, { event: "error", error: "something broke" })).toBe(true);
+		});
 	});
 
 	describe("IpcResponseSchema", () => {

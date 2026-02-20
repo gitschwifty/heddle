@@ -6,6 +6,7 @@ import { createSession } from "../../src/session/setup.ts";
 const TEST_DIR = join(import.meta.dir, ".tmp-setup-test");
 const origEnv = { ...process.env };
 const origCwd = process.cwd();
+const realFetch = globalThis.fetch;
 
 // Mock global fetch to prevent real API calls
 const mockFetch = mock(() =>
@@ -16,15 +17,16 @@ const mockFetch = mock(() =>
 		}),
 	),
 );
-globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 beforeAll(() => {
 	mkdirSync(TEST_DIR, { recursive: true });
+	globalThis.fetch = mockFetch as unknown as typeof fetch;
 });
 
 afterAll(() => {
 	process.env = { ...origEnv };
 	process.chdir(origCwd);
+  globalThis.fetch = realFetch;
 	// Clean up using sync rm (test infra, not production code)
 	const { execSync } = require("node:child_process");
 	try {

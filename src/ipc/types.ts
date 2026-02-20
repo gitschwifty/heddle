@@ -30,7 +30,13 @@ export const WorkerEventSchema = Type.Union([
 		completion_tokens: Type.Number(),
 		total_tokens: Type.Number(),
 	}),
-	Type.Object({ event: Type.Literal("error"), error: Type.String(), code: Type.Optional(Type.String()) }),
+	Type.Object({
+		event: Type.Literal("error"),
+		error: Type.String(),
+		code: Type.Optional(Type.String()),
+		provider: Type.Optional(Type.String()),
+		details: Type.Optional(Type.Unknown()),
+	}),
 ]);
 
 export const IpcResponseSchema = Type.Union([
