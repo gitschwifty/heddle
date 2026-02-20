@@ -2,5 +2,7 @@ export { runAgentLoop } from "./agent/loop.ts";
 export type { AgentEvent } from "./agent/types.ts";
 export type { Provider, ProviderConfig } from "./provider/types.ts";
 export { appendMessage, loadSession } from "./session/jsonl.ts";
+export type { SessionContext, SessionOptions } from "./session/setup.ts";
+export { createSession } from "./session/setup.ts";
 export * from "./tools/index.ts";
 export * from "./types.ts";
