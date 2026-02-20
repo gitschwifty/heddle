@@ -15,6 +15,8 @@ import { createReadTool } from "../tools/read.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { HeddleTool } from "../tools/types.ts";
 import { createWriteTool } from "../tools/write.ts";
+import { CostTracker } from "../cost/tracker.ts";
+import { ModelPricing } from "../cost/pricing.ts";
 import type { Message } from "../types.ts";
 import { appendMessage, writeSessionMeta } from "./jsonl.ts";
 
@@ -30,6 +32,8 @@ export interface SessionContext {
 	messages: Message[];
 	sessionFile: string;
 	sessionId: string;
+	costTracker: CostTracker;
+	modelPricing: ModelPricing;
 }
 
 export interface SessionOptions {
@@ -97,6 +101,9 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	const messages: Message[] = [systemMessage];
 	await appendMessage(sessionFile, systemMessage);
 
+	const costTracker = new CostTracker();
+	const modelPricing = new ModelPricing(effectiveConfig.apiKey ?? "", effectiveConfig.baseUrl);
+
 	return {
 		config,
 		provider,
@@ -106,5 +113,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		messages,
 		sessionFile,
 		sessionId,
+		costTracker,
+		modelPricing,
 	};
 }

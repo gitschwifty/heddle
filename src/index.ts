@@ -1,4 +1,8 @@
 export { runAgentLoop } from "./agent/loop.ts";
+export { CostTracker } from "./cost/tracker.ts";
+export type { TurnUsage } from "./cost/tracker.ts";
+export { ModelPricing } from "./cost/pricing.ts";
+export type { ModelPricingInfo } from "./cost/pricing.ts";
 export type { AgentEvent } from "./agent/types.ts";
 export { buildError, buildResult, decodeRequest, encodeResponse, wrapEvent } from "./ipc/codec.ts";
 export { checkCompatibility, PROTOCOL_VERSION, parseSemver } from "./ipc/protocol.ts";

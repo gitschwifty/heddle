@@ -78,8 +78,13 @@ export async function startCli(): Promise<void> {
 							});
 							break;
 						}
-						case "usage":
+						case "usage": {
+							ctx.costTracker.addUsage(event.usage);
+							const { totalInputTokens, totalOutputTokens, totalCost } = ctx.costTracker;
+							const costStr = totalCost !== null ? ` | cost: $${totalCost.toFixed(4)}` : "";
+							console.log(`  [tokens: ${totalInputTokens} in / ${totalOutputTokens} out${costStr}]`);
 							break;
+						}
 						case "loop_detected": {
 							console.error(
 								`\n  [warning] Doom loop detected: ${event.count} identical tool call iterations. Stopping.`,
