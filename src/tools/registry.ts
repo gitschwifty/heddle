@@ -35,7 +35,7 @@ export class ToolRegistry {
 	async execute(name: string, argsJson: string): Promise<string> {
 		const tool = this.tools.get(name);
 		if (!tool) {
-			throw new Error(`Unknown tool: ${name}`);
+			return `Error: Unknown tool: ${name}`;
 		}
 
 		let parsed: unknown;

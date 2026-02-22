@@ -95,12 +95,12 @@ describe("createSession()", () => {
 		expect(toolNames).toEqual(["glob", "read_file"]);
 	});
 
-	test("SessionOptions.tools empty array: treated as null, all 6 registered", async () => {
+	test("SessionOptions.tools empty array: creates tool-free session", async () => {
 		setupEnv();
 		const ctx = await createSession({ tools: [] });
 
 		const toolNames = ctx.registry.all().map((t) => t.name);
-		expect(toolNames).toHaveLength(6);
+		expect(toolNames).toHaveLength(0);
 	});
 
 	test("config.tools fallback: HEDDLE_TOOLS env limits tools", async () => {

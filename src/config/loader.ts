@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { debug } from "../debug.ts";
-import { getHeddleHome } from "./paths.ts";
+import { getHeddleHome, getLocalHeddleDir } from "./paths.ts";
 
 export type ApprovalMode = "suggest" | "auto-edit" | "full-auto" | "plan" | "yolo";
 
@@ -110,10 +110,11 @@ function toConfig(raw: Record<string, unknown>): Partial<HeddleConfig> {
  */
 export function loadConfig(localDir?: string): HeddleConfig {
 	const globalPath = join(getHeddleHome(), "config.toml");
-	const localPath = localDir ? join(localDir, "config.toml") : undefined;
+	const resolvedLocalDir = localDir ?? getLocalHeddleDir();
+	const localPath = join(resolvedLocalDir, "config.toml");
 
 	const globalRaw = loadToml(globalPath);
-	const localRaw = localPath ? loadToml(localPath) : {};
+	const localRaw = loadToml(localPath);
 
 	const merged: HeddleConfig = {
 		...DEFAULTS,

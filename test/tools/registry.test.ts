@@ -58,10 +58,11 @@ describe("ToolRegistry", () => {
 		expect(result).toBe('executed greet with {"input":"world"}');
 	});
 
-	test("execute throws on unknown tool name", async () => {
+	test("execute returns error string on unknown tool name", async () => {
 		const registry = new ToolRegistry();
 
-		expect(registry.execute("missing", "{}")).rejects.toThrow("Unknown tool: missing");
+		const result = await registry.execute("missing", "{}");
+		expect(result).toBe("Error: Unknown tool: missing");
 	});
 
 	test("execute returns error string on invalid JSON args", async () => {

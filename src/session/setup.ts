@@ -71,7 +71,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	// Tool registration with filtering
 	const registry = new ToolRegistry();
 	const allTools = createDefaultTools();
-	const toolFilter = (options?.tools?.length ? options.tools : null) ?? (config.tools?.length ? config.tools : null);
+	const toolFilter = (options?.tools !== undefined ? options.tools : null) ?? (config.tools !== undefined ? config.tools : null);
 	const toolsToRegister = toolFilter ? allTools.filter((t) => toolFilter.includes(t.name)) : allTools;
 	for (const tool of toolsToRegister) {
 		registry.register(tool);
@@ -105,7 +105,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	const modelPricing = new ModelPricing(effectiveConfig.apiKey ?? "", effectiveConfig.baseUrl);
 
 	return {
-		config,
+		config: effectiveConfig,
 		provider,
 		weakProvider: providers.weak,
 		editorProvider: providers.editor,

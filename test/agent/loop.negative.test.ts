@@ -70,16 +70,24 @@ describe("Agent Loop (negative)", () => {
 		}
 	});
 
-	test("throws when tool call references unknown tool", async () => {
+	test("unknown tool returns error to model and loop continues", async () => {
 		const provider = mockProvider([
 			mockToolCallResponse([{ name: "nonexistent_tool", arguments: { x: 1 } }]),
 			mockTextResponse("Done"),
 		]);
 		const registry = new ToolRegistry();
 
-		expect(collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "call a tool" }]))).rejects.toThrow(
-			"Unknown tool: nonexistent_tool",
+		const events = await collectEvents(
+			runAgentLoop(provider, registry, [{ role: "user", content: "call a tool" }]),
 		);
+
+		const toolEnd = events.find((e) => e.type === "tool_end");
+		expect(toolEnd).toBeDefined();
+		if (toolEnd?.type === "tool_end") {
+			expect(toolEnd.result).toContain("Error: Unknown tool: nonexistent_tool");
+		}
+		const assistantMsg = events.find((e) => e.type === "assistant_message");
+		expect(assistantMsg).toBeDefined();
 	});
 
 	test("tool that returns error string doesn't crash the loop", async () => {
