@@ -2,9 +2,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const versionPath = join(__dirname, "..", "..", "PROTOCOL_VERSION");
-export const PROTOCOL_VERSION = (process.env.HEDDLE_PROTOCOL_VERSION ?? readFileSync(versionPath, "utf-8")).trim();
+declare const __PROTOCOL_VERSION__: string | undefined;
+
+function loadProtocolVersion(): string {
+	if (process.env.HEDDLE_PROTOCOL_VERSION) {
+		return process.env.HEDDLE_PROTOCOL_VERSION.trim();
+	}
+	// Injected at compile time via --define in build scripts
+	if (typeof __PROTOCOL_VERSION__ !== "undefined") {
+		return __PROTOCOL_VERSION__;
+	}
+	// Dev mode: read from file
+	const __dirname = dirname(fileURLToPath(import.meta.url));
+	const versionPath = join(__dirname, "..", "..", "PROTOCOL_VERSION");
+	return readFileSync(versionPath, "utf-8").trim();
+}
+
+export const PROTOCOL_VERSION = loadProtocolVersion();
 
 export function parseSemver(version: string): { major: number; minor: number; patch: number } {
 	const parts = version.split(".");
