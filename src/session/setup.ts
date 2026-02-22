@@ -5,6 +5,8 @@ import { loadAgentsContext } from "../config/agents-md.ts";
 import type { HeddleConfig } from "../config/loader.ts";
 import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
+import { ModelPricing } from "../cost/pricing.ts";
+import { CostTracker } from "../cost/tracker.ts";
 import { createProviders } from "../provider/factory.ts";
 import type { Provider } from "../provider/types.ts";
 import { createBashTool } from "../tools/bash.ts";
@@ -15,8 +17,6 @@ import { createReadTool } from "../tools/read.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { HeddleTool } from "../tools/types.ts";
 import { createWriteTool } from "../tools/write.ts";
-import { CostTracker } from "../cost/tracker.ts";
-import { ModelPricing } from "../cost/pricing.ts";
 import type { Message } from "../types.ts";
 import { appendMessage, writeSessionMeta } from "./jsonl.ts";
 
@@ -71,7 +71,8 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	// Tool registration with filtering
 	const registry = new ToolRegistry();
 	const allTools = createDefaultTools();
-	const toolFilter = (options?.tools !== undefined ? options.tools : null) ?? (config.tools !== undefined ? config.tools : null);
+	const toolFilter =
+		(options?.tools !== undefined ? options.tools : null) ?? (config.tools !== undefined ? config.tools : null);
 	const toolsToRegister = toolFilter ? allTools.filter((t) => toolFilter.includes(t.name)) : allTools;
 	for (const tool of toolsToRegister) {
 		registry.register(tool);

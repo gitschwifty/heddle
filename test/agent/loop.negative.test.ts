@@ -77,9 +77,7 @@ describe("Agent Loop (negative)", () => {
 		]);
 		const registry = new ToolRegistry();
 
-		const events = await collectEvents(
-			runAgentLoop(provider, registry, [{ role: "user", content: "call a tool" }]),
-		);
+		const events = await collectEvents(runAgentLoop(provider, registry, [{ role: "user", content: "call a tool" }]));
 
 		const toolEnd = events.find((e) => e.type === "tool_end");
 		expect(toolEnd).toBeDefined();

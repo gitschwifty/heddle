@@ -47,10 +47,9 @@ function normalizeError(err: unknown, code = "provider_error"): NormalizedError 
 	const raw = extractErrorMessage(err);
 	const match = PROVIDER_ERROR_RE.exec(raw);
 	if (!match) {
-    if (raw.includes("API error")) {
-      return { error: ERROR_CODE_LABELS[code] ?? "Provider error",
-          code, details: raw };
-    }
+		if (raw.includes("API error")) {
+			return { error: ERROR_CODE_LABELS[code] ?? "Provider error", code, details: raw };
+		}
 		return { error: raw, code, details: typeof err === "string" ? undefined : err };
 	}
 
@@ -65,9 +64,9 @@ function normalizeError(err: unknown, code = "provider_error"): NormalizedError 
 	}
 
 	let innerMsg: string | undefined;
-  if (typeof details === "string" && details.trim()) {
-    innerMsg = details.trim();
-  }
+	if (typeof details === "string" && details.trim()) {
+		innerMsg = details.trim();
+	}
 
 	// Extract inner error message from parsed details (e.g. {error:{message:"Model error"}})
 	if (details && typeof details === "object" && "error" in (details as Record<string, unknown>)) {

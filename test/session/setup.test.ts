@@ -26,7 +26,7 @@ beforeAll(() => {
 afterAll(() => {
 	process.env = { ...origEnv };
 	process.chdir(origCwd);
-  globalThis.fetch = realFetch;
+	globalThis.fetch = realFetch;
 	// Clean up using sync rm (test infra, not production code)
 	const { execSync } = require("node:child_process");
 	try {

@@ -90,11 +90,11 @@ describe("CostTracker", () => {
 		tracker.addUsage(makeUsage({ cost: 0.01 }));
 		const breakdown = tracker.breakdown;
 		expect(breakdown).toHaveLength(1);
-		expect(breakdown[0].promptTokens).toBe(100);
-		expect(breakdown[0].completionTokens).toBe(50);
-		expect(breakdown[0].totalTokens).toBe(150);
-		expect(breakdown[0].cost).toBe(0.01);
-		expect(breakdown[0].timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(breakdown[0]!.promptTokens).toBe(100);
+		expect(breakdown[0]!.completionTokens).toBe(50);
+		expect(breakdown[0]!.totalTokens).toBe(150);
+		expect(breakdown[0]!.cost).toBe(0.01);
+		expect(breakdown[0]!.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 	});
 
 	test("handles cached_tokens and reasoning_tokens in usage details", () => {
@@ -106,7 +106,7 @@ describe("CostTracker", () => {
 				completion_tokens_details: { reasoning_tokens: 20 },
 			}),
 		);
-		const turn = tracker.breakdown[0];
+		const turn = tracker.breakdown[0]!;
 		expect(turn.cachedTokens).toBe(50);
 		expect(turn.reasoningTokens).toBe(20);
 	});
