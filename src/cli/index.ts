@@ -1,5 +1,6 @@
 import * as readline from "node:readline";
 import { runAgentLoopStreaming } from "../agent/loop.ts";
+import { pruneToolResults } from "../context/index.ts";
 import { appendMessage } from "../session/jsonl.ts";
 import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
@@ -97,6 +98,7 @@ export async function startCli(): Promise<void> {
 						}
 					}
 				}
+				pruneToolResults(messages);
 			} catch (err) {
 				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
 			}
