@@ -62,7 +62,29 @@ describe("ToolRegistry", () => {
 		const registry = new ToolRegistry();
 
 		const result = await registry.execute("missing", "{}");
-		expect(result).toBe("Error: Unknown tool: missing");
+		expect(result).toContain("Error: Unknown tool: missing");
+	});
+
+	test("unknown tool with close match suggests the correct tool", async () => {
+		const registry = new ToolRegistry();
+		registry.register(makeTool("read_file"));
+		registry.register(makeTool("write_file"));
+
+		const result = await registry.execute("reed_file", "{}");
+		expect(result).toContain('Did you mean "read_file"');
+		expect(result).toContain("Available tools:");
+	});
+
+	test("unknown tool with no close match lists available tools without suggestion", async () => {
+		const registry = new ToolRegistry();
+		registry.register(makeTool("read_file"));
+		registry.register(makeTool("write_file"));
+
+		const result = await registry.execute("completely_unknown_xyz", "{}");
+		expect(result).not.toContain("Did you mean");
+		expect(result).toContain("Available tools:");
+		expect(result).toContain("read_file");
+		expect(result).toContain("write_file");
 	});
 
 	test("execute returns error string on invalid JSON args", async () => {

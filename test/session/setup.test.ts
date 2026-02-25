@@ -73,7 +73,7 @@ describe("createSession()", () => {
 		expect(typeof ctx.sessionId).toBe("string");
 	});
 
-	test("default tools: all 6 registered", async () => {
+	test("default tools: all 7 registered", async () => {
 		setupEnv();
 		const ctx = await createSession();
 
@@ -81,7 +81,7 @@ describe("createSession()", () => {
 			.all()
 			.map((t) => t.name)
 			.sort();
-		expect(toolNames).toEqual(["bash", "edit_file", "glob", "grep", "read_file", "write_file"]);
+		expect(toolNames).toEqual(["bash", "edit_file", "glob", "grep", "read_file", "web_fetch", "write_file"]);
 	});
 
 	test("SessionOptions.tools filtering: only named tools registered", async () => {

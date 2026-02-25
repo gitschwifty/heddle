@@ -3,6 +3,7 @@ import { runAgentLoopStreaming } from "../agent/loop.ts";
 import { appendMessage } from "../session/jsonl.ts";
 import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
+import { createAskUserTool } from "../tools/ask-user.ts";
 import type { Message } from "../types.ts";
 
 export async function startCli(): Promise<void> {
@@ -22,6 +23,19 @@ export async function startCli(): Promise<void> {
 		input: process.stdin,
 		output: process.stdout,
 	});
+
+	ctx.registry.register(
+		createAskUserTool(async (question, options) => {
+			let display = `\n  [ask_user] ${question}`;
+			if (options?.length) {
+				display += `\n  Options: ${options.join(", ")}`;
+			}
+			console.log(display);
+			return new Promise<string>((resolve) => {
+				rl.question("  your answer> ", (answer) => resolve(answer.trim() || "(no response)"));
+			});
+		}),
+	);
 
 	console.log(`Heddle CLI — model: ${config.model}`);
 	console.log(`Session: ${sessionFile}`);
