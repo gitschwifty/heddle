@@ -222,7 +222,9 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 	let errorMsg: string | undefined;
 
 	try {
-		const gen = runAgentLoopStreaming(session.provider, session.registry, session.messages);
+		const gen = runAgentLoopStreaming(session.provider, session.registry, session.messages, {
+			...(session.permissionChecker ? { permissionChecker: session.permissionChecker } : {}),
+		});
 
 		for await (const event of gen) {
 			if (checkCancel()) {
@@ -397,7 +399,17 @@ function mapAgentEvent(event: AgentEvent): WorkerEvent | null {
 				details: normalized.details,
 			};
 		}
+		case "permission_denied":
+			return {
+				event: "permission_denied",
+				name: event.name,
+				reason: event.reason,
+			};
+		case "plan_complete":
+			return { event: "plan_complete", plan: event.plan };
 		case "assistant_message":
+			return null;
+		case "permission_request":
 			return null;
 		default:
 			return null;

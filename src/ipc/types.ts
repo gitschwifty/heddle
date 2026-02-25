@@ -37,6 +37,20 @@ export const WorkerEventSchema = Type.Union([
 		provider: Type.Optional(Type.String()),
 		details: Type.Optional(Type.Unknown()),
 	}),
+	Type.Object({
+		event: Type.Literal("permission_request"),
+		name: Type.String(),
+		reason: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		event: Type.Literal("permission_denied"),
+		name: Type.String(),
+		reason: Type.String(),
+	}),
+	Type.Object({
+		event: Type.Literal("plan_complete"),
+		plan: Type.String(),
+	}),
 ]);
 
 export const IpcResponseSchema = Type.Union([

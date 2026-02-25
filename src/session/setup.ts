@@ -7,6 +7,7 @@ import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
 import { ModelPricing } from "../cost/pricing.ts";
 import { CostTracker } from "../cost/tracker.ts";
+import { PermissionChecker } from "../permissions/index.ts";
 import { createProviders } from "../provider/factory.ts";
 import type { Provider } from "../provider/types.ts";
 import { createBashTool } from "../tools/bash.ts";
@@ -34,6 +35,7 @@ export interface SessionContext {
 	sessionId: string;
 	costTracker: CostTracker;
 	modelPricing: ModelPricing;
+	permissionChecker?: PermissionChecker;
 }
 
 export interface SessionOptions {
@@ -105,6 +107,10 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	const costTracker = new CostTracker();
 	const modelPricing = new ModelPricing(effectiveConfig.apiKey ?? "", effectiveConfig.baseUrl);
 
+	const permissionChecker = effectiveConfig.approvalMode
+		? new PermissionChecker(effectiveConfig.approvalMode)
+		: undefined;
+
 	return {
 		config: effectiveConfig,
 		provider,
@@ -116,5 +122,6 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		sessionId,
 		costTracker,
 		modelPricing,
+		permissionChecker,
 	};
 }

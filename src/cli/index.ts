@@ -1,9 +1,28 @@
 import * as readline from "node:readline";
+import type { AgentLoopOptions } from "../agent/loop.ts";
 import { runAgentLoopStreaming } from "../agent/loop.ts";
+import { readOnlyToolFilter } from "../permissions/index.ts";
 import { appendMessage } from "../session/jsonl.ts";
 import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
-import type { Message } from "../types.ts";
+import type { Message, ToolCall } from "../types.ts";
+
+function buildPermissionResolver(rl: readline.Interface) {
+	return (name: string, _call: ToolCall): Promise<"allow" | "deny" | "always"> => {
+		return new Promise((resolve) => {
+			rl.question(`  Allow ${name}? [y/n/always] `, (answer) => {
+				const trimmed = answer.trim().toLowerCase();
+				if (trimmed === "y" || trimmed === "yes") {
+					resolve("allow");
+				} else if (trimmed === "always" || trimmed === "a") {
+					resolve("always");
+				} else {
+					resolve("deny");
+				}
+			});
+		});
+	};
+}
 
 export async function startCli(): Promise<void> {
 	let ctx: SessionContext;
@@ -14,14 +33,18 @@ export async function startCli(): Promise<void> {
 		process.exit(1);
 	}
 	const { config, provider, registry, messages, sessionFile } = ctx;
-	const loopOptions = {
-		...(config.doomLoopThreshold !== undefined ? { doomLoopThreshold: config.doomLoopThreshold } : {}),
-	};
 
 	const rl = readline.createInterface({
 		input: process.stdin,
 		output: process.stdout,
 	});
+
+	const loopOptions: AgentLoopOptions = {
+		...(config.doomLoopThreshold !== undefined ? { doomLoopThreshold: config.doomLoopThreshold } : {}),
+		...(ctx.permissionChecker ? { permissionChecker: ctx.permissionChecker } : {}),
+		...(ctx.permissionChecker ? { permissionResolver: buildPermissionResolver(rl) } : {}),
+		...(config.approvalMode === "plan" ? { toolFilter: readOnlyToolFilter, planMode: true } : {}),
+	};
 
 	console.log(`Heddle CLI — model: ${config.model}`);
 	console.log(`Session: ${sessionFile}`);
@@ -76,6 +99,19 @@ export async function startCli(): Promise<void> {
 								tool_call_id: event.call.id,
 								content: event.result,
 							});
+							break;
+						}
+						case "permission_request": {
+							console.log(`  [permission] ${event.name} requires approval: ${event.reason ?? ""}`);
+							break;
+						}
+						case "permission_denied": {
+							console.log(`  [denied] ${event.name}: ${event.reason}`);
+							break;
+						}
+						case "plan_complete": {
+							console.log("\n  [plan complete]");
+							console.log(event.plan);
 							break;
 						}
 						case "usage": {

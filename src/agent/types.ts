@@ -7,4 +7,7 @@ export type AgentEvent =
 	| { type: "tool_end"; name: string; result: string; call: ToolCall }
 	| { type: "usage"; usage: Usage }
 	| { type: "loop_detected"; count: number }
-	| { type: "error"; error: Error };
+	| { type: "error"; error: Error }
+	| { type: "permission_request"; name: string; call: ToolCall; reason?: string }
+	| { type: "permission_denied"; name: string; call: ToolCall; reason: string }
+	| { type: "plan_complete"; plan: string };
