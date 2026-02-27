@@ -1,13 +1,18 @@
 import { debug } from "../debug.ts";
+import type { PermissionChecker } from "../permissions/checker.ts";
 import type { Provider, RequestOverrides } from "../provider/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
-import type { AssistantMessage, Message, ToolCall, ToolMessage, Usage } from "../types.ts";
+import type { AssistantMessage, Message, ToolCall, ToolDefinition, ToolMessage, Usage } from "../types.ts";
 import type { AgentEvent } from "./types.ts";
 
 export interface AgentLoopOptions {
 	maxIterations?: number;
 	doomLoopThreshold?: number;
 	requestOverrides?: RequestOverrides;
+	permissionChecker?: PermissionChecker;
+	permissionResolver?: (name: string, call: ToolCall) => Promise<"allow" | "deny" | "always">;
+	toolFilter?: (tools: ToolDefinition[]) => ToolDefinition[];
+	planMode?: boolean;
 }
 
 const DEFAULT_MAX_ITERATIONS = 20;
@@ -36,6 +41,81 @@ function isDoomLoop(recentHashes: string[], threshold: number): boolean {
 }
 
 /**
+ * Check permission for a single tool call.
+ * Returns events to yield and optionally a tool message (error result) to push.
+ * If toolMessage is null, proceed to normal execute.
+ */
+async function checkPermission(
+	checker: PermissionChecker,
+	resolver: ((name: string, call: ToolCall) => Promise<"allow" | "deny" | "always">) | undefined,
+	call: ToolCall,
+): Promise<{ events: AgentEvent[]; toolMessage: ToolMessage | null }> {
+	const toolName = call.function.name;
+	let args: Record<string, unknown> | undefined;
+	try {
+		args = JSON.parse(call.function.arguments);
+	} catch {
+		// If args can't be parsed, proceed without them for permission check
+	}
+
+	const result = checker.check(toolName, args);
+
+	if (result.decision === "allow") {
+		return { events: [], toolMessage: null };
+	}
+
+	if (result.decision === "deny") {
+		const reason = result.reason ?? "Permission denied";
+		return {
+			events: [{ type: "permission_denied", name: toolName, call, reason }],
+			toolMessage: {
+				role: "tool",
+				tool_call_id: call.id,
+				content: `Error: Permission denied — ${reason}`,
+			},
+		};
+	}
+
+	// decision === "ask"
+	const reason = result.reason ?? `${toolName} requires approval`;
+
+	if (!resolver) {
+		// No resolver — default to deny
+		return {
+			events: [{ type: "permission_denied", name: toolName, call, reason }],
+			toolMessage: {
+				role: "tool",
+				tool_call_id: call.id,
+				content: `Error: Permission denied — ${reason}`,
+			},
+		};
+	}
+
+	const events: AgentEvent[] = [{ type: "permission_request", name: toolName, call, reason }];
+	const response = await resolver(toolName, call);
+
+	if (response === "always") {
+		checker.allowAlways(toolName);
+		return { events, toolMessage: null };
+	}
+
+	if (response === "allow") {
+		return { events, toolMessage: null };
+	}
+
+	// response === "deny"
+	events.push({ type: "permission_denied", name: toolName, call, reason });
+	return {
+		events,
+		toolMessage: {
+			role: "tool",
+			tool_call_id: call.id,
+			content: `Error: Permission denied — ${reason}`,
+		},
+	};
+}
+
+/**
  * Core agent loop: send messages → if tool_calls, execute tools → append results → repeat.
  * Mutates the passed-in messages array directly (appends assistant + tool messages).
  * Terminates when the assistant response has no tool_calls (text-only) or max iterations reached.
@@ -48,10 +128,16 @@ export async function* runAgentLoop(
 ): AsyncGenerator<AgentEvent> {
 	const maxIterations = options?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
 	const doomThreshold = options?.doomLoopThreshold ?? DEFAULT_DOOM_LOOP_THRESHOLD;
-	const tools = registry.definitions();
+	let tools = registry.definitions();
+	if (options?.toolFilter) {
+		tools = options.toolFilter(tools);
+	}
 	const recentHashes: string[] = [];
 
 	const overrides = options?.requestOverrides;
+	const checker = options?.permissionChecker;
+	const resolver = options?.permissionResolver;
+	let lastAssistantContent: string | null = null;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
 		const response = await provider.send(messages, tools.length > 0 ? tools : undefined, overrides);
@@ -74,15 +160,32 @@ export async function* runAgentLoop(
 
 		yield { type: "assistant_message", message: assistantMsg };
 		messages.push(assistantMsg);
+		lastAssistantContent = assistantMsg.content;
 
 		const toolCalls = choice.message.tool_calls;
 		if (!toolCalls?.length) {
+			// No more tool calls — emit plan_complete if in plan mode
+			if (options?.planMode && lastAssistantContent) {
+				yield { type: "plan_complete", plan: lastAssistantContent };
+			}
 			return;
 		}
 
 		// Execute each tool call and collect results
 		const toolMessages: ToolMessage[] = [];
 		for (const call of toolCalls) {
+			// Permission check
+			if (checker) {
+				const permResult = await checkPermission(checker, resolver, call);
+				for (const event of permResult.events) {
+					yield event;
+				}
+				if (permResult.toolMessage) {
+					toolMessages.push(permResult.toolMessage);
+					continue;
+				}
+			}
+
 			yield { type: "tool_start", name: call.function.name, call };
 			const result = await registry.execute(call.function.name, call.function.arguments);
 			yield { type: "tool_end", name: call.function.name, result, call };
@@ -125,9 +228,15 @@ export async function* runAgentLoopStreaming(
 ): AsyncGenerator<AgentEvent> {
 	const maxIterations = options?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
 	const doomThreshold = options?.doomLoopThreshold ?? DEFAULT_DOOM_LOOP_THRESHOLD;
-	const tools = registry.definitions();
+	let tools = registry.definitions();
+	if (options?.toolFilter) {
+		tools = options.toolFilter(tools);
+	}
 	const recentHashes: string[] = [];
 	const overrides = options?.requestOverrides;
+	const checker = options?.permissionChecker;
+	const resolver = options?.permissionResolver;
+	let lastAssistantContent: string | null = null;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
 		// Accumulate content and tool call deltas from the stream
@@ -189,15 +298,31 @@ export async function* runAgentLoopStreaming(
 			streamUsage = undefined;
 		}
 		messages.push(assistantMsg);
+		lastAssistantContent = assistantMsg.content;
 
 		// No tool calls — done
 		if (!toolCalls.length) {
+			if (options?.planMode && lastAssistantContent) {
+				yield { type: "plan_complete", plan: lastAssistantContent };
+			}
 			return;
 		}
 
 		// Execute each tool call
 		const toolMessages: ToolMessage[] = [];
 		for (const call of toolCalls) {
+			// Permission check
+			if (checker) {
+				const permResult = await checkPermission(checker, resolver, call);
+				for (const event of permResult.events) {
+					yield event;
+				}
+				if (permResult.toolMessage) {
+					toolMessages.push(permResult.toolMessage);
+					continue;
+				}
+			}
+
 			yield { type: "tool_start", name: call.function.name, call };
 			const result = await registry.execute(call.function.name, call.function.arguments);
 			yield { type: "tool_end", name: call.function.name, result, call };
