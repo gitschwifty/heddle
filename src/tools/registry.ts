@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "../types.ts";
+import { findClosest } from "./string-distance.ts";
 import type { HeddleTool } from "./types.ts";
 
 export class ToolRegistry {
@@ -35,7 +36,13 @@ export class ToolRegistry {
 	async execute(name: string, argsJson: string): Promise<string> {
 		const tool = this.tools.get(name);
 		if (!tool) {
-			return `Error: Unknown tool: ${name}`;
+			const available = [...this.tools.keys()];
+			const suggestion = findClosest(name, available);
+			const availableStr = available.join(", ");
+			if (suggestion) {
+				return `Error: Unknown tool: ${name}. Did you mean "${suggestion}"? Available tools: ${availableStr}`;
+			}
+			return `Error: Unknown tool: ${name}. Available tools: ${availableStr}`;
 		}
 
 		let parsed: unknown;

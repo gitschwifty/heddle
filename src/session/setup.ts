@@ -16,6 +16,7 @@ import { createGrepTool } from "../tools/grep.ts";
 import { createReadTool } from "../tools/read.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { HeddleTool } from "../tools/types.ts";
+import { createWebFetchTool } from "../tools/web-fetch.ts";
 import { createWriteTool } from "../tools/write.ts";
 import type { Message } from "../types.ts";
 import { appendMessage, writeSessionMeta } from "./jsonl.ts";
@@ -44,7 +45,15 @@ export interface SessionOptions {
 }
 
 function createDefaultTools(): HeddleTool[] {
-	return [createReadTool(), createWriteTool(), createEditTool(), createGlobTool(), createGrepTool(), createBashTool()];
+	return [
+		createReadTool(),
+		createWriteTool(),
+		createEditTool(),
+		createGlobTool(),
+		createGrepTool(),
+		createBashTool(),
+		createWebFetchTool(),
+	];
 }
 
 export async function createSession(options?: SessionOptions): Promise<SessionContext> {

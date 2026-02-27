@@ -8,6 +8,7 @@ import type { IpcRequest, IpcResponse, WorkerEvent } from "../ipc/types.ts";
 import { appendMessage } from "../session/jsonl.ts";
 import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
+import { createAskUserTool } from "../tools/ask-user.ts";
 
 setHeadless(true);
 
@@ -184,6 +185,12 @@ async function handleInit(request: IpcRequest & { type: "init" }): Promise<void>
 			systemPrompt: request.config.system_prompt,
 			tools: request.config.tools,
 		});
+
+		session.registry.register(
+			createAskUserTool(async () => {
+				return "User interaction not available in headless mode";
+			}),
+		);
 
 		writeLine({
 			type: "init_ok",
