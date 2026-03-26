@@ -100,6 +100,34 @@ describe("IPC schemas", () => {
 		it("rejects old flat error shape (error string instead of message)", () => {
 			expect(Value.Check(WorkerEventSchema, { event: "error", error: "something broke" })).toBe(false);
 		});
+
+		it("validates context_prune event with required fields", () => {
+			expect(
+				Value.Check(WorkerEventSchema, {
+					event: "context_prune",
+					messages_pruned: 5,
+					tokens_before: 50000,
+					tokens_after: 30000,
+				}),
+			).toBe(true);
+		});
+
+		it("rejects context_prune missing required fields", () => {
+			expect(
+				Value.Check(WorkerEventSchema, {
+					event: "context_prune",
+					messages_pruned: 5,
+				}),
+			).toBe(false);
+		});
+
+		it("validates context_compact placeholder", () => {
+			expect(Value.Check(WorkerEventSchema, { event: "context_compact" })).toBe(true);
+		});
+
+		it("validates context_handoff placeholder", () => {
+			expect(Value.Check(WorkerEventSchema, { event: "context_handoff" })).toBe(true);
+		});
 	});
 
 	describe("IpcResponseSchema", () => {

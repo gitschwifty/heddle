@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
+	appendContextMarker,
 	appendMessage,
 	loadSession,
 	loadSessionMeta,
@@ -270,6 +271,73 @@ describe("JSONL session logging", () => {
 
 			const messages = await loadSession(filePath);
 			expect(messages).toHaveLength(1);
+		});
+	});
+
+	describe("appendContextMarker()", () => {
+		test("writes correct JSON line with type and fields", async () => {
+			const filePath = testPath("marker.jsonl");
+			await appendContextMarker(filePath, {
+				type: "context_prune",
+				messages_pruned: 3,
+				tokens_before: 50000,
+				tokens_after: 30000,
+				timestamp: "2026-03-26T12:00:00.000Z",
+			});
+
+			const content = await Bun.file(filePath).text();
+			const parsed = JSON.parse(content.trim());
+			expect(parsed.type).toBe("context_prune");
+			expect(parsed.messages_pruned).toBe(3);
+			expect(parsed.tokens_before).toBe(50000);
+			expect(parsed.tokens_after).toBe(30000);
+			expect(parsed.timestamp).toBe("2026-03-26T12:00:00.000Z");
+		});
+	});
+
+	describe("loadSession() with context markers", () => {
+		test("skips context marker lines", async () => {
+			const filePath = testPath("with-marker.jsonl");
+			await appendMessage(filePath, { role: "user", content: "Hello" });
+			await appendContextMarker(filePath, {
+				type: "context_prune",
+				messages_pruned: 1,
+				tokens_before: 1000,
+				tokens_after: 500,
+				timestamp: "2026-03-26T12:00:00.000Z",
+			});
+			await appendMessage(filePath, { role: "assistant", content: "Hi!" });
+
+			const messages = await loadSession(filePath);
+			expect(messages).toHaveLength(2);
+			expect(messages[0]!.role).toBe("user");
+			expect(messages[1]!.role).toBe("assistant");
+		});
+
+		test("skips both session_meta and context markers", async () => {
+			const filePath = testPath("meta-and-marker.jsonl");
+			await writeSessionMeta(filePath, {
+				type: "session_meta",
+				id: "test-uuid",
+				cwd: "/tmp",
+				model: "test",
+				created: "2026-03-26T12:00:00Z",
+				heddle_version: "0.1.0",
+			});
+			await appendMessage(filePath, { role: "user", content: "Hello" });
+			await appendContextMarker(filePath, {
+				type: "context_prune",
+				messages_pruned: 1,
+				tokens_before: 1000,
+				tokens_after: 500,
+				timestamp: "2026-03-26T12:00:00.000Z",
+			});
+			await appendMessage(filePath, { role: "assistant", content: "Hi!" });
+
+			const messages = await loadSession(filePath);
+			expect(messages).toHaveLength(2);
+			expect(messages[0]!.role).toBe("user");
+			expect(messages[1]!.role).toBe("assistant");
 		});
 	});
 

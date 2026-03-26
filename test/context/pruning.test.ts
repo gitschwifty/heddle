@@ -32,10 +32,67 @@ describe("estimateTokens", () => {
 });
 
 describe("pruneToolResults", () => {
+	test("returns PruneResult with all fields", () => {
+		const messages: Message[] = [
+			systemMsg("sys"),
+			toolMsg("t1", "x".repeat(500)),
+			userMsg("recent"),
+			assistantMsg("recent"),
+		];
+		const result = pruneToolResults(messages, { pruneThresholdTokens: 1, protectWindowTokens: 50 });
+		expect(result).toHaveProperty("messagesPruned");
+		expect(result).toHaveProperty("tokensBefore");
+		expect(result).toHaveProperty("tokensAfter");
+		expect(typeof result.messagesPruned).toBe("number");
+		expect(typeof result.tokensBefore).toBe("number");
+		expect(typeof result.tokensAfter).toBe("number");
+	});
+
+	test("tokensBefore > tokensAfter when pruned", () => {
+		const messages: Message[] = [
+			systemMsg("sys"),
+			toolMsg("t1", "x".repeat(1000)),
+			toolMsg("t2", "x".repeat(1000)),
+			userMsg("recent"),
+			assistantMsg("recent"),
+		];
+		const result = pruneToolResults(messages, { pruneThresholdTokens: 1, protectWindowTokens: 50 });
+		expect(result.messagesPruned).toBeGreaterThan(0);
+		expect(result.tokensBefore).toBeGreaterThan(result.tokensAfter);
+	});
+
+	test("tokensBefore === tokensAfter when nothing pruned", () => {
+		const messages: Message[] = [systemMsg("sys"), userMsg("hi"), assistantMsg("hello")];
+		const result = pruneToolResults(messages, { pruneThresholdTokens: 999999 });
+		expect(result.messagesPruned).toBe(0);
+		expect(result.tokensBefore).toBe(result.tokensAfter);
+	});
+
+	test("skips pruning when isCompactionOutput is true", () => {
+		const messages: Message[] = [
+			systemMsg("sys"),
+			toolMsg("t1", "x".repeat(1000)),
+			userMsg("recent"),
+			assistantMsg("recent"),
+		];
+		const result = pruneToolResults(messages, {
+			pruneThresholdTokens: 1,
+			protectWindowTokens: 50,
+			isCompactionOutput: true,
+		});
+		expect(result.messagesPruned).toBe(0);
+		expect(result.tokensBefore).toBe(result.tokensAfter);
+		// Content should be unchanged
+		const tool = messages[1]!;
+		if (tool.role === "tool") {
+			expect(tool.content).toBe("x".repeat(1000));
+		}
+	});
+
 	test("no-op when below threshold", () => {
 		const messages: Message[] = [systemMsg("sys"), userMsg("hi"), assistantMsg("hello")];
-		const count = pruneToolResults(messages, { pruneThresholdTokens: 999999 });
-		expect(count).toBe(0);
+		const result = pruneToolResults(messages, { pruneThresholdTokens: 999999 });
+		expect(result.messagesPruned).toBe(0);
 	});
 
 	test("prunes old tool messages beyond protection window", () => {
@@ -51,11 +108,11 @@ describe("pruneToolResults", () => {
 			userMsg("recent"),
 			assistantMsg("recent response"),
 		];
-		const count = pruneToolResults(messages, {
+		const result = pruneToolResults(messages, {
 			pruneThresholdTokens: 1,
 			protectWindowTokens: 50,
 		});
-		expect(count).toBeGreaterThan(0);
+		expect(result.messagesPruned).toBeGreaterThan(0);
 		const earlyTool = messages[3]!;
 		expect(earlyTool.role).toBe("tool");
 		if (earlyTool.role === "tool") {
@@ -106,8 +163,8 @@ describe("pruneToolResults", () => {
 			userMsg("recent"),
 			assistantMsg("recent"),
 		];
-		const count = pruneToolResults(messages, { pruneThresholdTokens: 1, protectWindowTokens: 50 });
-		expect(count).toBe(3);
+		const result = pruneToolResults(messages, { pruneThresholdTokens: 1, protectWindowTokens: 50 });
+		expect(result.messagesPruned).toBe(3);
 	});
 
 	test('replaces content with "[pruned — original: N chars]" placeholder', () => {
@@ -147,10 +204,12 @@ describe("pruneToolResults", () => {
 			toolMsg("t2", content),
 			userMsg("recent"),
 		];
-		expect(pruneToolResults(messages, { pruneThresholdTokens: 999999 })).toBe(0);
+		expect(pruneToolResults(messages, { pruneThresholdTokens: 999999 }).messagesPruned).toBe(0);
 
 		const messages2: Message[] = [systemMsg("sys"), toolMsg("t1", content), userMsg("recent")];
-		expect(pruneToolResults(messages2, { pruneThresholdTokens: 1, protectWindowTokens: 999999 })).toBe(0);
+		expect(pruneToolResults(messages2, { pruneThresholdTokens: 1, protectWindowTokens: 999999 }).messagesPruned).toBe(
+			0,
+		);
 	});
 
 	test("idempotent — re-running doesn't re-prune already-pruned messages", () => {
@@ -163,11 +222,11 @@ describe("pruneToolResults", () => {
 			assistantMsg("recent"),
 		];
 		const opts = { pruneThresholdTokens: 1, protectWindowTokens: 50 };
-		const count1 = pruneToolResults(messages, opts);
-		expect(count1).toBe(2);
+		const result1 = pruneToolResults(messages, opts);
+		expect(result1.messagesPruned).toBe(2);
 
-		const count2 = pruneToolResults(messages, opts);
-		expect(count2).toBe(0);
+		const result2 = pruneToolResults(messages, opts);
+		expect(result2.messagesPruned).toBe(0);
 	});
 
 	test("handles conversation with no tool messages (returns 0)", () => {
@@ -178,7 +237,7 @@ describe("pruneToolResults", () => {
 			userMsg("how are you"),
 			assistantMsg("good"),
 		];
-		const count = pruneToolResults(messages, { pruneThresholdTokens: 1, protectWindowTokens: 50 });
-		expect(count).toBe(0);
+		const result = pruneToolResults(messages, { pruneThresholdTokens: 1, protectWindowTokens: 50 });
+		expect(result.messagesPruned).toBe(0);
 	});
 });
