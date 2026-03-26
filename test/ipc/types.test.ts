@@ -25,6 +25,28 @@ describe("IPC schemas", () => {
 			).toBe(true);
 		});
 
+		it("validates config with task_id and worker_id", () => {
+			expect(
+				Value.Check(InitConfigSchema, {
+					model: "openrouter/auto",
+					system_prompt: "prompt",
+					tools: [],
+					task_id: "task-123",
+					worker_id: "worker-0",
+				}),
+			).toBe(true);
+		});
+
+		it("validates config without optional task_id and worker_id", () => {
+			expect(
+				Value.Check(InitConfigSchema, {
+					model: "openrouter/auto",
+					system_prompt: "prompt",
+					tools: [],
+				}),
+			).toBe(true);
+		});
+
 		it("rejects config missing model", () => {
 			expect(
 				Value.Check(InitConfigSchema, {
@@ -184,6 +206,61 @@ describe("IPC schemas", () => {
 					event: { event: "content_delta", text: "hi" },
 					event_seq: 0,
 					send_id: "2",
+				}),
+			).toBe(true);
+		});
+
+		it("validates event with correlation IDs", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "event",
+					event: { event: "content_delta", text: "hi" },
+					event_seq: 0,
+					send_id: "2",
+					session_id: "sess-1",
+					task_id: "task-1",
+					worker_id: "worker-0",
+				}),
+			).toBe(true);
+		});
+
+		it("validates event without optional correlation IDs", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "event",
+					event: { event: "content_delta", text: "hi" },
+					event_seq: 0,
+					send_id: "2",
+				}),
+			).toBe(true);
+		});
+
+		it("validates result with correlation IDs and latency fields", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "result",
+					id: "2",
+					status: "ok",
+					tool_calls_made: [],
+					iterations: 1,
+					session_id: "sess-1",
+					task_id: "task-1",
+					worker_id: "worker-0",
+					model_latency_ms: 150,
+					tool_latency_ms: 50,
+					total_latency_ms: 200,
+				}),
+			).toBe(true);
+		});
+
+		it("validates result without optional correlation and latency fields", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "result",
+					id: "2",
+					status: "ok",
+					tool_calls_made: [],
+					iterations: 1,
 				}),
 			).toBe(true);
 		});

@@ -17,6 +17,11 @@ const IGNORE_PATHS: string[] = [
 	"event.result_preview",
 	"event.details",
 	"event.provider",
+	"task_id",
+	"worker_id",
+	"model_latency_ms",
+	"tool_latency_ms",
+	"total_latency_ms",
 ];
 
 function deletePath(obj: Record<string, unknown>, pathStr: string) {
