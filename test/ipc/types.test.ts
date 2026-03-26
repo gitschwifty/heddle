@@ -100,6 +100,19 @@ describe("IPC schemas", () => {
 		it("rejects old flat error shape (error string instead of message)", () => {
 			expect(Value.Check(WorkerEventSchema, { event: "error", error: "something broke" })).toBe(false);
 		});
+
+		it("validates heartbeat event", () => {
+			expect(
+				Value.Check(WorkerEventSchema, {
+					event: "heartbeat",
+					timestamp: "2026-03-26T12:00:00.000Z",
+				}),
+			).toBe(true);
+		});
+
+		it("rejects heartbeat without timestamp", () => {
+			expect(Value.Check(WorkerEventSchema, { event: "heartbeat" })).toBe(false);
+		});
 	});
 
 	describe("IpcResponseSchema", () => {

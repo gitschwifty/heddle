@@ -38,15 +38,51 @@ function finishDelta(usage?: { prompt_tokens: number; completion_tokens: number;
 
 // Track request count for multi-turn and error scenarios
 let _requestCount = 0;
-let mockMode: "normal" | "error" | "cancel" | "tool" = "normal";
+let mockMode: "normal" | "error" | "cancel" | "tool" | "slow" | "tool_slow" = "normal";
 
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl: string;
 
+function toolCallDelta(index: number, opts: { id?: string; name?: string; arguments?: string }): string {
+	return JSON.stringify({
+		id: "chatcmpl-test",
+		choices: [
+			{
+				index: 0,
+				delta: {
+					tool_calls: [
+						{
+							index,
+							...(opts.id ? { id: opts.id, type: "function" } : {}),
+							...(opts.name || opts.arguments
+								? {
+										function: {
+											...(opts.name ? { name: opts.name } : {}),
+											...(opts.arguments ? { arguments: opts.arguments } : {}),
+										},
+									}
+								: {}),
+						},
+					],
+				},
+				finish_reason: null,
+			},
+		],
+	});
+}
+
+function toolFinishDelta(): string {
+	return JSON.stringify({
+		id: "chatcmpl-test",
+		choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+		usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+	});
+}
+
 beforeAll(() => {
 	server = Bun.serve({
 		port: 0,
-		fetch() {
+		async fetch() {
 			_requestCount++;
 
 			if (mockMode === "error") {
@@ -66,6 +102,32 @@ beforeAll(() => {
 				]);
 			}
 
+			if (mockMode === "slow") {
+				// Delayed response to allow heartbeat ticks
+				await new Promise((r) => setTimeout(r, 300));
+				return sseResponse([
+					textDelta("Slow "),
+					textDelta("response"),
+					finishDelta({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }),
+				]);
+			}
+
+			if (mockMode === "tool_slow") {
+				// First request: return a bash tool call for a long sleep
+				if (_requestCount === 1) {
+					return sseResponse([
+						toolCallDelta(0, { id: "call_0", name: "bash" }),
+						toolCallDelta(0, { arguments: '{"command":"sleep 30"}' }),
+						toolFinishDelta(),
+					]);
+				}
+				// Second request: return text
+				return sseResponse([
+					textDelta("Done"),
+					finishDelta({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }),
+				]);
+			}
+
 			// normal mode — just return text
 			return sseResponse([
 				textDelta("Hello! "),
@@ -81,7 +143,7 @@ afterAll(() => {
 	server.stop();
 });
 
-function resetMock(mode: "normal" | "error" | "cancel" | "tool" = "normal") {
+function resetMock(mode: "normal" | "error" | "cancel" | "tool" | "slow" | "tool_slow" = "normal") {
 	_requestCount = 0;
 	mockMode = mode;
 }
@@ -99,7 +161,7 @@ interface HeadlessProcess {
 	close(): void;
 }
 
-function spawnHeadless(): HeadlessProcess {
+function spawnHeadless(extraEnv?: Record<string, string>): HeadlessProcess {
 	const heddleHome = mkdtempSync(join(tmpdir(), "heddle-test-"));
 
 	const proc = spawn(["bun", "run", "src/headless/index.ts"], {
@@ -113,6 +175,7 @@ function spawnHeadless(): HeadlessProcess {
 			OPENROUTER_API_KEY: "test-key-headless",
 			HEDDLE_HOME: heddleHome,
 			HEDDLE_PROTOCOL_VERSION: "0.1.0",
+			...extraEnv,
 		},
 	});
 
@@ -567,6 +630,176 @@ describe("headless adapter", () => {
 			const second = parseLine(results[1]);
 			expect(first.id).toBe("2");
 			expect(second.id).toBe("3");
+		} finally {
+			h.close();
+		}
+	});
+
+	it("heartbeat events emitted during active send", async () => {
+		resetMock("slow");
+		// Use a very short heartbeat interval so we get heartbeats during the slow response
+		const h = spawnHeadless({ HEDDLE_HEARTBEAT_INTERVAL: "100" });
+		try {
+			h.sendLine(initMsg());
+			await h.waitForLines(1);
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Do something slow" }));
+
+			// Wait for result
+			await new Promise<void>((resolve, reject) => {
+				const start = Date.now();
+				const check = () => {
+					const hasResult = h.lines.some((l) => {
+						try {
+							return (JSON.parse(l) as Record<string, unknown>).type === "result";
+						} catch {
+							return false;
+						}
+					});
+					if (hasResult) resolve();
+					else if (Date.now() - start > 10000) reject(new Error("Timeout waiting for result"));
+					else setTimeout(check, 20);
+				};
+				check();
+			});
+
+			const messages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const heartbeats = messages.filter(
+				(m) =>
+					m.type === "event" &&
+					typeof m.event === "object" &&
+					m.event !== null &&
+					(m.event as Record<string, unknown>).event === "heartbeat",
+			);
+
+			expect(heartbeats.length).toBeGreaterThan(0);
+
+			// Each heartbeat should have event_seq and send_id
+			for (const hb of heartbeats) {
+				expect(typeof hb.event_seq).toBe("number");
+				expect(hb.send_id).toBe("2");
+				const evt = hb.event as Record<string, unknown>;
+				expect(typeof evt.timestamp).toBe("string");
+			}
+		} finally {
+			h.close();
+		}
+	});
+
+	it("no heartbeat after send completes", async () => {
+		resetMock("normal");
+		const h = spawnHeadless({ HEDDLE_HEARTBEAT_INTERVAL: "50" });
+		try {
+			h.sendLine(initMsg());
+			await h.waitForLines(1);
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Hi" }));
+
+			// Wait for result
+			await new Promise<void>((resolve, reject) => {
+				const start = Date.now();
+				const check = () => {
+					const hasResult = h.lines.some((l) => {
+						try {
+							return (JSON.parse(l) as Record<string, unknown>).type === "result";
+						} catch {
+							return false;
+						}
+					});
+					if (hasResult) resolve();
+					else if (Date.now() - start > 8000) reject(new Error("Timeout"));
+					else setTimeout(check, 20);
+				};
+				check();
+			});
+
+			const lineCountAfterResult = h.lines.length;
+
+			// Wait a bit to ensure no more heartbeats arrive
+			await new Promise((r) => setTimeout(r, 200));
+
+			// No new lines should appear (no heartbeat after completion)
+			expect(h.lines.length).toBe(lineCountAfterResult);
+		} finally {
+			h.close();
+		}
+	});
+
+	it("cancel interrupts bash tool and resolves quickly", async () => {
+		resetMock("tool_slow");
+		const h = spawnHeadless({ HEDDLE_HEARTBEAT_INTERVAL: "100" });
+		try {
+			// Include bash in tools so the tool call is actually executed
+			h.sendLine(
+				JSON.stringify({
+					type: "init",
+					id: "1",
+					protocol_version: "0.1.0",
+					config: {
+						model: "openrouter/auto",
+						system_prompt: "You are helpful.",
+						tools: ["bash"],
+						max_iterations: 10,
+					},
+				}),
+			);
+			await h.waitForLines(1);
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Run a slow command" }));
+
+			// Wait for tool_start event (bash tool executing sleep 30)
+			await new Promise<void>((resolve, reject) => {
+				const start = Date.now();
+				const check = () => {
+					const hasToolStart = h.lines.some((l) => {
+						try {
+							const msg = JSON.parse(l) as Record<string, unknown>;
+							if (msg.type !== "event") return false;
+							const evt = msg.event as Record<string, unknown>;
+							return evt.event === "tool_start" && evt.name === "bash";
+						} catch {
+							return false;
+						}
+					});
+					if (hasToolStart) resolve();
+					else if (Date.now() - start > 8000) reject(new Error("Timeout waiting for tool_start"));
+					else setTimeout(check, 20);
+				};
+				check();
+			});
+
+			// Send cancel
+			const start = Date.now();
+			h.sendLine(JSON.stringify({ type: "cancel", id: "3", target_id: "2" }));
+
+			// Wait for result — should arrive quickly (not after 30s)
+			await new Promise<void>((resolve, reject) => {
+				const check = () => {
+					const hasResult = h.lines.some((l) => {
+						try {
+							return (JSON.parse(l) as Record<string, unknown>).type === "result";
+						} catch {
+							return false;
+						}
+					});
+					if (hasResult) resolve();
+					else if (Date.now() - start > 10000) reject(new Error("Timeout waiting for cancel result"));
+					else setTimeout(check, 20);
+				};
+				check();
+			});
+
+			const elapsed = Date.now() - start;
+			expect(elapsed).toBeLessThan(8000);
+
+			const messages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const result = messages.find((m) => m.type === "result");
+			expect(result).toBeDefined();
+			if (result) {
+				expect(result.status).toBe("error");
+				const err = result.error as Record<string, unknown>;
+				expect(err.code).toBe("cancelled");
+			}
 		} finally {
 			h.close();
 		}
