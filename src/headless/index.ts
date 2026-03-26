@@ -2,7 +2,14 @@ import readline from "node:readline";
 import { runAgentLoopStreaming } from "../agent/loop.ts";
 import type { AgentEvent } from "../agent/types.ts";
 import { debug, setHeadless } from "../debug.ts";
-import { buildError, buildResult, decodeRequest, encodeResponse, wrapEvent } from "../ipc/codec.ts";
+import {
+	buildError,
+	buildResult,
+	type CorrelationContext,
+	decodeRequest,
+	encodeResponse,
+	wrapEvent,
+} from "../ipc/codec.ts";
 import { normalizeError } from "../ipc/errors.ts";
 import { checkCompatibility, PROTOCOL_VERSION } from "../ipc/protocol.ts";
 import type { IpcRequest, IpcResponse, WorkerEvent } from "../ipc/types.ts";
@@ -15,6 +22,7 @@ setHeadless(true);
 
 // ── State ──────────────────────────────────────────────────────────────
 let session: SessionContext | null = null;
+let correlationCtx: CorrelationContext = {};
 let activeId: string | null = null;
 let cancelTargetId: string | null = null;
 let stdinClosed = false;
@@ -124,6 +132,12 @@ async function handleInit(request: IpcRequest & { type: "init" }): Promise<void>
 			}),
 		);
 
+		correlationCtx = {
+			session_id: session.sessionId,
+			...(request.config.task_id ? { task_id: request.config.task_id } : {}),
+			...(request.config.worker_id ? { worker_id: request.config.worker_id } : {}),
+		};
+
 		writeLine({
 			type: "init_ok",
 			id: request.id,
@@ -179,6 +193,10 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 	let sawContentDelta = false;
 	let errorEnvelope: { code: string; message: string; retryable: boolean; details?: unknown } | undefined;
 
+	const startTime = performance.now();
+	let toolLatencyMs = 0;
+	let toolStartTime: number | null = null;
+
 	try {
 		const gen = runAgentLoopStreaming(session.provider, session.registry, session.messages, {
 			...(session.permissionChecker ? { permissionChecker: session.permissionChecker } : {}),
@@ -186,12 +204,17 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 
 		for await (const event of gen) {
 			if (checkCancel()) {
+				const cancelTotalMs = performance.now() - startTime;
 				writeLine(
 					buildResult(request.id, {
 						status: "error",
 						error: { code: "cancelled", message: "cancelled", retryable: false },
 						toolCallsMade,
 						iterations,
+						correlation: correlationCtx,
+						totalLatencyMs: Math.round(cancelTotalMs),
+						toolLatencyMs: Math.round(toolLatencyMs),
+						modelLatencyMs: Math.round(cancelTotalMs - toolLatencyMs),
 					}),
 				);
 				activeId = null;
@@ -200,7 +223,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 
 			const mapped = mapAgentEvent(event);
 			if (mapped) {
-				writeLine(wrapEvent(mapped, request.id, eventSeq++));
+				writeLine(wrapEvent(mapped, request.id, eventSeq++, correlationCtx));
 			}
 
 			switch (event.type) {
@@ -213,8 +236,15 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 						args = JSON.parse(event.call.function.arguments);
 					} catch {}
 					toolCallsMade.push({ name: event.name, args });
+					toolStartTime = performance.now();
 					break;
 				}
+				case "tool_end":
+					if (toolStartTime !== null) {
+						toolLatencyMs += performance.now() - toolStartTime;
+						toolStartTime = null;
+					}
+					break;
 				case "assistant_message":
 					iterations++;
 					if (!sawContentDelta && event.message.content) {
@@ -245,6 +275,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 			}
 		}
 	} catch (err) {
+		const catchTotalMs = performance.now() - startTime;
 		const normalized = normalizeError(err, "provider_error");
 		const { provider, ...envelope } = normalized;
 		writeLine(
@@ -259,6 +290,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 				},
 				request.id,
 				eventSeq++,
+				correlationCtx,
 			),
 		);
 		writeLine(
@@ -268,11 +300,17 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 				toolCallsMade,
 				usage: totalUsage,
 				iterations,
+				correlation: correlationCtx,
+				totalLatencyMs: Math.round(catchTotalMs),
+				toolLatencyMs: Math.round(toolLatencyMs),
+				modelLatencyMs: Math.round(catchTotalMs - toolLatencyMs),
 			}),
 		);
 		activeId = null;
 		return;
 	}
+
+	const totalMs = performance.now() - startTime;
 
 	if (errorEnvelope) {
 		writeLine(
@@ -282,6 +320,10 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 				toolCallsMade,
 				usage: totalUsage,
 				iterations,
+				correlation: correlationCtx,
+				totalLatencyMs: Math.round(totalMs),
+				toolLatencyMs: Math.round(toolLatencyMs),
+				modelLatencyMs: Math.round(totalMs - toolLatencyMs),
 			}),
 		);
 	} else {
@@ -299,6 +341,10 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 				toolCallsMade,
 				usage: totalUsage,
 				iterations,
+				correlation: correlationCtx,
+				totalLatencyMs: Math.round(totalMs),
+				toolLatencyMs: Math.round(toolLatencyMs),
+				modelLatencyMs: Math.round(totalMs - toolLatencyMs),
 			}),
 		);
 	}

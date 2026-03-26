@@ -6,6 +6,8 @@ export const InitConfigSchema = Type.Object({
 	system_prompt: Type.String(),
 	tools: Type.Array(Type.String()),
 	max_iterations: Type.Optional(Type.Number()),
+	task_id: Type.Optional(Type.String()),
+	worker_id: Type.Optional(Type.String()),
 });
 
 export const IpcRequestSchema = Type.Union([
@@ -68,6 +70,9 @@ export const IpcResponseSchema = Type.Union([
 		event: WorkerEventSchema,
 		event_seq: Type.Number(),
 		send_id: Type.String(),
+		session_id: Type.Optional(Type.String()),
+		task_id: Type.Optional(Type.String()),
+		worker_id: Type.Optional(Type.String()),
 	}),
 	Type.Object({
 		type: Type.Literal("result"),
@@ -80,6 +85,12 @@ export const IpcResponseSchema = Type.Union([
 		),
 		iterations: Type.Number(),
 		error: Type.Optional(ErrorEnvelopeSchema),
+		session_id: Type.Optional(Type.String()),
+		task_id: Type.Optional(Type.String()),
+		worker_id: Type.Optional(Type.String()),
+		model_latency_ms: Type.Optional(Type.Number()),
+		tool_latency_ms: Type.Optional(Type.Number()),
+		total_latency_ms: Type.Optional(Type.Number()),
 	}),
 	Type.Object({
 		type: Type.Literal("status_ok"),
