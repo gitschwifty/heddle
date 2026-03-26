@@ -34,6 +34,15 @@
 - `StatusOk`
 - `ShutdownOk`
 
+## Changelog
+
+### 0.1.0 (protocol-hardening, unreleased)
+- **Event responses** now include `event_seq` (monotonic counter, 0-based per send) and `send_id` (mirrors the originating send request `id`).
+- **Result error** changed from `error?: string` to `error?: { code, message, retryable, details? }` (ErrorEnvelope).
+- **InitOk error** changed from `error?: string` to `error?: ErrorEnvelope`.
+- **WorkerEvent error variant** changed: `error` field renamed to `message`, `code` now required, `retryable` (boolean) added.
+- **Error codes**: `provider_error` (retryable), `protocol_error`, `protocol_version_mismatch`, `tool_error`, `loop_detected`, `cancelled` (all non-retryable).
+
 ## Forward/Backward Handling
 - Clients must ignore unknown fields.
 - Required fields must not be removed within a major version.

@@ -224,7 +224,7 @@ describe("headless adapter", () => {
 		}
 	});
 
-	it("send before init returns error", async () => {
+	it("send before init returns structured error envelope", async () => {
 		resetMock("normal");
 		const h = spawnHeadless();
 		try {
@@ -233,13 +233,17 @@ describe("headless adapter", () => {
 			const msg = parseLine(h.lines[0]);
 			expect(msg.type).toBe("result");
 			expect(msg.status).toBe("error");
-			expect(String(msg.error)).toContain("Not initialized");
+			expect(msg.error).toEqual({
+				code: "protocol_error",
+				message: "Not initialized. Send 'init' first.",
+				retryable: false,
+			});
 		} finally {
 			h.close();
 		}
 	});
 
-	it("malformed JSON returns error and process survives", async () => {
+	it("malformed JSON returns structured error and process survives", async () => {
 		resetMock("normal");
 		const h = spawnHeadless();
 		try {
@@ -248,7 +252,11 @@ describe("headless adapter", () => {
 			const msg = parseLine(h.lines[0]);
 			expect(msg.type).toBe("result");
 			expect(msg.status).toBe("error");
-			expect(msg.error).toBe("Invalid JSON");
+			expect(msg.error).toEqual({
+				code: "protocol_error",
+				message: "Invalid JSON",
+				retryable: false,
+			});
 
 			// Process should survive — send another valid message
 			h.sendLine(initMsg());
@@ -313,7 +321,7 @@ describe("headless adapter", () => {
 		}
 	});
 
-	it("provider error emits error event and error result", async () => {
+	it("provider error emits error event and structured error result", async () => {
 		resetMock("error");
 		const h = spawnHeadless();
 		try {
@@ -334,17 +342,24 @@ describe("headless adapter", () => {
 			expect(errorEvent).toBeDefined();
 			if (errorEvent) {
 				const evt = (errorEvent as { event: Record<string, unknown> }).event;
-				expect(evt.error).toBe("Model error");
+				expect(evt.message).toBe("Model error");
 				expect(evt.code).toBe("provider_error");
+				expect(evt.retryable).toBe(true);
 				expect(evt.provider).toBe("openrouter");
 				expect(evt.details).toBeDefined();
+				// event_seq and send_id on the wrapper
+				expect((errorEvent as Record<string, unknown>).event_seq).toBe(0);
+				expect((errorEvent as Record<string, unknown>).send_id).toBe("2");
 			}
 
 			const result = messages.find((m) => m.type === "result");
 			expect(result).toBeDefined();
 			if (result) {
 				expect(result.status).toBe("error");
-				expect(result.error).toBe("Model error");
+				const err = result.error as Record<string, unknown>;
+				expect(err.code).toBe("provider_error");
+				expect(err.message).toBe("Model error");
+				expect(err.retryable).toBe(true);
 			}
 		} finally {
 			h.close();
@@ -378,7 +393,7 @@ describe("headless adapter", () => {
 		}
 	});
 
-	it("version mismatch returns error and exits", async () => {
+	it("version mismatch returns structured error and exits", async () => {
 		resetMock("normal");
 		const h = spawnHeadless();
 		try {
@@ -395,10 +410,107 @@ describe("headless adapter", () => {
 			const msg = parseLine(h.lines[0]);
 			expect(msg.type).toBe("result");
 			expect(msg.status).toBe("error");
-			expect(msg.error).toBe("protocol_version_mismatch");
+			expect(msg.error).toEqual({
+				code: "protocol_version_mismatch",
+				message: "protocol_version_mismatch",
+				retryable: false,
+			});
 
 			const code = await h.proc.exited;
 			expect(code).toBe(1);
+		} finally {
+			h.close();
+		}
+	});
+
+	it("streamed events have sequential event_seq and correct send_id", async () => {
+		resetMock("normal");
+		const h = spawnHeadless();
+		try {
+			h.sendLine(initMsg());
+			await h.waitForLines(1);
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Hi there" }));
+			await h.waitForLines(4, 8000);
+
+			const messages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const events = messages.filter((m) => m.type === "event");
+			expect(events.length).toBeGreaterThan(0);
+
+			// All events should have send_id matching the send request
+			for (const evt of events) {
+				expect(evt.send_id).toBe("2");
+			}
+
+			// event_seq should be strictly increasing from 0
+			const seqs = events.map((e) => e.event_seq as number);
+			for (let i = 0; i < seqs.length; i++) {
+				expect(seqs[i]).toBe(i);
+			}
+		} finally {
+			h.close();
+		}
+	});
+
+	it("event_seq resets between sends", async () => {
+		resetMock("normal");
+		const h = spawnHeadless();
+		try {
+			h.sendLine(initMsg());
+			await h.waitForLines(1);
+
+			// First send
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "First" }));
+			await new Promise<void>((resolve) => {
+				const check = () => {
+					const hasResult = h.lines.some((l) => {
+						try {
+							return (JSON.parse(l) as Record<string, unknown>).type === "result";
+						} catch {
+							return false;
+						}
+					});
+					if (hasResult) resolve();
+					else setTimeout(check, 20);
+				};
+				check();
+			});
+
+			const firstMessages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const firstEvents = firstMessages.filter((m) => m.type === "event");
+			const firstLineCount = h.lines.length;
+
+			// Second send
+			h.sendLine(JSON.stringify({ type: "send", id: "3", message: "Second" }));
+			await new Promise<void>((resolve, reject) => {
+				const start = Date.now();
+				const check = () => {
+					const results = h.lines.filter((l) => {
+						try {
+							return (JSON.parse(l) as Record<string, unknown>).type === "result";
+						} catch {
+							return false;
+						}
+					});
+					if (results.length >= 2) resolve();
+					else if (Date.now() - start > 8000) reject(new Error("Timeout waiting for second result"));
+					else setTimeout(check, 20);
+				};
+				check();
+			});
+
+			const secondMessages = h.lines.slice(firstLineCount).map((l) => JSON.parse(l) as Record<string, unknown>);
+			const secondEvents = secondMessages.filter((m) => m.type === "event");
+
+			// First send events start at 0 with send_id "2"
+			expect(firstEvents.length).toBeGreaterThan(0);
+			expect(firstEvents[0]?.event_seq).toBe(0);
+			expect(firstEvents[0]?.send_id).toBe("2");
+
+			// Second send events also start at 0 with send_id "3"
+			expect(secondEvents.length).toBeGreaterThan(0);
+			expect(secondEvents[0]?.event_seq).toBe(0);
+			expect(secondEvents[0]?.send_id).toBe("3");
 		} finally {
 			h.close();
 		}

@@ -47,10 +47,22 @@ describe("decodeRequest", () => {
 });
 
 describe("wrapEvent", () => {
-	it("wraps a worker event in an IPC response", () => {
+	it("wraps a worker event with send_id and event_seq", () => {
 		const event: WorkerEvent = { event: "content_delta", text: "hi" } as WorkerEvent;
-		const wrapped = wrapEvent(event);
-		expect(wrapped).toEqual({ type: "event", event: { event: "content_delta", text: "hi" } });
+		const wrapped = wrapEvent(event, "send-1", 0);
+		expect(wrapped).toEqual({
+			type: "event",
+			event: { event: "content_delta", text: "hi" },
+			send_id: "send-1",
+			event_seq: 0,
+		});
+	});
+
+	it("passes through higher sequence numbers", () => {
+		const event: WorkerEvent = { event: "content_delta", text: "x" } as WorkerEvent;
+		const wrapped = wrapEvent(event, "s2", 5);
+		expect((wrapped as Record<string, unknown>).event_seq).toBe(5);
+		expect((wrapped as Record<string, unknown>).send_id).toBe("s2");
 	});
 });
 
@@ -75,32 +87,55 @@ describe("buildResult", () => {
 		});
 	});
 
-	it("builds an error result", () => {
+	it("builds an error result with ErrorEnvelope", () => {
 		const result = buildResult("3", {
 			status: "error",
-			error: "something broke",
+			error: { code: "provider_error", message: "something broke", retryable: true },
 			toolCallsMade: [],
 			iterations: 0,
 		});
-		expect(result).toMatchObject({ type: "result", id: "3", status: "error", error: "something broke" });
+		expect(result).toMatchObject({
+			type: "result",
+			id: "3",
+			status: "error",
+			error: { code: "provider_error", message: "something broke", retryable: true },
+		});
+	});
+
+	it("builds result with error envelope including details", () => {
+		const result = buildResult("4", {
+			status: "error",
+			error: { code: "protocol_error", message: "bad", retryable: false, details: { info: "extra" } },
+			toolCallsMade: [],
+			iterations: 0,
+		});
+		expect((result as Record<string, unknown>).error).toEqual({
+			code: "protocol_error",
+			message: "bad",
+			retryable: false,
+			details: { info: "extra" },
+		});
 	});
 });
 
 describe("buildError", () => {
-	it("builds an error with id", () => {
-		const result = buildError("5", "bad request");
+	it("builds an error with ErrorEnvelope", () => {
+		const result = buildError("5", { code: "protocol_error", message: "bad request", retryable: false });
 		expect(result).toEqual({
 			type: "result",
 			id: "5",
 			status: "error",
-			error: "bad request",
+			error: { code: "protocol_error", message: "bad request", retryable: false },
 			tool_calls_made: [],
 			iterations: 0,
 		});
 	});
 
 	it("uses 'unknown' when id is undefined", () => {
-		const result = buildError(undefined, "parse error");
-		expect(result).toMatchObject({ id: "unknown", error: "parse error" });
+		const result = buildError(undefined, { code: "protocol_error", message: "parse error", retryable: false });
+		expect(result).toMatchObject({
+			id: "unknown",
+			error: { code: "protocol_error", message: "parse error", retryable: false },
+		});
 	});
 });
