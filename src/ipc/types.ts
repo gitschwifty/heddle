@@ -53,6 +53,10 @@ export const WorkerEventSchema = Type.Union([
 		event: Type.Literal("plan_complete"),
 		plan: Type.String(),
 	}),
+	Type.Object({
+		event: Type.Literal("heartbeat"),
+		timestamp: Type.String(),
+	}),
 ]);
 
 export const IpcResponseSchema = Type.Union([

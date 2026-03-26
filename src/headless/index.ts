@@ -17,6 +17,7 @@ setHeadless(true);
 let session: SessionContext | null = null;
 let activeId: string | null = null;
 let cancelTargetId: string | null = null;
+let activeAbortController: AbortController | null = null;
 let stdinClosed = false;
 
 const messageQueue: IpcRequest[] = [];
@@ -179,13 +180,28 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 	let sawContentDelta = false;
 	let errorEnvelope: { code: string; message: string; retryable: boolean; details?: unknown } | undefined;
 
+	// Heartbeat timer
+	const heartbeatInterval = Number(process.env.HEDDLE_HEARTBEAT_INTERVAL) || 5000;
+	const heartbeatTimer = setInterval(() => {
+		writeLine(
+			wrapEvent({ event: "heartbeat", timestamp: new Date().toISOString() } as WorkerEvent, request.id, eventSeq++),
+		);
+	}, heartbeatInterval);
+
+	// AbortController for cancel
+	const abortController = new AbortController();
+	activeAbortController = abortController;
+
 	try {
 		const gen = runAgentLoopStreaming(session.provider, session.registry, session.messages, {
 			...(session.permissionChecker ? { permissionChecker: session.permissionChecker } : {}),
+			signal: abortController.signal,
 		});
 
 		for await (const event of gen) {
 			if (checkCancel()) {
+				abortController.abort();
+				clearInterval(heartbeatTimer);
 				writeLine(
 					buildResult(request.id, {
 						status: "error",
@@ -194,6 +210,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 						iterations,
 					}),
 				);
+				activeAbortController = null;
 				activeId = null;
 				return;
 			}
@@ -245,6 +262,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 			}
 		}
 	} catch (err) {
+		clearInterval(heartbeatTimer);
 		const normalized = normalizeError(err, "provider_error");
 		const { provider, ...envelope } = normalized;
 		writeLine(
@@ -270,6 +288,24 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 				iterations,
 			}),
 		);
+		activeAbortController = null;
+		activeId = null;
+		return;
+	}
+
+	clearInterval(heartbeatTimer);
+
+	// Check if cancel occurred (may have been triggered while tool was executing)
+	if (checkCancel() || abortController.signal.aborted) {
+		writeLine(
+			buildResult(request.id, {
+				status: "error",
+				error: { code: "cancelled", message: "cancelled", retryable: false },
+				toolCallsMade,
+				iterations,
+			}),
+		);
+		activeAbortController = null;
 		activeId = null;
 		return;
 	}
@@ -308,6 +344,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 		await appendMessage(session.sessionFile, msg);
 	}
 
+	activeAbortController = null;
 	activeId = null;
 }
 
@@ -341,6 +378,7 @@ function handleShutdown(request: IpcRequest & { type: "shutdown" }): void {
 function handleCancel(request: IpcRequest & { type: "cancel" }): void {
 	if ("target_id" in request && request.target_id === activeId) {
 		cancelTargetId = activeId;
+		activeAbortController?.abort();
 	}
 }
 
@@ -409,7 +447,17 @@ rl.on("line", (line: string) => {
 		writeLine(buildError(undefined, { code: "protocol_error", message: decoded.error, retryable: false }));
 		return;
 	}
-	messageQueue.push(decoded.request);
+	const request = decoded.request;
+	// If a cancel arrives for the active send, abort immediately so blocked tools are interrupted
+	if (
+		request.type === "cancel" &&
+		"target_id" in request &&
+		(request as { target_id: string }).target_id === activeId
+	) {
+		cancelTargetId = activeId;
+		activeAbortController?.abort();
+	}
+	messageQueue.push(request);
 	processQueue();
 });
 
