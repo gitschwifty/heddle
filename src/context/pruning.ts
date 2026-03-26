@@ -1,10 +1,18 @@
 import type { Message } from "../types.ts";
 
+export interface PruneResult {
+	messagesPruned: number;
+	tokensBefore: number;
+	tokensAfter: number;
+}
+
 export interface PruningOptions {
 	/** Estimated tokens to protect at end of conversation (default: 40000) */
 	protectWindowTokens?: number;
 	/** Only prune if total estimated tokens exceed this (default: 20000) */
 	pruneThresholdTokens?: number;
+	/** If true, skip pruning entirely (used for compaction summary content) */
+	isCompactionOutput?: boolean;
 }
 
 const DEFAULT_PROTECT_WINDOW = 40000;
@@ -18,13 +26,21 @@ export function estimateTokens(messages: Message[]): number {
 
 /**
  * Prune old tool message contents to reduce context size.
- * Mutates messages in place. Returns count of messages pruned.
+ * Mutates messages in place. Returns a PruneResult with counts and token estimates.
  */
-export function pruneToolResults(messages: Message[], options?: PruningOptions): number {
+export function pruneToolResults(messages: Message[], options?: PruningOptions): PruneResult {
+	const tokensBefore = estimateTokens(messages);
+
+	if (options?.isCompactionOutput) {
+		return { messagesPruned: 0, tokensBefore, tokensAfter: tokensBefore };
+	}
+
 	const protectWindow = options?.protectWindowTokens ?? DEFAULT_PROTECT_WINDOW;
 	const threshold = options?.pruneThresholdTokens ?? DEFAULT_PRUNE_THRESHOLD;
 
-	if (estimateTokens(messages) < threshold) return 0;
+	if (tokensBefore < threshold) {
+		return { messagesPruned: 0, tokensBefore, tokensAfter: tokensBefore };
+	}
 
 	// Walk backward to find protection boundary
 	let accumulated = 0;
@@ -48,5 +64,6 @@ export function pruneToolResults(messages: Message[], options?: PruningOptions):
 		}
 	}
 
-	return count;
+	const tokensAfter = estimateTokens(messages);
+	return { messagesPruned: count, tokensBefore, tokensAfter };
 }

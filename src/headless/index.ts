@@ -391,6 +391,17 @@ function mapAgentEvent(event: AgentEvent): WorkerEvent | null {
 			};
 		case "plan_complete":
 			return { event: "plan_complete", plan: event.plan };
+		case "context_prune":
+			return {
+				event: "context_prune",
+				messages_pruned: event.messagesPruned,
+				tokens_before: event.tokensBefore,
+				tokens_after: event.tokensAfter,
+			};
+		case "context_compact":
+			return null;
+		case "context_handoff":
+			return null;
 		case "assistant_message":
 			return null;
 		case "permission_request":

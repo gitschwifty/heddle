@@ -3,7 +3,7 @@ import type { AgentLoopOptions } from "../agent/loop.ts";
 import { runAgentLoopStreaming } from "../agent/loop.ts";
 import { pruneToolResults } from "../context/index.ts";
 import { readOnlyToolFilter } from "../permissions/index.ts";
-import { appendMessage } from "../session/jsonl.ts";
+import { appendContextMarker, appendMessage } from "../session/jsonl.ts";
 import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
 import { createAskUserTool } from "../tools/ask-user.ts";
@@ -148,7 +148,16 @@ export async function startCli(): Promise<void> {
 						}
 					}
 				}
-				pruneToolResults(messages);
+				const pruneResult = pruneToolResults(messages);
+				if (pruneResult.messagesPruned > 0) {
+					await appendContextMarker(sessionFile, {
+						type: "context_prune",
+						messages_pruned: pruneResult.messagesPruned,
+						tokens_before: pruneResult.tokensBefore,
+						tokens_after: pruneResult.tokensAfter,
+						timestamp: new Date().toISOString(),
+					});
+				}
 			} catch (err) {
 				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
 			}

@@ -38,6 +38,11 @@ export async function appendMessage(filePath: string, message: Message): Promise
 	});
 }
 
+/** Append a context marker (e.g. context_prune) as a JSON line. */
+export async function appendContextMarker(filePath: string, marker: Record<string, unknown>): Promise<void> {
+	await appendLine(filePath, marker);
+}
+
 /**
  * Load all messages from a JSONL session file.
  * Skips non-message lines (session_meta, compaction markers, etc.).
@@ -58,7 +63,7 @@ export async function loadSession(filePath: string): Promise<Message[]> {
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
 		.map((line) => JSON.parse(line) as Record<string, unknown>)
-		.filter((obj) => obj.type !== "session_meta") as Message[];
+		.filter((obj) => "role" in obj) as Message[];
 }
 
 /**

@@ -10,4 +10,7 @@ export type AgentEvent =
 	| { type: "error"; error: Error }
 	| { type: "permission_request"; name: string; call: ToolCall; reason?: string }
 	| { type: "permission_denied"; name: string; call: ToolCall; reason: string }
-	| { type: "plan_complete"; plan: string };
+	| { type: "plan_complete"; plan: string }
+	| { type: "context_prune"; messagesPruned: number; tokensBefore: number; tokensAfter: number }
+	| { type: "context_compact" }
+	| { type: "context_handoff" };

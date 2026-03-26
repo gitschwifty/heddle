@@ -53,6 +53,14 @@ export const WorkerEventSchema = Type.Union([
 		event: Type.Literal("plan_complete"),
 		plan: Type.String(),
 	}),
+	Type.Object({
+		event: Type.Literal("context_prune"),
+		messages_pruned: Type.Number(),
+		tokens_before: Type.Number(),
+		tokens_after: Type.Number(),
+	}),
+	Type.Object({ event: Type.Literal("context_compact") }),
+	Type.Object({ event: Type.Literal("context_handoff") }),
 ]);
 
 export const IpcResponseSchema = Type.Union([
