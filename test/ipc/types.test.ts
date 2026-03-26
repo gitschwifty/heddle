@@ -90,15 +90,11 @@ describe("IPC schemas", () => {
 		});
 
 		it("rejects error missing required retryable field", () => {
-			expect(
-				Value.Check(WorkerEventSchema, { event: "error", code: "provider_error", message: "fail" }),
-			).toBe(false);
+			expect(Value.Check(WorkerEventSchema, { event: "error", code: "provider_error", message: "fail" })).toBe(false);
 		});
 
 		it("rejects error missing required code field", () => {
-			expect(
-				Value.Check(WorkerEventSchema, { event: "error", message: "fail", retryable: false }),
-			).toBe(false);
+			expect(Value.Check(WorkerEventSchema, { event: "error", message: "fail", retryable: false })).toBe(false);
 		});
 
 		it("rejects old flat error shape (error string instead of message)", () => {

@@ -1,11 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Value } from "@sinclair/typebox/value";
-import {
-	ErrorEnvelopeSchema,
-	type ErrorEnvelope,
-	type NormalizedError,
-	normalizeError,
-} from "../../src/ipc/errors.ts";
+import { type ErrorEnvelope, ErrorEnvelopeSchema, normalizeError } from "../../src/ipc/errors.ts";
 
 describe("ErrorEnvelopeSchema", () => {
 	it("validates a minimal envelope", () => {
@@ -32,9 +27,7 @@ describe("ErrorEnvelopeSchema", () => {
 
 describe("normalizeError", () => {
 	it("normalizes an OpenRouter API error with JSON details", () => {
-		const err = new Error(
-			'OpenRouter API error (500): {"error":{"message":"Model error","type":"error","code":500}}',
-		);
+		const err = new Error('OpenRouter API error (500): {"error":{"message":"Model error","type":"error","code":500}}');
 		const result = normalizeError(err, "provider_error");
 		expect(result.code).toBe("provider_error");
 		expect(result.message).toBe("Model error");
