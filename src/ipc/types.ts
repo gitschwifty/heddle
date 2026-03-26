@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { ErrorEnvelopeSchema } from "./errors.ts";
 
 export const InitConfigSchema = Type.Object({
 	model: Type.String(),
@@ -32,8 +33,9 @@ export const WorkerEventSchema = Type.Union([
 	}),
 	Type.Object({
 		event: Type.Literal("error"),
-		error: Type.String(),
-		code: Type.Optional(Type.String()),
+		code: Type.String(),
+		message: Type.String(),
+		retryable: Type.Boolean(),
 		provider: Type.Optional(Type.String()),
 		details: Type.Optional(Type.Unknown()),
 	}),
@@ -59,9 +61,14 @@ export const IpcResponseSchema = Type.Union([
 		id: Type.String(),
 		session_id: Type.String(),
 		protocol_version: Type.String(),
-		error: Type.Optional(Type.String()),
+		error: Type.Optional(ErrorEnvelopeSchema),
 	}),
-	Type.Object({ type: Type.Literal("event"), event: WorkerEventSchema }),
+	Type.Object({
+		type: Type.Literal("event"),
+		event: WorkerEventSchema,
+		event_seq: Type.Number(),
+		send_id: Type.String(),
+	}),
 	Type.Object({
 		type: Type.Literal("result"),
 		id: Type.String(),
@@ -72,7 +79,7 @@ export const IpcResponseSchema = Type.Union([
 			Type.Object({ prompt_tokens: Type.Number(), completion_tokens: Type.Number(), total_tokens: Type.Number() }),
 		),
 		iterations: Type.Number(),
-		error: Type.Optional(Type.String()),
+		error: Type.Optional(ErrorEnvelopeSchema),
 	}),
 	Type.Object({
 		type: Type.Literal("status_ok"),

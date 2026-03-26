@@ -65,24 +65,44 @@ describe("IPC schemas", () => {
 			expect(Value.Check(WorkerEventSchema, { event: "content_delta", text: "hello" })).toBe(true);
 		});
 
-		it("validates error with code", () => {
-			expect(Value.Check(WorkerEventSchema, { event: "error", error: "fail", code: "loop_detected" })).toBe(true);
+		it("validates error with code, message, retryable", () => {
+			expect(
+				Value.Check(WorkerEventSchema, {
+					event: "error",
+					code: "loop_detected",
+					message: "Doom loop detected",
+					retryable: false,
+				}),
+			).toBe(true);
 		});
 
 		it("validates error with provider and details", () => {
 			expect(
 				Value.Check(WorkerEventSchema, {
 					event: "error",
-					error: "Provider error (500)",
 					code: "provider_error",
+					message: "Model error",
+					retryable: true,
 					provider: "openrouter",
 					details: { error: { message: "Model error", type: "error", code: 500 } },
 				}),
 			).toBe(true);
 		});
 
-		it("validates error without optional fields", () => {
-			expect(Value.Check(WorkerEventSchema, { event: "error", error: "something broke" })).toBe(true);
+		it("rejects error missing required retryable field", () => {
+			expect(
+				Value.Check(WorkerEventSchema, { event: "error", code: "provider_error", message: "fail" }),
+			).toBe(false);
+		});
+
+		it("rejects error missing required code field", () => {
+			expect(
+				Value.Check(WorkerEventSchema, { event: "error", message: "fail", retryable: false }),
+			).toBe(false);
+		});
+
+		it("rejects old flat error shape (error string instead of message)", () => {
+			expect(Value.Check(WorkerEventSchema, { event: "error", error: "something broke" })).toBe(false);
 		});
 	});
 
@@ -98,7 +118,19 @@ describe("IPC schemas", () => {
 			).toBe(true);
 		});
 
-		it("validates result", () => {
+		it("validates init_ok with error envelope", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "init_ok",
+					id: "1",
+					session_id: "sess-1",
+					protocol_version: "0.1.0",
+					error: { code: "protocol_error", message: "bad config", retryable: false },
+				}),
+			).toBe(true);
+		});
+
+		it("validates result without error", () => {
 			expect(
 				Value.Check(IpcResponseSchema, {
 					type: "result",
@@ -108,6 +140,76 @@ describe("IPC schemas", () => {
 					iterations: 1,
 				}),
 			).toBe(true);
+		});
+
+		it("validates result with ErrorEnvelope", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "result",
+					id: "2",
+					status: "error",
+					tool_calls_made: [],
+					iterations: 0,
+					error: { code: "provider_error", message: "Model error", retryable: true },
+				}),
+			).toBe(true);
+		});
+
+		it("validates result with ErrorEnvelope including details", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "result",
+					id: "2",
+					status: "error",
+					tool_calls_made: [],
+					iterations: 0,
+					error: { code: "protocol_error", message: "bad", retryable: false, details: "extra info" },
+				}),
+			).toBe(true);
+		});
+
+		it("rejects result with old flat error string", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "result",
+					id: "2",
+					status: "error",
+					tool_calls_made: [],
+					iterations: 0,
+					error: "Model error",
+				}),
+			).toBe(false);
+		});
+
+		it("validates event with event_seq and send_id", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "event",
+					event: { event: "content_delta", text: "hi" },
+					event_seq: 0,
+					send_id: "2",
+				}),
+			).toBe(true);
+		});
+
+		it("rejects event missing event_seq", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "event",
+					event: { event: "content_delta", text: "hi" },
+					send_id: "2",
+				}),
+			).toBe(false);
+		});
+
+		it("rejects event missing send_id", () => {
+			expect(
+				Value.Check(IpcResponseSchema, {
+					type: "event",
+					event: { event: "content_delta", text: "hi" },
+					event_seq: 0,
+				}),
+			).toBe(false);
 		});
 	});
 });

@@ -1,3 +1,4 @@
+import type { ErrorEnvelope } from "./errors.ts";
 import type { IpcRequest, IpcResponse, WorkerEvent } from "./types.ts";
 
 export function encodeResponse(response: IpcResponse): string {
@@ -24,8 +25,8 @@ export function decodeRequest(line: string): { ok: true; request: IpcRequest } |
 	return { ok: true, request: obj as unknown as IpcRequest };
 }
 
-export function wrapEvent(event: WorkerEvent): IpcResponse {
-	return { type: "event", event } as IpcResponse;
+export function wrapEvent(event: WorkerEvent, sendId: string, eventSeq: number): IpcResponse {
+	return { type: "event", event, send_id: sendId, event_seq: eventSeq } as IpcResponse;
 }
 
 export function buildResult(
@@ -36,7 +37,7 @@ export function buildResult(
 		toolCallsMade: { name: string; args: unknown }[];
 		usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 		iterations: number;
-		error?: string;
+		error?: ErrorEnvelope;
 	},
 ): IpcResponse {
 	return {
@@ -51,7 +52,7 @@ export function buildResult(
 	} as IpcResponse;
 }
 
-export function buildError(id: string | undefined, error: string): IpcResponse {
+export function buildError(id: string | undefined, error: ErrorEnvelope): IpcResponse {
 	return {
 		type: "result",
 		id: id ?? "unknown",
