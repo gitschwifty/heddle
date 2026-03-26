@@ -1,6 +1,20 @@
 import type { ErrorEnvelope } from "./errors.ts";
 import type { IpcRequest, IpcResponse, WorkerEvent } from "./types.ts";
 
+export interface CorrelationContext {
+	session_id?: string;
+	task_id?: string;
+	worker_id?: string;
+}
+
+function spreadDefined(obj: CorrelationContext): Partial<CorrelationContext> {
+	const result: Partial<CorrelationContext> = {};
+	if (obj.session_id !== undefined) result.session_id = obj.session_id;
+	if (obj.task_id !== undefined) result.task_id = obj.task_id;
+	if (obj.worker_id !== undefined) result.worker_id = obj.worker_id;
+	return result;
+}
+
 export function encodeResponse(response: IpcResponse): string {
 	return JSON.stringify(response);
 }
@@ -25,8 +39,14 @@ export function decodeRequest(line: string): { ok: true; request: IpcRequest } |
 	return { ok: true, request: obj as unknown as IpcRequest };
 }
 
-export function wrapEvent(event: WorkerEvent, sendId: string, eventSeq: number): IpcResponse {
-	return { type: "event", event, send_id: sendId, event_seq: eventSeq } as IpcResponse;
+export function wrapEvent(event: WorkerEvent, sendId: string, eventSeq: number, ctx?: CorrelationContext): IpcResponse {
+	return {
+		type: "event",
+		event,
+		send_id: sendId,
+		event_seq: eventSeq,
+		...(ctx ? spreadDefined(ctx) : {}),
+	} as IpcResponse;
 }
 
 export function buildResult(
@@ -38,6 +58,10 @@ export function buildResult(
 		usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 		iterations: number;
 		error?: ErrorEnvelope;
+		correlation?: CorrelationContext;
+		modelLatencyMs?: number;
+		toolLatencyMs?: number;
+		totalLatencyMs?: number;
 	},
 ): IpcResponse {
 	return {
@@ -49,10 +73,18 @@ export function buildResult(
 		usage: opts.usage,
 		iterations: opts.iterations,
 		error: opts.error,
+		...(opts.correlation ? spreadDefined(opts.correlation) : {}),
+		...(opts.totalLatencyMs !== undefined ? { total_latency_ms: opts.totalLatencyMs } : {}),
+		...(opts.modelLatencyMs !== undefined ? { model_latency_ms: opts.modelLatencyMs } : {}),
+		...(opts.toolLatencyMs !== undefined ? { tool_latency_ms: opts.toolLatencyMs } : {}),
 	} as IpcResponse;
 }
 
-export function buildError(id: string | undefined, error: ErrorEnvelope): IpcResponse {
+export function buildError(
+	id: string | undefined,
+	error: ErrorEnvelope,
+	correlation?: CorrelationContext,
+): IpcResponse {
 	return {
 		type: "result",
 		id: id ?? "unknown",
@@ -60,5 +92,6 @@ export function buildError(id: string | undefined, error: ErrorEnvelope): IpcRes
 		error,
 		tool_calls_made: [],
 		iterations: 0,
+		...(correlation ? spreadDefined(correlation) : {}),
 	} as IpcResponse;
 }

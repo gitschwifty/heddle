@@ -516,6 +516,104 @@ describe("headless adapter", () => {
 		}
 	});
 
+	it("events carry session_id after init", async () => {
+		resetMock("normal");
+		const h = spawnHeadless();
+		try {
+			h.sendLine(initMsg());
+			await h.waitForLines(1);
+			const initOk = parseLine(h.lines[0]);
+			const sessionId = initOk.session_id as string;
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Hi there" }));
+			await h.waitForLines(4, 8000);
+
+			const messages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const events = messages.filter((m) => m.type === "event");
+			expect(events.length).toBeGreaterThan(0);
+			for (const evt of events) {
+				expect(evt.session_id).toBe(sessionId);
+			}
+
+			const result = messages.find((m) => m.type === "result");
+			expect(result).toBeDefined();
+			if (result) {
+				expect(result.session_id).toBe(sessionId);
+			}
+		} finally {
+			h.close();
+		}
+	});
+
+	it("events carry task_id and worker_id when provided in init", async () => {
+		resetMock("normal");
+		const h = spawnHeadless();
+		try {
+			h.sendLine(
+				JSON.stringify({
+					type: "init",
+					id: "1",
+					protocol_version: "0.1.0",
+					config: {
+						model: "openrouter/auto",
+						system_prompt: "You are helpful.",
+						tools: ["read_file", "glob", "grep"],
+						max_iterations: 10,
+						task_id: "task-42",
+						worker_id: "worker-7",
+					},
+				}),
+			);
+			await h.waitForLines(1);
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Hi there" }));
+			await h.waitForLines(4, 8000);
+
+			const messages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const events = messages.filter((m) => m.type === "event");
+			expect(events.length).toBeGreaterThan(0);
+			for (const evt of events) {
+				expect(evt.task_id).toBe("task-42");
+				expect(evt.worker_id).toBe("worker-7");
+			}
+
+			const result = messages.find((m) => m.type === "result");
+			expect(result).toBeDefined();
+			if (result) {
+				expect(result.task_id).toBe("task-42");
+				expect(result.worker_id).toBe("worker-7");
+			}
+		} finally {
+			h.close();
+		}
+	});
+
+	it("result carries latency fields", async () => {
+		resetMock("normal");
+		const h = spawnHeadless();
+		try {
+			h.sendLine(initMsg());
+			await h.waitForLines(1);
+
+			h.sendLine(JSON.stringify({ type: "send", id: "2", message: "Hi there" }));
+			await h.waitForLines(4, 8000);
+
+			const messages = h.lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const result = messages.find((m) => m.type === "result");
+			expect(result).toBeDefined();
+			if (result) {
+				expect(typeof result.total_latency_ms).toBe("number");
+				expect(result.total_latency_ms as number).toBeGreaterThanOrEqual(0);
+				expect(typeof result.model_latency_ms).toBe("number");
+				expect(result.model_latency_ms as number).toBeGreaterThanOrEqual(0);
+				expect(typeof result.tool_latency_ms).toBe("number");
+				expect(result.tool_latency_ms as number).toBeGreaterThanOrEqual(0);
+			}
+		} finally {
+			h.close();
+		}
+	});
+
 	it("multi-send accumulates messages (multi-turn)", async () => {
 		resetMock("normal");
 		const h = spawnHeadless();

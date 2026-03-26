@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { buildError, buildResult, decodeRequest, encodeResponse, wrapEvent } from "../../src/ipc/codec.ts";
+import {
+	buildError,
+	buildResult,
+	type CorrelationContext,
+	decodeRequest,
+	encodeResponse,
+	wrapEvent,
+} from "../../src/ipc/codec.ts";
 import type { IpcResponse, WorkerEvent } from "../../src/ipc/types.ts";
 
 describe("encodeResponse", () => {
@@ -64,6 +71,40 @@ describe("wrapEvent", () => {
 		expect((wrapped as Record<string, unknown>).event_seq).toBe(5);
 		expect((wrapped as Record<string, unknown>).send_id).toBe("s2");
 	});
+
+	it("includes correlation context when provided", () => {
+		const event: WorkerEvent = { event: "content_delta", text: "hi" } as WorkerEvent;
+		const ctx: CorrelationContext = { session_id: "sess-1", task_id: "task-1", worker_id: "worker-0" };
+		const wrapped = wrapEvent(event, "send-1", 0, ctx);
+		expect(wrapped).toEqual({
+			type: "event",
+			event: { event: "content_delta", text: "hi" },
+			send_id: "send-1",
+			event_seq: 0,
+			session_id: "sess-1",
+			task_id: "task-1",
+			worker_id: "worker-0",
+		});
+	});
+
+	it("omits undefined correlation fields", () => {
+		const event: WorkerEvent = { event: "content_delta", text: "hi" } as WorkerEvent;
+		const ctx: CorrelationContext = { session_id: "sess-1" };
+		const wrapped = wrapEvent(event, "send-1", 0, ctx);
+		const obj = wrapped as Record<string, unknown>;
+		expect(obj.session_id).toBe("sess-1");
+		expect("task_id" in obj).toBe(false);
+		expect("worker_id" in obj).toBe(false);
+	});
+
+	it("works without correlation context (backward compatible)", () => {
+		const event: WorkerEvent = { event: "content_delta", text: "hi" } as WorkerEvent;
+		const wrapped = wrapEvent(event, "send-1", 0);
+		const obj = wrapped as Record<string, unknown>;
+		expect("session_id" in obj).toBe(false);
+		expect("task_id" in obj).toBe(false);
+		expect("worker_id" in obj).toBe(false);
+	});
 });
 
 describe("buildResult", () => {
@@ -118,6 +159,53 @@ describe("buildResult", () => {
 	});
 });
 
+describe("buildResult with correlation and latency", () => {
+	it("includes correlation IDs when provided", () => {
+		const result = buildResult("2", {
+			status: "ok",
+			response: "Hello!",
+			toolCallsMade: [],
+			iterations: 1,
+			correlation: { session_id: "sess-1", task_id: "task-1", worker_id: "worker-0" },
+		});
+		const obj = result as Record<string, unknown>;
+		expect(obj.session_id).toBe("sess-1");
+		expect(obj.task_id).toBe("task-1");
+		expect(obj.worker_id).toBe("worker-0");
+	});
+
+	it("includes latency fields when provided", () => {
+		const result = buildResult("2", {
+			status: "ok",
+			response: "Hello!",
+			toolCallsMade: [],
+			iterations: 1,
+			totalLatencyMs: 200,
+			modelLatencyMs: 150,
+			toolLatencyMs: 50,
+		});
+		const obj = result as Record<string, unknown>;
+		expect(obj.total_latency_ms).toBe(200);
+		expect(obj.model_latency_ms).toBe(150);
+		expect(obj.tool_latency_ms).toBe(50);
+	});
+
+	it("omits correlation and latency fields when not provided", () => {
+		const result = buildResult("2", {
+			status: "ok",
+			toolCallsMade: [],
+			iterations: 1,
+		});
+		const obj = result as Record<string, unknown>;
+		expect("session_id" in obj).toBe(false);
+		expect("task_id" in obj).toBe(false);
+		expect("worker_id" in obj).toBe(false);
+		expect("total_latency_ms" in obj).toBe(false);
+		expect("model_latency_ms" in obj).toBe(false);
+		expect("tool_latency_ms" in obj).toBe(false);
+	});
+});
+
 describe("buildError", () => {
 	it("builds an error with ErrorEnvelope", () => {
 		const result = buildError("5", { code: "protocol_error", message: "bad request", retryable: false });
@@ -137,5 +225,17 @@ describe("buildError", () => {
 			id: "unknown",
 			error: { code: "protocol_error", message: "parse error", retryable: false },
 		});
+	});
+
+	it("includes correlation context when provided", () => {
+		const result = buildError(
+			"5",
+			{ code: "protocol_error", message: "bad", retryable: false },
+			{ session_id: "sess-1", task_id: "task-1" },
+		);
+		const obj = result as Record<string, unknown>;
+		expect(obj.session_id).toBe("sess-1");
+		expect(obj.task_id).toBe("task-1");
+		expect("worker_id" in obj).toBe(false);
 	});
 });
