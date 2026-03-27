@@ -8,6 +8,8 @@ import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
 import { createAskUserTool } from "../tools/ask-user.ts";
 import type { Message, ToolCall } from "../types.ts";
+import { createMentionCompleter } from "./completer.ts";
+import { buildMentionMessage, resolveMentions } from "./mentions.ts";
 
 function buildPermissionResolver(rl: readline.Interface) {
 	return (name: string, _call: ToolCall): Promise<"allow" | "deny" | "always"> => {
@@ -39,6 +41,7 @@ export async function startCli(): Promise<void> {
 	const rl = readline.createInterface({
 		input: process.stdin,
 		output: process.stdout,
+		completer: createMentionCompleter(process.cwd()),
 	});
 
 	ctx.registry.register(
@@ -78,7 +81,16 @@ export async function startCli(): Promise<void> {
 				return;
 			}
 
-			const userMsg: Message = { role: "user", content: trimmed };
+			const mentions = await resolveMentions(trimmed, process.cwd());
+			for (const f of mentions.injectedFiles) {
+				console.log(`  [injected] ${f.path} (${f.lines} lines)`);
+			}
+			for (const err of mentions.errors) {
+				console.log(`  [mention] ${err}`);
+			}
+			const content =
+				mentions.injectedFiles.length > 0 ? buildMentionMessage(trimmed, mentions.injectedFiles) : trimmed;
+			const userMsg: Message = { role: "user", content };
 			messages.push(userMsg);
 			await appendMessage(sessionFile, userMsg);
 
