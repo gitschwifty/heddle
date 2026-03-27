@@ -4,5 +4,5 @@ export interface HeddleTool {
 	name: string;
 	description: string;
 	parameters: TSchema;
-	execute: (params: unknown) => Promise<string>;
+	execute: (params: unknown, options?: { signal?: AbortSignal }) => Promise<string>;
 }

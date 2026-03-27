@@ -13,6 +13,7 @@ export interface AgentLoopOptions {
 	permissionResolver?: (name: string, call: ToolCall) => Promise<"allow" | "deny" | "always">;
 	toolFilter?: (tools: ToolDefinition[]) => ToolDefinition[];
 	planMode?: boolean;
+	signal?: AbortSignal;
 }
 
 const DEFAULT_MAX_ITERATIONS = 20;
@@ -137,10 +138,15 @@ export async function* runAgentLoop(
 	const overrides = options?.requestOverrides;
 	const checker = options?.permissionChecker;
 	const resolver = options?.permissionResolver;
+	const signal = options?.signal;
 	let lastAssistantContent: string | null = null;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
+		if (signal?.aborted) return;
+
 		const response = await provider.send(messages, tools.length > 0 ? tools : undefined, overrides);
+
+		if (signal?.aborted) return;
 
 		if (response.usage) {
 			yield { type: "usage", usage: response.usage };
@@ -174,6 +180,8 @@ export async function* runAgentLoop(
 		// Execute each tool call and collect results
 		const toolMessages: ToolMessage[] = [];
 		for (const call of toolCalls) {
+			if (signal?.aborted) return;
+
 			// Permission check
 			if (checker) {
 				const permResult = await checkPermission(checker, resolver, call);
@@ -187,7 +195,7 @@ export async function* runAgentLoop(
 			}
 
 			yield { type: "tool_start", name: call.function.name, call };
-			const result = await registry.execute(call.function.name, call.function.arguments);
+			const result = await registry.execute(call.function.name, call.function.arguments, { signal });
 			yield { type: "tool_end", name: call.function.name, result, call };
 			toolMessages.push({
 				role: "tool",
@@ -236,9 +244,12 @@ export async function* runAgentLoopStreaming(
 	const overrides = options?.requestOverrides;
 	const checker = options?.permissionChecker;
 	const resolver = options?.permissionResolver;
+	const signal = options?.signal;
 	let lastAssistantContent: string | null = null;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
+		if (signal?.aborted) return;
+
 		// Accumulate content and tool call deltas from the stream
 		let contentParts = "";
 		const assembledToolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
@@ -276,6 +287,8 @@ export async function* runAgentLoopStreaming(
 			}
 		}
 
+		if (signal?.aborted) return;
+
 		// Build assembled tool calls array (sorted by index)
 		const toolCalls: ToolCall[] = [...assembledToolCalls.entries()]
 			.sort(([a], [b]) => a - b)
@@ -311,6 +324,8 @@ export async function* runAgentLoopStreaming(
 		// Execute each tool call
 		const toolMessages: ToolMessage[] = [];
 		for (const call of toolCalls) {
+			if (signal?.aborted) return;
+
 			// Permission check
 			if (checker) {
 				const permResult = await checkPermission(checker, resolver, call);
@@ -324,7 +339,7 @@ export async function* runAgentLoopStreaming(
 			}
 
 			yield { type: "tool_start", name: call.function.name, call };
-			const result = await registry.execute(call.function.name, call.function.arguments);
+			const result = await registry.execute(call.function.name, call.function.arguments, { signal });
 			yield { type: "tool_end", name: call.function.name, result, call };
 			toolMessages.push({
 				role: "tool",

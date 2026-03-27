@@ -33,7 +33,7 @@ export class ToolRegistry {
 	}
 
 	/** Execute a tool by name, parsing JSON string arguments. */
-	async execute(name: string, argsJson: string): Promise<string> {
+	async execute(name: string, argsJson: string, options?: { signal?: AbortSignal }): Promise<string> {
 		const tool = this.tools.get(name);
 		if (!tool) {
 			const available = [...this.tools.keys()];
@@ -53,7 +53,7 @@ export class ToolRegistry {
 		}
 
 		try {
-			return await tool.execute(parsed);
+			return await tool.execute(parsed, options);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			return `Error: ${message}`;

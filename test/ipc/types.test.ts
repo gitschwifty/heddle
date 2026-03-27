@@ -134,6 +134,15 @@ describe("IPC schemas", () => {
 			).toBe(true);
 		});
 
+		it("validates heartbeat event", () => {
+			expect(
+				Value.Check(WorkerEventSchema, {
+					event: "heartbeat",
+					timestamp: "2026-03-26T12:00:00.000Z",
+				}),
+			).toBe(true);
+		});
+
 		it("rejects context_prune missing required fields", () => {
 			expect(
 				Value.Check(WorkerEventSchema, {
@@ -149,6 +158,10 @@ describe("IPC schemas", () => {
 
 		it("validates context_handoff placeholder", () => {
 			expect(Value.Check(WorkerEventSchema, { event: "context_handoff" })).toBe(true);
+		});
+
+		it("rejects heartbeat without timestamp", () => {
+			expect(Value.Check(WorkerEventSchema, { event: "heartbeat" })).toBe(false);
 		});
 	});
 
