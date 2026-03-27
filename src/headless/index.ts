@@ -203,7 +203,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 	const heartbeatTimer = setInterval(() => {
 		writeLine(
 			wrapEvent(
-				{ event: "heartbeat", timestamp: new Date().toISOString() } as WorkerEvent,
+				{ event: "heartbeat", duration_ms: Math.round(performance.now() - startTime) } as WorkerEvent,
 				request.id,
 				eventSeq++,
 				correlationCtx,

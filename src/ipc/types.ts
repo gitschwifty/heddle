@@ -65,7 +65,7 @@ export const WorkerEventSchema = Type.Union([
 	Type.Object({ event: Type.Literal("context_handoff") }),
 	Type.Object({
 		event: Type.Literal("heartbeat"),
-		timestamp: Type.String(),
+		duration_ms: Type.Number(),
 	}),
 ]);
 

@@ -138,7 +138,7 @@ describe("IPC schemas", () => {
 			expect(
 				Value.Check(WorkerEventSchema, {
 					event: "heartbeat",
-					timestamp: "2026-03-26T12:00:00.000Z",
+					duration_ms: 5000,
 				}),
 			).toBe(true);
 		});
