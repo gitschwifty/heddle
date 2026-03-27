@@ -8,6 +8,7 @@ import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
 import { createAskUserTool } from "../tools/ask-user.ts";
 import type { Message, ToolCall } from "../types.ts";
+import { formatShellForContext, printShellResult, runShell } from "./shell.ts";
 
 function buildPermissionResolver(rl: readline.Interface) {
 	return (name: string, _call: ToolCall): Promise<"allow" | "deny" | "always"> => {
@@ -75,6 +76,34 @@ export async function startCli(): Promise<void> {
 			if (trimmed === "exit" || trimmed === "quit") {
 				console.log("Goodbye!");
 				rl.close();
+				return;
+			}
+
+			// !! prefix — run shell, print output AND inject into agent context
+			if (trimmed.startsWith("!!")) {
+				const cmd = trimmed.slice(2).trim();
+				if (!cmd) {
+					prompt();
+					return;
+				}
+				const result = await runShell(cmd);
+				printShellResult(result);
+				const contextMsg = formatShellForContext(cmd, result);
+				messages.push(contextMsg);
+				await appendMessage(sessionFile, contextMsg);
+				prompt();
+				return;
+			}
+			// ! prefix — run shell, print output only (NOT added to context)
+			if (trimmed.startsWith("!")) {
+				const cmd = trimmed.slice(1).trim();
+				if (!cmd) {
+					prompt();
+					return;
+				}
+				const result = await runShell(cmd);
+				printShellResult(result);
+				prompt();
 				return;
 			}
 
