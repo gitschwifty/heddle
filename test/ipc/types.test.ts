@@ -63,7 +63,7 @@ describe("IPC schemas", () => {
 				Value.Check(IpcRequestSchema, {
 					type: "init",
 					id: "1",
-					protocol_version: "0.1.0",
+					protocol_version: "0.2.0",
 					config: { model: "m", system_prompt: "s", tools: [] },
 				}),
 			).toBe(true);
@@ -172,7 +172,7 @@ describe("IPC schemas", () => {
 					type: "init_ok",
 					id: "1",
 					session_id: "sess-1",
-					protocol_version: "0.1.0",
+					protocol_version: "0.2.0",
 				}),
 			).toBe(true);
 		});
@@ -183,7 +183,7 @@ describe("IPC schemas", () => {
 					type: "init_ok",
 					id: "1",
 					session_id: "sess-1",
-					protocol_version: "0.1.0",
+					protocol_version: "0.2.0",
 					error: { code: "protocol_error", message: "bad config", retryable: false },
 				}),
 			).toBe(true);

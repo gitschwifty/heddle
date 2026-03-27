@@ -159,7 +159,7 @@ async function runFixtureStrict(name: string): Promise<void> {
 				HEDDLE_BASE_URL: baseUrl,
 				OPENROUTER_API_KEY: "test-key-fixture",
 				HEDDLE_HOME: heddleHome,
-				HEDDLE_PROTOCOL_VERSION: "0.1.0",
+				HEDDLE_PROTOCOL_VERSION: "0.2.0",
 			},
 		});
 

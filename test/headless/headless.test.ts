@@ -174,7 +174,7 @@ function spawnHeadless(extraEnv?: Record<string, string>): HeadlessProcess {
 			HEDDLE_BASE_URL: baseUrl,
 			OPENROUTER_API_KEY: "test-key-headless",
 			HEDDLE_HOME: heddleHome,
-			HEDDLE_PROTOCOL_VERSION: "0.1.0",
+			HEDDLE_PROTOCOL_VERSION: "0.2.0",
 			...extraEnv,
 		},
 	});
@@ -236,7 +236,7 @@ function initMsg(overrides?: Record<string, unknown>) {
 	return JSON.stringify({
 		type: "init",
 		id: "1",
-		protocol_version: "0.1.0",
+		protocol_version: "0.2.0",
 		config: {
 			model: "openrouter/auto",
 			system_prompt: "You are helpful.",
@@ -258,7 +258,7 @@ describe("headless adapter", () => {
 			expect(msg.type).toBe("init_ok");
 			expect(msg.id).toBe("1");
 			expect(typeof msg.session_id).toBe("string");
-			expect(msg.protocol_version).toBe("0.1.0");
+			expect(msg.protocol_version).toBe("0.2.0");
 		} finally {
 			h.close();
 		}
@@ -378,7 +378,7 @@ describe("headless adapter", () => {
 			h.sendLine(initMsg());
 			await h.waitForLines(1);
 			const msg = parseLine(h.lines[0]);
-			expect(msg.protocol_version).toBe("0.1.0");
+			expect(msg.protocol_version).toBe("0.2.0");
 		} finally {
 			h.close();
 		}
@@ -436,7 +436,7 @@ describe("headless adapter", () => {
 			const msg = JSON.stringify({
 				type: "init",
 				id: "1",
-				protocol_version: "0.1.0",
+				protocol_version: "0.2.0",
 				config: {
 					model: "openrouter/auto",
 					system_prompt: "You are helpful.",
@@ -616,7 +616,7 @@ describe("headless adapter", () => {
 				JSON.stringify({
 					type: "init",
 					id: "1",
-					protocol_version: "0.1.0",
+					protocol_version: "0.2.0",
 					config: {
 						model: "openrouter/auto",
 						system_prompt: "You are helpful.",
@@ -832,7 +832,7 @@ describe("headless adapter", () => {
 				JSON.stringify({
 					type: "init",
 					id: "1",
-					protocol_version: "0.1.0",
+					protocol_version: "0.2.0",
 					config: {
 						model: "openrouter/auto",
 						system_prompt: "You are helpful.",

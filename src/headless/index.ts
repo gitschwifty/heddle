@@ -202,7 +202,12 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 	const heartbeatInterval = Number(process.env.HEDDLE_HEARTBEAT_INTERVAL) || 5000;
 	const heartbeatTimer = setInterval(() => {
 		writeLine(
-			wrapEvent({ event: "heartbeat", timestamp: new Date().toISOString() } as WorkerEvent, request.id, eventSeq++, correlationCtx),
+			wrapEvent(
+				{ event: "heartbeat", timestamp: new Date().toISOString() } as WorkerEvent,
+				request.id,
+				eventSeq++,
+				correlationCtx,
+			),
 		);
 	}, heartbeatInterval);
 
