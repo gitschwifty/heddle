@@ -1,6 +1,10 @@
 import * as readline from "node:readline";
 import type { AgentLoopOptions } from "../agent/loop.ts";
 import { runAgentLoopStreaming } from "../agent/loop.ts";
+import { createBuiltinCommands } from "../commands/builtins.ts";
+import { loadCustomCommands } from "../commands/loader.ts";
+import { CommandRegistry } from "../commands/registry.ts";
+import type { CommandContext } from "../commands/types.ts";
 import { pruneToolResults } from "../context/index.ts";
 import { readOnlyToolFilter } from "../permissions/index.ts";
 import { appendContextMarker, appendMessage } from "../session/jsonl.ts";
@@ -35,12 +39,37 @@ export async function startCli(): Promise<void> {
 		console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
 		process.exit(1);
 	}
-	const { config, provider, registry, messages, sessionFile } = ctx;
+	const { config, registry, messages, sessionFile } = ctx;
+	let activeProvider = ctx.provider;
+
+	const setModel = (model: string) => {
+		config.model = model;
+		activeProvider = ctx.provider.with({ model });
+	};
 
 	const rl = readline.createInterface({
 		input: process.stdin,
 		output: process.stdout,
 	});
+
+	// Set up slash commands
+	const commandRegistry = new CommandRegistry();
+	const builtins = createBuiltinCommands(commandRegistry);
+	for (const cmd of builtins) commandRegistry.register(cmd);
+	const customCommands = await loadCustomCommands();
+	for (const cmd of customCommands) commandRegistry.register(cmd);
+
+	const commandCtx: CommandContext = {
+		config,
+		messages,
+		registry,
+		costTracker: ctx.costTracker,
+		sessionFile,
+		sessionId: ctx.sessionId,
+		provider: activeProvider,
+		rl,
+		setModel,
+	};
 
 	ctx.registry.register(
 		createAskUserTool(async (question, options) => {
@@ -106,6 +135,25 @@ export async function startCli(): Promise<void> {
 				prompt();
 				return;
 			}
+			// / prefix — slash command dispatch
+			if (trimmed.startsWith("/")) {
+				const spaceIdx = trimmed.indexOf(" ");
+				const name = spaceIdx === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIdx);
+				const args = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1);
+				const cmd = commandRegistry.get(name);
+				if (cmd) {
+					await cmd.execute(args, commandCtx);
+				} else {
+					const suggestion = commandRegistry.suggest(name);
+					console.log(
+						suggestion
+							? `Unknown command: /${name}. Did you mean /${suggestion}?`
+							: `Unknown command: /${name}. Type /help for available commands.`,
+					);
+				}
+				prompt();
+				return;
+			}
 
 			const userMsg: Message = { role: "user", content: trimmed };
 			messages.push(userMsg);
@@ -113,7 +161,7 @@ export async function startCli(): Promise<void> {
 
 			try {
 				let needsNewline = false;
-				for await (const event of runAgentLoopStreaming(provider, registry, messages, loopOptions)) {
+				for await (const event of runAgentLoopStreaming(activeProvider, registry, messages, loopOptions)) {
 					switch (event.type) {
 						case "content_delta": {
 							if (!needsNewline) {
