@@ -167,5 +167,49 @@ export function createBuiltinCommands(commandRegistry: CommandRegistry): SlashCo
 				console.log(`  Tokens: ${stats.tokensBefore} → ${stats.tokensAfter}`);
 			},
 		},
+		{
+			name: "sessions",
+			description: "List recent sessions",
+			execute: async (_args, _ctx) => {
+				const { listSessions } = await import("../session/list.ts");
+				const sessions = await listSessions();
+				if (sessions.length === 0) {
+					console.log("  No sessions found.");
+					return;
+				}
+				for (const s of sessions.slice(0, 20)) {
+					const name = s.name ? ` (${s.name})` : "";
+					const preview = s.firstUserMessage ? ` — ${s.firstUserMessage}` : "";
+					console.log(`  ${s.id.slice(0, 8)}${name} | ${s.created} | ${s.messageCount} msgs${preview}`);
+				}
+			},
+		},
+		{
+			name: "name",
+			description: "Name the current session",
+			execute: async (args, ctx) => {
+				if (!args.trim()) {
+					console.log("  Usage: /name <session-name>");
+					return;
+				}
+				const { appendContextMarker } = await import("../session/jsonl.ts");
+				await appendContextMarker(ctx.sessionFile, {
+					type: "session_name",
+					name: args.trim(),
+					timestamp: new Date().toISOString(),
+				});
+				console.log(`  Session named: ${args.trim()}`);
+			},
+		},
+		{
+			name: "fork",
+			description: "Fork the current session",
+			execute: async (_args, ctx) => {
+				const { forkSession } = await import("../session/fork.ts");
+				const result = await forkSession(ctx.sessionFile);
+				console.log(`  Forked to: ${result.sessionFile}`);
+				console.log(`  New session ID: ${result.sessionId}`);
+			},
+		},
 	];
 }
