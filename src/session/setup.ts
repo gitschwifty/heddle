@@ -63,6 +63,7 @@ function createDefaultTools(): HeddleTool[] {
 
 export async function createSession(options?: SessionOptions): Promise<SessionContext> {
 	ensureHeddleDirs();
+	import("../file-history/cleanup.ts").then((m) => m.runFileHistoryCleanup()).catch(() => {});
 
 	if (options?.cwd) {
 		if (!existsSync(options.cwd)) {

@@ -31,6 +31,9 @@ export function createEditTool(): HeddleTool {
 				return `Error: File not found: ${file_path}`;
 			}
 
+			const { backupFile } = await import("../file-history/backup.ts");
+			await backupFile(file_path);
+
 			if (content.includes(old_string)) {
 				if (replace_all) {
 					const count = content.split(old_string).length - 1;
