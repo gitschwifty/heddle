@@ -13,26 +13,32 @@ async function withTmpDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 describe("listBackups", () => {
-	test("lists backups sorted newest-first", async () => {
+	test("lists backups sorted newest-first (highest version first)", async () => {
 		await withTmpDir(async (dir) => {
 			process.env.HEDDLE_HOME = dir;
 			const { getFileHistoryDir } = await import("../../src/config/paths.ts");
+			const { FileHistoryMeta } = await import("../../src/file-history/meta.ts");
 			const { listBackups } = await import("../../src/file-history/restore.ts");
 
 			const filePath = join(dir, "test.txt");
-			const histDir = getFileHistoryDir(dir, filePath);
-			await mkdir(histDir, { recursive: true });
+			const baseDir = getFileHistoryDir(dir);
+			const meta = new FileHistoryMeta(baseDir);
+			const entry = await meta.getOrCreate(filePath);
+			const uuidDir = join(baseDir, entry.uuid);
+			await mkdir(uuidDir, { recursive: true });
 
-			// Create backups with known timestamps
-			await writeFile(join(histDir, "1000.bak"), "old");
-			await writeFile(join(histDir, "3000.bak"), "newest");
-			await writeFile(join(histDir, "2000.bak"), "middle");
+			await writeFile(join(uuidDir, "v1.bak"), "old");
+			await meta.incrementVersion(entry.uuid);
+			await writeFile(join(uuidDir, "v2.bak"), "middle");
+			await meta.incrementVersion(entry.uuid);
+			await writeFile(join(uuidDir, "v3.bak"), "newest");
+			await meta.incrementVersion(entry.uuid);
 
 			const backups = await listBackups(filePath, dir);
 			expect(backups.length).toBe(3);
-			expect(backups[0]!.timestamp).toBe(3000);
-			expect(backups[1]!.timestamp).toBe(2000);
-			expect(backups[2]!.timestamp).toBe(1000);
+			expect(backups[0]!.version).toBe(3);
+			expect(backups[1]!.version).toBe(2);
+			expect(backups[2]!.version).toBe(1);
 		});
 	});
 
@@ -50,18 +56,22 @@ describe("listBackups", () => {
 		await withTmpDir(async (dir) => {
 			process.env.HEDDLE_HOME = dir;
 			const { getFileHistoryDir } = await import("../../src/config/paths.ts");
+			const { FileHistoryMeta } = await import("../../src/file-history/meta.ts");
 			const { listBackups } = await import("../../src/file-history/restore.ts");
 
 			const filePath = join(dir, "sized.txt");
-			const histDir = getFileHistoryDir(dir, filePath);
-			await mkdir(histDir, { recursive: true });
+			const baseDir = getFileHistoryDir(dir);
+			const meta = new FileHistoryMeta(baseDir);
+			const entry = await meta.getOrCreate(filePath);
+			const uuidDir = join(baseDir, entry.uuid);
+			await mkdir(uuidDir, { recursive: true });
 
-			await writeFile(join(histDir, "5000.bak"), "twelve chars");
+			await writeFile(join(uuidDir, "v1.bak"), "twelve chars");
+			await meta.incrementVersion(entry.uuid);
 
 			const backups = await listBackups(filePath, dir);
 			expect(backups.length).toBe(1);
 			expect(backups[0]!.size).toBe(12);
-			expect(backups[0]!.path).toContain("5000.bak");
 		});
 	});
 });
@@ -71,16 +81,21 @@ describe("restoreBackup", () => {
 		await withTmpDir(async (dir) => {
 			process.env.HEDDLE_HOME = dir;
 			const { getFileHistoryDir } = await import("../../src/config/paths.ts");
+			const { FileHistoryMeta } = await import("../../src/file-history/meta.ts");
 			const { restoreBackup } = await import("../../src/file-history/restore.ts");
 
 			const filePath = join(dir, "restore-me.txt");
-			const histDir = getFileHistoryDir(dir, filePath);
-			await mkdir(histDir, { recursive: true });
+			const baseDir = getFileHistoryDir(dir);
+			const meta = new FileHistoryMeta(baseDir);
+			const entry = await meta.getOrCreate(filePath);
+			const uuidDir = join(baseDir, entry.uuid);
+			await mkdir(uuidDir, { recursive: true });
 
-			await writeFile(join(histDir, "9999.bak"), "restored content");
+			await writeFile(join(uuidDir, "v1.bak"), "restored content");
+			await meta.incrementVersion(entry.uuid);
 			await writeFile(filePath, "current content");
 
-			const result = await restoreBackup(filePath, 9999, dir);
+			const result = await restoreBackup(filePath, 1, dir);
 			expect(result).toContain("Restored");
 
 			const content = await readFile(filePath, "utf-8");
@@ -88,13 +103,13 @@ describe("restoreBackup", () => {
 		});
 	});
 
-	test("returns error for nonexistent timestamp", async () => {
+	test("returns error for nonexistent version", async () => {
 		await withTmpDir(async (dir) => {
 			process.env.HEDDLE_HOME = dir;
 			const { restoreBackup } = await import("../../src/file-history/restore.ts");
 
 			const filePath = join(dir, "missing.txt");
-			const result = await restoreBackup(filePath, 12345, dir);
+			const result = await restoreBackup(filePath, 99, dir);
 			expect(result).toMatch(/not found|error/i);
 		});
 	});
