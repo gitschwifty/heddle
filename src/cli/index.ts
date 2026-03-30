@@ -71,6 +71,7 @@ export async function startCli(): Promise<void> {
 		sessionFile,
 		sessionId: ctx.sessionId,
 		provider: activeProvider,
+		weakProvider: ctx.weakProvider,
 		rl,
 		setModel,
 	};
@@ -258,6 +259,23 @@ export async function startCli(): Promise<void> {
 						tokens_after: pruneResult.tokensAfter,
 						timestamp: new Date().toISOString(),
 					});
+				}
+				// Auto-compact if context is getting large
+				if (ctx.weakProvider) {
+					const { shouldCompact, compactContext } = await import("../context/compaction.ts");
+					const modelLimit = config.maxTokens ?? 128000;
+					if (shouldCompact(messages, modelLimit)) {
+						const stats = await compactContext(messages, ctx.weakProvider, modelLimit);
+						if (stats.messagesRemoved > 0) {
+							await appendContextMarker(sessionFile, {
+								type: "context_compaction",
+								messages_removed: stats.messagesRemoved,
+								tokens_before: stats.tokensBefore,
+								tokens_after: stats.tokensAfter,
+								timestamp: new Date().toISOString(),
+							});
+						}
+					}
 				}
 			} catch (err) {
 				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

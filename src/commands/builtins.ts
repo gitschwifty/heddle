@@ -152,5 +152,20 @@ export function createBuiltinCommands(commandRegistry: CommandRegistry): SlashCo
 				}
 			},
 		},
+		{
+			name: "compact",
+			description: "Compact conversation context",
+			execute: async (_args, ctx) => {
+				if (!ctx.weakProvider) {
+					console.log("  No weak model configured — cannot compact.");
+					return;
+				}
+				const { compactContext } = await import("../context/compaction.ts");
+				const modelLimit = ctx.config.maxTokens ?? 128000;
+				const stats = await compactContext(ctx.messages, ctx.weakProvider, modelLimit);
+				console.log(`  Compacted: removed ${stats.messagesRemoved} messages`);
+				console.log(`  Tokens: ${stats.tokensBefore} → ${stats.tokensAfter}`);
+			},
+		},
 	];
 }

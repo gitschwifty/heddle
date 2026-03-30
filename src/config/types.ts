@@ -32,6 +32,10 @@ export const SessionConfigSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String())),
 	doom_loop_threshold: Type.Optional(Type.Number()),
 	budget_limit: Type.Optional(Type.Number()),
+	compact_trigger: Type.Optional(Type.Number()),
+	prune_protect: Type.Optional(Type.Number()),
+	prune_minimum: Type.Optional(Type.Number()),
+	compact_buffer: Type.Optional(Type.Number()),
 });
 export type SessionConfigSchema = Static<typeof SessionConfigSchema>;
 
@@ -62,6 +66,10 @@ export const HeddleConfigSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String())),
 	doom_loop_threshold: Type.Optional(Type.Number()),
 	budget_limit: Type.Optional(Type.Number()),
+	compact_trigger: Type.Optional(Type.Number()),
+	prune_protect: Type.Optional(Type.Number()),
+	prune_minimum: Type.Optional(Type.Number()),
+	compact_buffer: Type.Optional(Type.Number()),
 	features: Type.Optional(FeaturesSchema),
 });
 export type HeddleConfigSchema = Static<typeof HeddleConfigSchema>;
