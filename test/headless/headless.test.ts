@@ -777,7 +777,7 @@ describe("headless adapter", () => {
 				expect(typeof hb.event_seq).toBe("number");
 				expect(hb.send_id).toBe("2");
 				const evt = hb.event as Record<string, unknown>;
-				expect(typeof evt.timestamp).toBe("string");
+				expect(typeof evt.duration_ms).toBe("number");
 			}
 		} finally {
 			h.close();
