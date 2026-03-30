@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentsContext } from "../config/agents-md.ts";
+import type { FeatureFlags } from "../config/features.ts";
+import { getFeatures } from "../config/features.ts";
 import type { HeddleConfig } from "../config/loader.ts";
 import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
@@ -37,6 +39,7 @@ export interface SessionContext {
 	costTracker: CostTracker;
 	modelPricing: ModelPricing;
 	permissionChecker?: PermissionChecker;
+	features: FeatureFlags;
 }
 
 export interface SessionOptions {
@@ -69,6 +72,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	}
 
 	const config = loadConfig();
+	const features = getFeatures("interactive", config.features);
 
 	if (!config.apiKey) {
 		throw new Error("OPENROUTER_API_KEY environment variable or api_key in config.toml is required");
@@ -132,5 +136,6 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		costTracker,
 		modelPricing,
 		permissionChecker,
+		features,
 	};
 }

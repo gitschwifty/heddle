@@ -6,6 +6,7 @@ import { loadCustomCommands } from "../commands/loader.ts";
 import { CommandRegistry } from "../commands/registry.ts";
 import type { CommandContext } from "../commands/types.ts";
 import { pruneToolResults } from "../context/index.ts";
+import { appendHistoryEntry } from "../history/writer.ts";
 import { readOnlyToolFilter } from "../permissions/index.ts";
 import { appendContextMarker, appendMessage } from "../session/jsonl.ts";
 import type { SessionContext } from "../session/setup.ts";
@@ -171,6 +172,16 @@ export async function startCli(): Promise<void> {
 			const userMsg: Message = { role: "user", content };
 			messages.push(userMsg);
 			await appendMessage(sessionFile, userMsg);
+
+			if (ctx.features.history) {
+				await appendHistoryEntry({
+					timestamp: new Date().toISOString(),
+					session_id: ctx.sessionId,
+					project: process.cwd(),
+					message_preview: trimmed.slice(0, 200),
+					content_type: mentions.injectedFiles.length > 0 ? "mention" : "text",
+				});
+			}
 
 			try {
 				let needsNewline = false;

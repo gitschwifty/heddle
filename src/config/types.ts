@@ -35,6 +35,18 @@ export const SessionConfigSchema = Type.Object({
 });
 export type SessionConfigSchema = Static<typeof SessionConfigSchema>;
 
+export const FeaturesSchema = Type.Object({
+	history: Type.Optional(Type.Boolean()),
+	usage_data: Type.Optional(Type.Boolean()),
+	facets: Type.Optional(Type.Boolean()),
+	file_history: Type.Optional(Type.Boolean()),
+	paste_cache: Type.Optional(Type.Boolean()),
+	status_line: Type.Optional(Type.Boolean()),
+	hooks: Type.Optional(Type.Boolean()),
+	tasks: Type.Optional(Type.Boolean()),
+});
+export type FeaturesSchema = Static<typeof FeaturesSchema>;
+
 /** Full heddle config in wire format (snake_case). Used for TOML and headless init. */
 export const HeddleConfigSchema = Type.Object({
 	api_key: Type.Optional(Type.String()),
@@ -50,5 +62,6 @@ export const HeddleConfigSchema = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String())),
 	doom_loop_threshold: Type.Optional(Type.Number()),
 	budget_limit: Type.Optional(Type.Number()),
+	features: Type.Optional(FeaturesSchema),
 });
 export type HeddleConfigSchema = Static<typeof HeddleConfigSchema>;

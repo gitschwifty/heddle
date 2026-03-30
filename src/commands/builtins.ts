@@ -1,3 +1,4 @@
+import { loadHistory } from "../history/reader.ts";
 import type { CommandRegistry } from "./registry.ts";
 import type { SlashCommand } from "./types.ts";
 
@@ -88,6 +89,38 @@ export function createBuiltinCommands(commandRegistry: CommandRegistry): SlashCo
 			execute: async (_args, ctx) => {
 				for (const tool of ctx.registry.all()) {
 					console.log(`  ${tool.name} — ${tool.description}`);
+				}
+			},
+		},
+		{
+			name: "history",
+			description: "Show recent message history",
+			execute: async (args) => {
+				const parts = args.trim().split(/\s+/).filter(Boolean);
+				let limit = 20;
+				let search: string | undefined;
+				for (let i = 0; i < parts.length; i++) {
+					const part = parts[i] as string;
+					const next = parts[i + 1];
+					if (part === "--limit" && next) {
+						limit = Number.parseInt(next, 10) || 20;
+						i++;
+					} else if (part === "--search" && next) {
+						search = parts.slice(i + 1).join(" ");
+						break;
+					} else if (part) {
+						search = parts.slice(i).join(" ");
+						break;
+					}
+				}
+				const entries = await loadHistory({ limit, search });
+				if (entries.length === 0) {
+					console.log("  No history entries found.");
+					return;
+				}
+				for (const entry of entries) {
+					const time = entry.timestamp.replace("T", " ").replace(/\.\d+Z$/, "Z");
+					console.log(`  [${time}] (${entry.content_type}) ${entry.message_preview}`);
 				}
 			},
 		},
