@@ -20,7 +20,9 @@ import type { HeddleTool } from "../tools/types.ts";
 import { createWebFetchTool } from "../tools/web-fetch.ts";
 import { createWriteTool } from "../tools/write.ts";
 import type { Message } from "../types.ts";
-import { appendMessage, writeSessionMeta } from "./jsonl.ts";
+import { forkSession } from "./fork.ts";
+import { appendMessage, loadSession, writeSessionMeta } from "./jsonl.ts";
+import { findSession } from "./list.ts";
 
 const DEFAULT_PROMPT =
 	"You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use them when the user asks you to work with files.";
@@ -44,6 +46,9 @@ export interface SessionOptions {
 	systemPrompt?: string;
 	tools?: string[];
 	cwd?: string;
+	resume?: string;
+	fork?: string;
+	sessionName?: string;
 }
 
 function createDefaultTools(): HeddleTool[] {
@@ -89,29 +94,52 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		registry.register(tool);
 	}
 
-	// Session file
-	const sessionId = randomUUID();
-	const sessionDir = getProjectSessionsDir();
-	const sessionFile = join(sessionDir, `${sessionId}.jsonl`);
+	// Session file — resume, fork, or create new
+	let sessionId: string;
+	let sessionFile: string;
+	let messages: Message[];
 
-	await writeSessionMeta(sessionFile, {
-		type: "session_meta",
-		id: sessionId,
-		cwd: process.cwd(),
-		model: effectiveConfig.model,
-		created: new Date().toISOString(),
-		heddle_version: "0.1.0",
-	});
+	if (options?.resume) {
+		const found = await findSession(options.resume);
+		if (!found) throw new Error(`Session not found: ${options.resume}`);
+		sessionFile = found;
+		const loaded = await loadSession(sessionFile);
+		const firstLine = (await Bun.file(sessionFile).text()).split("\n")[0] ?? "";
+		const meta = JSON.parse(firstLine);
+		sessionId = meta.id;
+		messages = loaded;
+	} else if (options?.fork) {
+		const source = await findSession(options.fork);
+		if (!source) throw new Error(`Session not found: ${options.fork}`);
+		const result = await forkSession(source);
+		sessionFile = result.sessionFile;
+		sessionId = result.sessionId;
+		messages = await loadSession(sessionFile);
+	} else {
+		sessionId = randomUUID();
+		const sessionDir = getProjectSessionsDir();
+		sessionFile = join(sessionDir, `${sessionId}.jsonl`);
 
-	// System message
-	const agentsContext = loadAgentsContext();
-	const systemContent = [agentsContext, options?.systemPrompt ?? config.systemPrompt ?? DEFAULT_PROMPT]
-		.filter(Boolean)
-		.join("\n\n");
+		await writeSessionMeta(sessionFile, {
+			type: "session_meta",
+			id: sessionId,
+			cwd: process.cwd(),
+			model: effectiveConfig.model,
+			created: new Date().toISOString(),
+			heddle_version: "0.1.0",
+			...(options?.sessionName ? { name: options.sessionName } : {}),
+		});
 
-	const systemMessage: Message = { role: "system", content: systemContent };
-	const messages: Message[] = [systemMessage];
-	await appendMessage(sessionFile, systemMessage);
+		// System message
+		const agentsContext = loadAgentsContext();
+		const systemContent = [agentsContext, options?.systemPrompt ?? config.systemPrompt ?? DEFAULT_PROMPT]
+			.filter(Boolean)
+			.join("\n\n");
+
+		const systemMessage: Message = { role: "system", content: systemContent };
+		messages = [systemMessage];
+		await appendMessage(sessionFile, systemMessage);
+	}
 
 	const costTracker = new CostTracker();
 	const modelPricing = new ModelPricing(effectiveConfig.apiKey ?? "", effectiveConfig.baseUrl);

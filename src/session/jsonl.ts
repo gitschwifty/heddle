@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Message } from "../types.ts";
@@ -10,6 +10,8 @@ export interface SessionMeta {
 	model: string;
 	created: string;
 	heddle_version: string;
+	name?: string;
+	forked_from?: string;
 	[key: string]: unknown;
 }
 
@@ -84,4 +86,25 @@ export async function loadSessionMeta(filePath: string): Promise<SessionMeta | n
 		if (parsed.type === "session_meta") return parsed as SessionMeta;
 	} catch {}
 	return null;
+}
+
+/**
+ * Load session metas from all .jsonl files in a directory.
+ * Returns array of { meta, filePath } for files with valid session_meta.
+ */
+export async function loadAllSessionMetas(sessionDir: string): Promise<{ meta: SessionMeta; filePath: string }[]> {
+	if (!existsSync(sessionDir)) return [];
+
+	const files = readdirSync(sessionDir).filter((f) => f.endsWith(".jsonl"));
+	const results: { meta: SessionMeta; filePath: string }[] = [];
+
+	for (const file of files) {
+		const filePath = `${sessionDir}/${file}`;
+		const meta = await loadSessionMeta(filePath);
+		if (meta) {
+			results.push({ meta, filePath });
+		}
+	}
+
+	return results;
 }
