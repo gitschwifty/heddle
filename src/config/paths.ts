@@ -68,10 +68,21 @@ export function getFileHistoryDir(projectPath?: string, filePath?: string): stri
 	return join(base, encodePath(filePath));
 }
 
+/** Project-specific memory directory. */
+export function getProjectMemoryDir(projectPath?: string): string {
+	return join(getProjectDir(projectPath), "memory");
+}
+
+/** Global memory directory. */
+export function getGlobalMemoryDir(): string {
+	return join(getHeddleHome(), "memory");
+}
+
 /** Create the global heddle directory structure and current project dirs. */
 export function ensureHeddleDirs(): void {
 	const home = getHeddleHome();
 	mkdirSync(join(home, "agents"), { recursive: true });
 	mkdirSync(join(home, "skills"), { recursive: true });
+	mkdirSync(join(home, "memory"), { recursive: true });
 	mkdirSync(getProjectSessionsDir(), { recursive: true });
 }

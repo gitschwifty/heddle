@@ -37,5 +37,10 @@ export async function backupFile(filePath: string, projectPath?: string): Promis
 	}
 
 	await mkdir(histDir, { recursive: true });
-	await Bun.write(join(histDir, `${Date.now()}.bak`), content);
+	let ts = Date.now();
+	// Ensure uniqueness by incrementing if a file with this timestamp already exists
+	while (existsSync(join(histDir, `${ts}.bak`))) {
+		ts++;
+	}
+	await Bun.write(join(histDir, `${ts}.bak`), content);
 }
