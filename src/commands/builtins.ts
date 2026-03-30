@@ -91,5 +91,33 @@ export function createBuiltinCommands(commandRegistry: CommandRegistry): SlashCo
 				}
 			},
 		},
+		{
+			name: "restore",
+			description: "Restore a file from backup (usage: /restore <file> [timestamp])",
+			execute: async (args, _ctx) => {
+				const parts = args.trim().split(/\s+/);
+				const filePath = parts[0];
+				if (!filePath) {
+					console.log("  Usage: /restore <file-path> [timestamp]");
+					return;
+				}
+				const { listBackups, restoreBackup } = await import("../file-history/restore.ts");
+				if (parts[1]) {
+					const result = await restoreBackup(filePath, Number(parts[1]));
+					console.log(`  ${result}`);
+				} else {
+					const backups = await listBackups(filePath);
+					if (backups.length === 0) {
+						console.log(`  No backups found for ${filePath}`);
+						return;
+					}
+					console.log(`  Backups for ${filePath}:`);
+					for (const b of backups.slice(0, 10)) {
+						console.log(`    ${b.timestamp} — ${b.size} bytes`);
+					}
+					console.log("  Use /restore <file> <timestamp> to restore");
+				}
+			},
+		},
 	];
 }

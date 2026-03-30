@@ -14,6 +14,8 @@ export function createWriteTool(): HeddleTool {
 		execute: async (params) => {
 			const { file_path, content } = params as { file_path: string; content: string };
 			try {
+				const { backupFile } = await import("../file-history/backup.ts");
+				await backupFile(file_path);
 				await mkdir(dirname(file_path), { recursive: true });
 				await writeFile(file_path, content, "utf-8");
 				return `Wrote ${content.length} bytes to ${file_path}`;
