@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getFileHistoryDir } from "../config/paths.ts";
+import { FileHistoryMeta } from "./meta.ts";
 
 function hashContent(content: string): string {
 	const hasher = new Bun.CryptoHasher("md5");
@@ -19,28 +20,24 @@ export async function backupFile(filePath: string, projectPath?: string): Promis
 
 	const content = await readFile(filePath, "utf-8");
 	const hash = hashContent(content);
-	const histDir = getFileHistoryDir(projectPath, filePath);
+	const baseDir = getFileHistoryDir(projectPath);
+	const meta = new FileHistoryMeta(baseDir);
+	const entry = await meta.getOrCreate(filePath);
+	const uuidDir = join(baseDir, entry.uuid);
 
 	// Check latest backup for dedup
-	try {
-		const files = await readdir(histDir);
-		if (files.length > 0) {
-			const bakFiles = files.filter((f) => f.endsWith(".bak")).sort();
-			if (bakFiles.length > 0) {
-				const latest = bakFiles[bakFiles.length - 1] as string;
-				const latestContent = await readFile(join(histDir, latest), "utf-8");
-				if (hashContent(latestContent) === hash) return;
-			}
+	if (entry.versions > 0) {
+		try {
+			const latestPath = join(uuidDir, `v${entry.versions}.bak`);
+			const latestContent = await readFile(latestPath, "utf-8");
+			if (hashContent(latestContent) === hash) return;
+		} catch {
+			// Latest backup missing — proceed with new backup
 		}
-	} catch {
-		// Dir doesn't exist yet — will create below
 	}
 
-	await mkdir(histDir, { recursive: true });
-	let ts = Date.now();
-	// Ensure uniqueness by incrementing if a file with this timestamp already exists
-	while (existsSync(join(histDir, `${ts}.bak`))) {
-		ts++;
-	}
-	await Bun.write(join(histDir, `${ts}.bak`), content);
+	await mkdir(uuidDir, { recursive: true });
+	const nextVersion = entry.versions + 1;
+	await Bun.write(join(uuidDir, `v${nextVersion}.bak`), content);
+	await meta.incrementVersion(entry.uuid);
 }

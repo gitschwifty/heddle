@@ -61,11 +61,9 @@ export function getHistoryPath(): string {
 	return join(getHeddleHome(), "history.jsonl");
 }
 
-/** File history backup directory for a specific file. */
-export function getFileHistoryDir(projectPath?: string, filePath?: string): string {
-	const base = join(getProjectDir(projectPath), "file-history");
-	if (!filePath) return base;
-	return join(base, encodePath(filePath));
+/** File history backup base directory for the project. */
+export function getFileHistoryDir(projectPath?: string): string {
+	return join(getProjectDir(projectPath), "file-history");
 }
 
 /** Project-specific memory directory. */
