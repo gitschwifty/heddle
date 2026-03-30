@@ -19,6 +19,7 @@ export interface CommandContext {
 	sessionFile: string;
 	sessionId: string;
 	provider: Provider;
+	weakProvider?: Provider;
 	rl: readline.Interface;
 	setModel: (model: string) => void;
 }

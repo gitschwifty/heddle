@@ -27,6 +27,10 @@ export interface HeddleConfig {
 	tools?: string[];
 	doomLoopThreshold?: number;
 	budgetLimit?: number;
+	compactTrigger?: number;
+	pruneProtect?: number;
+	pruneMinimum?: number;
+	compactBuffer?: number;
 }
 
 /** Type aliases for consumer clarity. */
@@ -83,6 +87,10 @@ function toConfig(raw: Record<string, unknown>): Partial<HeddleConfig> {
 	if (typeof raw.temperature === "number") config.temperature = raw.temperature;
 	if (typeof raw.doom_loop_threshold === "number") config.doomLoopThreshold = raw.doom_loop_threshold;
 	if (typeof raw.budget_limit === "number") config.budgetLimit = raw.budget_limit;
+	if (typeof raw.compact_trigger === "number") config.compactTrigger = raw.compact_trigger;
+	if (typeof raw.prune_protect === "number") config.pruneProtect = raw.prune_protect;
+	if (typeof raw.prune_minimum === "number") config.pruneMinimum = raw.prune_minimum;
+	if (typeof raw.compact_buffer === "number") config.compactBuffer = raw.compact_buffer;
 
 	// Approval mode — validate against allowed values
 	if (typeof raw.approval_mode === "string" && VALID_APPROVAL_MODES.has(raw.approval_mode)) {

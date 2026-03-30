@@ -157,7 +157,8 @@ async function runFixtureStrict(name: string): Promise<void> {
 
 	const heddleHome = mkdtempSync(join(tmpdir(), "heddle-fixture-"));
 
-	const mode = name === "error" ? "error" : name === "cancel" ? "cancel" : name === "heartbeat" ? "heartbeat" : "normal";
+	const mode =
+		name === "error" ? "error" : name === "cancel" ? "cancel" : name === "heartbeat" ? "heartbeat" : "normal";
 	const needsServer = name !== "version-mismatch";
 	const server = needsServer ? createMockServer(mode) : null;
 	const baseUrl = server ? `http://localhost:${server.port}` : "http://localhost:1";
