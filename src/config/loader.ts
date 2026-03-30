@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { debug } from "../debug.ts";
+import type { FeatureFlags } from "./features.ts";
 import { getHeddleHome, getLocalHeddleDir } from "./paths.ts";
 
 export type ApprovalMode = "suggest" | "auto-edit" | "full-auto" | "plan" | "yolo";
@@ -27,6 +28,7 @@ export interface HeddleConfig {
 	tools?: string[];
 	doomLoopThreshold?: number;
 	budgetLimit?: number;
+	features?: Partial<FeatureFlags>;
 }
 
 /** Type aliases for consumer clarity. */
@@ -99,6 +101,30 @@ function toConfig(raw: Record<string, unknown>): Partial<HeddleConfig> {
 	if (Array.isArray(raw.tools)) {
 		const filtered = raw.tools.filter((item): item is string => typeof item === "string");
 		if (filtered.length > 0) config.tools = filtered;
+	}
+
+	// Features — extract boolean fields from sub-object
+	if (raw.features && typeof raw.features === "object" && !Array.isArray(raw.features)) {
+		const featRaw = raw.features as Record<string, unknown>;
+		const features: Partial<FeatureFlags> = {};
+		const fieldMap: Record<string, keyof FeatureFlags> = {
+			history: "history",
+			usage_data: "usageData",
+			facets: "facets",
+			file_history: "fileHistory",
+			paste_cache: "pasteCache",
+			status_line: "statusLine",
+			hooks: "hooks",
+			tasks: "tasks",
+		};
+		let hasAny = false;
+		for (const [wireKey, configKey] of Object.entries(fieldMap)) {
+			if (typeof featRaw[wireKey] === "boolean") {
+				features[configKey] = featRaw[wireKey] as boolean;
+				hasAny = true;
+			}
+		}
+		if (hasAny) config.features = features;
 	}
 
 	return config;

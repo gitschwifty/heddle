@@ -56,6 +56,11 @@ export function getSkillsDir(): string {
 	return join(getHeddleHome(), "skills");
 }
 
+/** Global history log file. */
+export function getHistoryPath(): string {
+	return join(getHeddleHome(), "history.jsonl");
+}
+
 /** Create the global heddle directory structure and current project dirs. */
 export function ensureHeddleDirs(): void {
 	const home = getHeddleHome();
