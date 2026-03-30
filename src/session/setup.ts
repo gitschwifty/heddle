@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { loadAgentsContext } from "../config/agents-md.ts";
 import type { HeddleConfig } from "../config/loader.ts";
 import { loadConfig } from "../config/loader.ts";
-import { ensureHeddleDirs, getProjectSessionsDir } from "../config/paths.ts";
+import { ensureHeddleDirs, getProjectMemoryDir, getProjectSessionsDir } from "../config/paths.ts";
 import { ModelPricing } from "../cost/pricing.ts";
 import { CostTracker } from "../cost/tracker.ts";
+import { loadMemoryContext } from "../memory/loader.ts";
 import { PermissionChecker } from "../permissions/index.ts";
 import { createProviders } from "../provider/factory.ts";
 import type { Provider } from "../provider/types.ts";
@@ -16,6 +17,7 @@ import { createGlobTool } from "../tools/glob.ts";
 import { createGrepTool } from "../tools/grep.ts";
 import { createReadTool } from "../tools/read.ts";
 import { ToolRegistry } from "../tools/registry.ts";
+import { createSaveMemoryTool } from "../tools/save-memory.ts";
 import type { HeddleTool } from "../tools/types.ts";
 import { createWebFetchTool } from "../tools/web-fetch.ts";
 import { createWriteTool } from "../tools/write.ts";
@@ -88,6 +90,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	for (const tool of toolsToRegister) {
 		registry.register(tool);
 	}
+	registry.register(createSaveMemoryTool(getProjectMemoryDir()));
 
 	// Session file
 	const sessionId = randomUUID();
@@ -105,7 +108,8 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 
 	// System message
 	const agentsContext = loadAgentsContext();
-	const systemContent = [agentsContext, options?.systemPrompt ?? config.systemPrompt ?? DEFAULT_PROMPT]
+	const memoryContext = loadMemoryContext();
+	const systemContent = [agentsContext, memoryContext, options?.systemPrompt ?? config.systemPrompt ?? DEFAULT_PROMPT]
 		.filter(Boolean)
 		.join("\n\n");
 

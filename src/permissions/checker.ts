@@ -15,6 +15,7 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 	ask_user: "read",
 	write_file: "write",
 	edit_file: "write",
+	save_memory: "write",
 	bash: "execute",
 	web_fetch: "network",
 };
