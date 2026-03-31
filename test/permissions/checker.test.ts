@@ -92,62 +92,124 @@ describe("PermissionChecker", () => {
 
 	// ── Mode: yolo ──────────────────────────────────────────────────────
 	describe("yolo mode", () => {
-		const checker = new PermissionChecker("yolo");
-
-		test("allows all tool categories (same as full-auto)", () => {
+		test("allows all tool categories", () => {
+			const checker = new PermissionChecker("yolo");
 			expect(checker.check("read_file")).toEqual({ decision: "allow" });
 			expect(checker.check("write_file")).toEqual({ decision: "allow" });
 			expect(checker.check("bash")).toEqual({ decision: "allow" });
 			expect(checker.check("web_fetch")).toEqual({ decision: "allow" });
 		});
+
+		test("ignores deny rules", () => {
+			const checker = new PermissionChecker("yolo", {
+				layers: [{ allow: [], deny: ["Write(.env*)"], ask: [] }],
+			});
+			const result = checker.check("write_file", { path: ".env" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("ignores ask rules", () => {
+			const checker = new PermissionChecker("yolo", {
+				layers: [{ allow: [], deny: [], ask: ["Bash(git push *)"] }],
+			});
+			const result = checker.check("bash", { command: "git push origin main" });
+			expect(result.decision).toBe("allow");
+		});
 	});
 
-	// ── Hardcoded protections ───────────────────────────────────────────
-	describe("hardcoded .env protection", () => {
-		const checker = new PermissionChecker("full-auto");
+	// ── Rule-based protections ──────────────────────────────────────────
+	describe("deny rules (replacing hardcoded protections)", () => {
+		const envDenyRules = { allow: [] as string[], deny: ["Write(.env*)", "Edit(.env*)"], ask: [] as string[] };
+		const rmDenyRules = { allow: [] as string[], deny: ["Bash(rm *)", "Bash(rm)"], ask: [] as string[] };
 
-		test("denies writes to .env files", () => {
+		test("denies writes to .env files via deny rule", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [envDenyRules] });
 			const result = checker.check("write_file", { path: "/project/.env" });
 			expect(result.decision).toBe("deny");
-			expect(result.reason).toContain(".env");
+			expect(result.reason).toBeDefined();
 		});
 
-		test("denies writes to .env.local", () => {
+		test("denies writes to .env.local via deny rule", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [envDenyRules] });
 			const result = checker.check("write_file", { path: "/project/.env.local" });
 			expect(result.decision).toBe("deny");
-			expect(result.reason).toContain(".env");
 		});
 
-		test("denies writes to .env.test", () => {
+		test("denies writes to .env.test via deny rule", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [envDenyRules] });
 			const result = checker.check("edit_file", { path: ".env.test" });
 			expect(result.decision).toBe("deny");
-			expect(result.reason).toContain(".env");
 		});
 
-		test("allows writes to files that look like .env but are not", () => {
+		test("allows writes to non-.env files", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [envDenyRules] });
 			const result = checker.check("write_file", { path: "/project/not-env-file.txt" });
 			expect(result.decision).toBe("allow");
 		});
-	});
 
-	describe("hardcoded rm protection", () => {
-		const checker = new PermissionChecker("full-auto");
-
-		test("denies rm commands", () => {
+		test("denies rm commands via deny rule", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [rmDenyRules] });
 			const result = checker.check("bash", { command: "rm file.txt" });
 			expect(result.decision).toBe("deny");
-			expect(result.reason).toContain("rm");
 		});
 
-		test("denies rm -rf commands", () => {
+		test("denies rm -rf commands via deny rule", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [rmDenyRules] });
 			const result = checker.check("bash", { command: "rm -rf /tmp/stuff" });
 			expect(result.decision).toBe("deny");
-			expect(result.reason).toContain("rm");
 		});
 
-		test("allows non-rm bash commands", () => {
+		test("allows non-rm bash commands with rm deny rules", () => {
+			const checker = new PermissionChecker("full-auto", { layers: [rmDenyRules] });
 			const result = checker.check("bash", { command: "ls -la" });
 			expect(result.decision).toBe("allow");
+		});
+	});
+
+	// ── Ask rules ──────────────────────────────────────────────────────
+	describe("ask rules", () => {
+		test("ask rule forces prompt even in full-auto", () => {
+			const checker = new PermissionChecker("full-auto", {
+				layers: [{ allow: [], deny: [], ask: ["Bash(git push *)"] }],
+			});
+			const result = checker.check("bash", { command: "git push origin main" });
+			expect(result.decision).toBe("ask");
+			expect(result.reason).toBeDefined();
+		});
+
+		test("ask rule does not affect non-matching commands", () => {
+			const checker = new PermissionChecker("full-auto", {
+				layers: [{ allow: [], deny: [], ask: ["Bash(git push *)"] }],
+			});
+			const result = checker.check("bash", { command: "git status" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("deny takes priority over ask for same pattern", () => {
+			const checker = new PermissionChecker("full-auto", {
+				layers: [{ allow: [], deny: ["Bash(rm *)"], ask: ["Bash(rm *)"] }],
+			});
+			const result = checker.check("bash", { command: "rm foo" });
+			expect(result.decision).toBe("deny");
+		});
+	});
+
+	// ── Allow rules ────────────────────────────────────────────────────
+	describe("allow rules", () => {
+		test("allow rule overrides mode matrix ask", () => {
+			const checker = new PermissionChecker("suggest", {
+				layers: [{ allow: ["Bash(bun *)"], deny: [], ask: [] }],
+			});
+			const result = checker.check("bash", { command: "bun test" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("allow rule does not override deny rule", () => {
+			const checker = new PermissionChecker("full-auto", {
+				layers: [{ allow: ["Write(.env*)"], deny: ["Write(.env*)"], ask: [] }],
+			});
+			const result = checker.check("write_file", { path: ".env" });
+			expect(result.decision).toBe("deny");
 		});
 	});
 
@@ -196,19 +258,104 @@ describe("PermissionChecker", () => {
 	describe("allowAlways", () => {
 		test("bypasses ask after allowAlways called", () => {
 			const checker = new PermissionChecker("suggest");
-			// First check should ask
 			expect(checker.check("bash").decision).toBe("ask");
-			// After allowAlways, should allow
 			checker.allowAlways("bash");
 			expect(checker.check("bash")).toEqual({ decision: "allow" });
 		});
 
-		test("does not bypass hardcoded protections", () => {
-			const checker = new PermissionChecker("suggest");
+		test("does not bypass deny rules", () => {
+			const checker = new PermissionChecker("suggest", {
+				layers: [{ allow: [], deny: ["Write(.env*)"], ask: [] }],
+			});
 			checker.allowAlways("write_file");
 			// Normal writes are allowed
 			expect(checker.check("write_file", { path: "foo.txt" })).toEqual({ decision: "allow" });
-			// .env writes are still denied
+			// .env writes are still denied via deny rule
+			const result = checker.check("write_file", { path: ".env" });
+			expect(result.decision).toBe("deny");
+		});
+	});
+
+	// ── Directory scoping ───────────────────────────────────────────────
+	describe("directory scoping", () => {
+		test("allows writes inside project dir in full-auto", () => {
+			const checker = new PermissionChecker("full-auto", { projectDir: "/project" });
+			const result = checker.check("write_file", { path: "/project/src/foo.ts" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("downgrades allow to ask outside project dir in full-auto", () => {
+			const checker = new PermissionChecker("full-auto", { projectDir: "/project" });
+			const result = checker.check("write_file", { path: "/other/foo.ts" });
+			expect(result.decision).toBe("ask");
+		});
+
+		test("ask stays ask outside project dir in suggest mode", () => {
+			const checker = new PermissionChecker("suggest", { projectDir: "/project" });
+			const result = checker.check("write_file", { path: "/other/foo.ts" });
+			expect(result.decision).toBe("ask");
+		});
+
+		test("deny stays deny outside project dir", () => {
+			const checker = new PermissionChecker("plan", { projectDir: "/project" });
+			const result = checker.check("write_file", { path: "/other/foo.ts" });
+			expect(result.decision).toBe("deny");
+		});
+
+		test("no dir scoping for bash (commands can touch anything)", () => {
+			const checker = new PermissionChecker("full-auto", { projectDir: "/project" });
+			const result = checker.check("bash", { command: "ls /etc" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("no dir scoping for web_fetch", () => {
+			const checker = new PermissionChecker("full-auto", { projectDir: "/project" });
+			const result = checker.check("web_fetch", { url: "https://example.com" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("explicit allow rule overrides dir scoping", () => {
+			const checker = new PermissionChecker("full-auto", {
+				projectDir: "/project",
+				layers: [{ allow: ["Write(/other/**)"], deny: [], ask: [] }],
+			});
+			const result = checker.check("write_file", { path: "/other/foo.ts" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("no projectDir means no scoping", () => {
+			const checker = new PermissionChecker("full-auto");
+			const result = checker.check("write_file", { path: "/random/path/foo.ts" });
+			expect(result.decision).toBe("allow");
+		});
+	});
+
+	// ── Layer merge precedence ──────────────────────────────────────────
+	describe("layer merge", () => {
+		test("project allow overrides global deny (more specific layer)", () => {
+			const globalLayer = { allow: [] as string[], deny: ["Write(.env*)"], ask: [] as string[] };
+			const projectLayer = { allow: ["Write(.env*)"], deny: [] as string[], ask: [] as string[] };
+			const checker = new PermissionChecker("full-auto", {
+				layers: [globalLayer, projectLayer],
+			});
+			const result = checker.check("write_file", { path: ".env.local" });
+			expect(result.decision).toBe("allow");
+		});
+
+		test("project deny overrides global allow", () => {
+			const globalLayer = { allow: ["Bash"], deny: [] as string[], ask: [] as string[] };
+			const projectLayer = { allow: [] as string[], deny: ["Bash(rm *)"], ask: [] as string[] };
+			const checker = new PermissionChecker("full-auto", {
+				layers: [globalLayer, projectLayer],
+			});
+			const result = checker.check("bash", { command: "rm foo" });
+			expect(result.decision).toBe("deny");
+		});
+
+		test("within same layer, deny wins over allow", () => {
+			const checker = new PermissionChecker("full-auto", {
+				layers: [{ allow: ["Write(.env*)"], deny: ["Write(.env*)"], ask: [] as string[] }],
+			});
 			const result = checker.check("write_file", { path: ".env" });
 			expect(result.decision).toBe("deny");
 		});

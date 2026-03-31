@@ -448,5 +448,79 @@ describe("config/loader", () => {
 			const config = loadConfig(join(TEST_DIR, "nonexistent"));
 			expect(config.tools).toBeUndefined();
 		});
+
+		// ── Permissions layers ──
+
+		test("loads [permissions] deny from global config", () => {
+			const globalDir = join(TEST_DIR, "perms-global");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), '[permissions]\ndeny = ["Write(.env*)", "Bash(rm *)"]\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.permissionsLayers).toHaveLength(1);
+			expect(config.permissionsLayers![0]!.deny).toEqual(["Write(.env*)", "Bash(rm *)"]);
+			expect(config.permissionsLayers![0]!.allow).toEqual([]);
+		});
+
+		test("loads [permissions] allow and deny from separate layers", () => {
+			const globalDir = join(TEST_DIR, "perms-layers");
+			const localDir = join(TEST_DIR, "perms-layers-local");
+			mkdirSync(globalDir, { recursive: true });
+			mkdirSync(localDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), '[permissions]\ndeny = ["Write(.env*)"]\n');
+			writeFileSync(join(localDir, "config.toml"), '[permissions]\nallow = ["Write(src/**)"]\ndeny = ["Bash(rm *)"]\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(localDir);
+			expect(config.permissionsLayers).toHaveLength(2);
+			// Global layer first
+			expect(config.permissionsLayers![0]!.deny).toEqual(["Write(.env*)"]);
+			// Local layer second
+			expect(config.permissionsLayers![1]!.allow).toEqual(["Write(src/**)"]);
+			expect(config.permissionsLayers![1]!.deny).toEqual(["Bash(rm *)"]);
+		});
+
+		test("loads [permissions] ask rules", () => {
+			const globalDir = join(TEST_DIR, "perms-ask");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), '[permissions]\nask = ["Bash(git push *)"]\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.permissionsLayers).toHaveLength(1);
+			expect(config.permissionsLayers![0]!.ask).toEqual(["Bash(git push *)"]);
+		});
+
+		test("no [permissions] section means no layers", () => {
+			const globalDir = join(TEST_DIR, "perms-none");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), 'model = "test"\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.permissionsLayers).toBeUndefined();
+		});
+
+		test("empty [permissions] section means no layers", () => {
+			const globalDir = join(TEST_DIR, "perms-empty");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), "[permissions]\n");
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.permissionsLayers).toBeUndefined();
+		});
+
+		test("non-string entries in permissions arrays are dropped", () => {
+			const globalDir = join(TEST_DIR, "perms-invalid");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "config.toml"), '[permissions]\ndeny = ["Write(.env*)", 42]\n');
+
+			process.env.HEDDLE_HOME = globalDir;
+			const config = loadConfig(join(TEST_DIR, "nonexistent"));
+			expect(config.permissionsLayers).toHaveLength(1);
+			expect(config.permissionsLayers![0]!.deny).toEqual(["Write(.env*)"]);
+		});
 	});
 });

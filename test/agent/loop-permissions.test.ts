@@ -201,8 +201,10 @@ describe("Agent Loop Permissions", () => {
 		expect(denied).toHaveLength(1);
 	});
 
-	test(".env file protection overrides full-auto mode", async () => {
-		const checker = new PermissionChecker("full-auto");
+	test(".env file protection via deny rule overrides full-auto mode", async () => {
+		const checker = new PermissionChecker("full-auto", {
+			layers: [{ allow: [], deny: ["Write(.env*)", "Edit(.env*)"], ask: [] }],
+		});
 		const provider = mockProvider([
 			mockToolCallResponse([{ name: "write_file", arguments: { path: ".env.local", content: "SECRET=x" } }]),
 			mockTextResponse("cannot write .env"),
@@ -219,9 +221,6 @@ describe("Agent Loop Permissions", () => {
 
 		const denied = events.filter((e) => e.type === "permission_denied");
 		expect(denied).toHaveLength(1);
-		if (denied[0]?.type === "permission_denied") {
-			expect(denied[0].reason).toContain(".env");
-		}
 	});
 
 	test("streaming loop parity — deny event emitted", async () => {
