@@ -1,5 +1,6 @@
 import type { ApprovalMode } from "../config/loader.ts";
 import type { ToolDefinition } from "../types.ts";
+import { evaluateRules, mergeConfigs, type PermissionConfig, parseRule } from "./rules.ts";
 
 export type ToolCategory = "read" | "write" | "execute" | "network";
 
@@ -30,12 +31,12 @@ const MODE_MATRIX: Record<ApprovalMode, ModeMatrix> = {
 	yolo: { read: "allow", network: "allow", write: "allow", execute: "allow" },
 };
 
-const ENV_FILE_RE = /^\.env(\..+)?$/;
-const RM_COMMAND_RE = /(?:^|\s)rm\s/;
+// Tools whose args contain a file path (used for directory scoping)
+const PATH_ARG_TOOLS = new Set(["read_file", "write_file", "edit_file", "glob", "grep"]);
 
-function basename(filePath: string): string {
-	const parts = filePath.split("/");
-	return parts[parts.length - 1] ?? filePath;
+export interface PermissionCheckerOptions {
+	layers?: Array<{ allow: string[]; deny: string[]; ask: string[] }>;
+	projectDir?: string;
 }
 
 /** Filter tool definitions to only read/network categories. */
@@ -49,24 +50,63 @@ export function readOnlyToolFilter(tools: ToolDefinition[]): ToolDefinition[] {
 export class PermissionChecker {
 	private mode: ApprovalMode;
 	private alwaysAllowed = new Set<string>();
+	private mergedRules: PermissionConfig | null;
+	private projectDir?: string;
 
-	constructor(mode: ApprovalMode) {
+	constructor(mode: ApprovalMode, options?: PermissionCheckerOptions) {
 		this.mode = mode;
+		this.projectDir = options?.projectDir;
+
+		// Parse and merge rule layers
+		if (options?.layers && options.layers.length > 0) {
+			const parsed = options.layers.map((layer) => this.parseLayer(layer));
+			this.mergedRules = mergeConfigs(...parsed);
+		} else {
+			this.mergedRules = null;
+		}
 	}
 
 	check(toolName: string, args?: Record<string, unknown>): PermissionDecision {
-		// Hardcoded protections — always checked first
-		const hardcoded = this.checkHardcoded(toolName, args);
-		if (hardcoded) return hardcoded;
-
-		// Session-scoped allowlist
-		if (this.alwaysAllowed.has(toolName)) {
+		// 1. Yolo mode — allow everything, skip all checks
+		if (this.mode === "yolo") {
 			return { decision: "allow" };
 		}
 
+		// 2-4. Evaluate rules (deny > ask > allow)
+		if (this.mergedRules) {
+			const ruleDecision = evaluateRules(this.mergedRules, toolName, args);
+			if (ruleDecision === "deny") {
+				return { decision: "deny", reason: this.ruleReason(toolName, "deny") };
+			}
+			if (ruleDecision === "ask") {
+				return { decision: "ask", reason: this.ruleReason(toolName, "ask") };
+			}
+			if (ruleDecision === "allow") {
+				return { decision: "allow" };
+			}
+		}
+
+		// 5. Directory scoping — downgrade if outside project dir (file-path tools only)
+		const dirDowngrade = this.shouldDowngrade(toolName, args);
+
+		// 6. Session allowlist
+		if (this.alwaysAllowed.has(toolName)) {
+			// Even session allowlist respects dir scoping
+			if (dirDowngrade) {
+				return { decision: "ask", reason: `${toolName} targets path outside project directory` };
+			}
+			return { decision: "allow" };
+		}
+
+		// 7. Mode matrix — fallback
 		const category = TOOL_CATEGORIES[toolName] ?? "execute";
 		const matrix = MODE_MATRIX[this.mode];
-		const decision = matrix[category];
+		let decision = matrix[category];
+
+		// Apply dir scoping downgrade to mode matrix result
+		if (dirDowngrade && decision === "allow") {
+			decision = "ask";
+		}
 
 		if (decision === "allow") {
 			return { decision: "allow" };
@@ -80,23 +120,51 @@ export class PermissionChecker {
 		this.alwaysAllowed.add(toolName);
 	}
 
-	private checkHardcoded(toolName: string, args?: Record<string, unknown>): PermissionDecision | null {
-		// .env file write protection
-		if ((toolName === "write_file" || toolName === "edit_file") && args?.path) {
-			const name = basename(String(args.path));
-			if (ENV_FILE_RE.test(name)) {
-				return { decision: "deny", reason: `Writing to .env files is not allowed: ${name}` };
+	private parseLayer(layer: { allow: string[]; deny: string[]; ask: string[] }): PermissionConfig {
+		const parseRules = (rules: string[]) => {
+			const result: PermissionConfig["allow"] = [];
+			for (const raw of rules) {
+				const parsed = parseRule(raw);
+				if (parsed === null) continue;
+				if (Array.isArray(parsed)) {
+					result.push(...parsed);
+				} else {
+					result.push(parsed);
+				}
 			}
-		}
+			return result;
+		};
 
-		// rm command protection
-		if (toolName === "bash" && args?.command) {
-			const cmd = String(args.command);
-			if (RM_COMMAND_RE.test(cmd)) {
-				return { decision: "deny", reason: "rm commands are not allowed — use trash instead" };
-			}
-		}
+		return {
+			allow: parseRules(layer.allow),
+			deny: parseRules(layer.deny),
+			ask: parseRules(layer.ask),
+		};
+	}
 
-		return null;
+	private shouldDowngrade(toolName: string, args?: Record<string, unknown>): boolean {
+		if (!this.projectDir) return false;
+		if (!PATH_ARG_TOOLS.has(toolName)) return false;
+		if (!args?.path) return false;
+
+		return !this.isInsideProject(String(args.path));
+	}
+
+	private isInsideProject(filePath: string): boolean {
+		if (!this.projectDir) return true;
+
+		// Resolve relative paths against cwd
+		const { resolve } = require("node:path");
+		const resolved = resolve(filePath);
+		const projectResolved = resolve(this.projectDir);
+
+		return resolved.startsWith(`${projectResolved}/`) || resolved === projectResolved;
+	}
+
+	private ruleReason(toolName: string, decision: "deny" | "ask"): string {
+		if (decision === "deny") {
+			return `${toolName} blocked by deny rule`;
+		}
+		return `${toolName} requires confirmation (ask rule)`;
 	}
 }

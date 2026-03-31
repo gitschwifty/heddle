@@ -125,6 +125,15 @@ async function handleInit(request: IpcRequest & { type: "init" }): Promise<void>
 			model: request.config.model,
 			systemPrompt: request.config.system_prompt,
 			tools: request.config.tools,
+			...(request.config.permissions
+				? {
+						permissionOverrides: {
+							allow: request.config.permissions.allow ?? [],
+							deny: request.config.permissions.deny ?? [],
+							ask: request.config.permissions.ask ?? [],
+						},
+					}
+				: {}),
 		});
 
 		session.registry.register(

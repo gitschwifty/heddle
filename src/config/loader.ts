@@ -9,6 +9,13 @@ export type ApprovalMode = "suggest" | "auto-edit" | "full-auto" | "plan" | "yol
 
 const VALID_APPROVAL_MODES: ReadonlySet<string> = new Set(["suggest", "auto-edit", "full-auto", "plan", "yolo"]);
 
+/** A single permissions layer (allow/deny/ask string arrays from one config source). */
+export interface PermissionsLayer {
+	allow: string[];
+	deny: string[];
+	ask: string[];
+}
+
 export interface HeddleConfig {
 	// ── Identity ──
 	apiKey?: string;
@@ -33,6 +40,9 @@ export interface HeddleConfig {
 	pruneMinimum?: number;
 	compactBuffer?: number;
 	features?: Partial<FeatureFlags>;
+
+	// ── Permissions ──
+	permissionsLayers?: PermissionsLayer[];
 }
 
 /** Type aliases for consumer clarity. */
@@ -138,6 +148,25 @@ function toConfig(raw: Record<string, unknown>): Partial<HeddleConfig> {
 	return config;
 }
 
+/** Extract a permissions layer from a raw TOML object's [permissions] section. */
+function toPermissions(raw: Record<string, unknown>): PermissionsLayer | null {
+	const perms = raw.permissions;
+	if (!perms || typeof perms !== "object" || Array.isArray(perms)) return null;
+
+	const p = perms as Record<string, unknown>;
+	const filterStrings = (arr: unknown): string[] => {
+		if (!Array.isArray(arr)) return [];
+		return arr.filter((item): item is string => typeof item === "string");
+	};
+
+	const allow = filterStrings(p.allow);
+	const deny = filterStrings(p.deny);
+	const ask = filterStrings(p.ask);
+
+	if (allow.length === 0 && deny.length === 0 && ask.length === 0) return null;
+	return { allow, deny, ask };
+}
+
 /**
  * Load config with layered merging: defaults → global → local → env vars.
  * @param localDir Path to the local .heddle directory (defaults to cwd/.heddle)
@@ -155,6 +184,14 @@ export function loadConfig(localDir?: string): HeddleConfig {
 		...toConfig(globalRaw),
 		...toConfig(localRaw),
 	};
+
+	// Permissions — kept as separate layers for precedence resolution
+	const layers: PermissionsLayer[] = [];
+	const globalPerms = toPermissions(globalRaw);
+	if (globalPerms) layers.push(globalPerms);
+	const localPerms = toPermissions(localRaw);
+	if (localPerms) layers.push(localPerms);
+	if (layers.length > 0) merged.permissionsLayers = layers;
 
 	// Env vars override everything
 	if (process.env.HEDDLE_MODEL) merged.model = process.env.HEDDLE_MODEL;

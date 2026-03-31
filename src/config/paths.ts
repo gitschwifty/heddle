@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -83,4 +83,15 @@ export function ensureHeddleDirs(): void {
 	mkdirSync(join(home, "skills"), { recursive: true });
 	mkdirSync(join(home, "memory"), { recursive: true });
 	mkdirSync(getProjectSessionsDir(), { recursive: true });
+
+	// Write default config with permissions if it doesn't exist
+	const configPath = join(home, "config.toml");
+	if (!existsSync(configPath)) {
+		try {
+			const { generateDefaultPermissionsToml } = require("../permissions/defaults.ts");
+			writeFileSync(configPath, generateDefaultPermissionsToml(), "utf-8");
+		} catch {
+			// Non-fatal — permissions defaults are a convenience, not a requirement
+		}
+	}
 }

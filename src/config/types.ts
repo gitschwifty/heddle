@@ -51,6 +51,13 @@ export const FeaturesSchema = Type.Object({
 });
 export type FeaturesSchema = Static<typeof FeaturesSchema>;
 
+export const PermissionsConfigSchema = Type.Object({
+	allow: Type.Optional(Type.Array(Type.String())),
+	deny: Type.Optional(Type.Array(Type.String())),
+	ask: Type.Optional(Type.Array(Type.String())),
+});
+export type PermissionsConfigSchema = Static<typeof PermissionsConfigSchema>;
+
 /** Full heddle config in wire format (snake_case). Used for TOML and headless init. */
 export const HeddleConfigSchema = Type.Object({
 	api_key: Type.Optional(Type.String()),
@@ -71,5 +78,6 @@ export const HeddleConfigSchema = Type.Object({
 	prune_minimum: Type.Optional(Type.Number()),
 	compact_buffer: Type.Optional(Type.Number()),
 	features: Type.Optional(FeaturesSchema),
+	permissions: Type.Optional(PermissionsConfigSchema),
 });
 export type HeddleConfigSchema = Static<typeof HeddleConfigSchema>;

@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { PermissionsConfigSchema } from "../config/types.ts";
 import { ErrorEnvelopeSchema } from "./errors.ts";
 
 export const InitConfigSchema = Type.Object({
@@ -8,6 +9,7 @@ export const InitConfigSchema = Type.Object({
 	max_iterations: Type.Optional(Type.Number()),
 	task_id: Type.Optional(Type.String()),
 	worker_id: Type.Optional(Type.String()),
+	permissions: Type.Optional(PermissionsConfigSchema),
 });
 
 export const IpcRequestSchema = Type.Union([

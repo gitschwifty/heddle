@@ -54,6 +54,7 @@ export interface SessionOptions {
 	resume?: string;
 	fork?: string;
 	sessionName?: string;
+	permissionOverrides?: { allow?: string[]; deny?: string[]; ask?: string[] };
 }
 
 function createDefaultTools(): HeddleTool[] {
@@ -153,9 +154,29 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	const costTracker = new CostTracker();
 	const modelPricing = new ModelPricing(effectiveConfig.apiKey ?? "", effectiveConfig.baseUrl);
 
-	const permissionChecker = effectiveConfig.approvalMode
-		? new PermissionChecker(effectiveConfig.approvalMode)
-		: undefined;
+	let permissionChecker: PermissionChecker | undefined;
+	if (effectiveConfig.approvalMode) {
+		const layers: Array<{ allow: string[]; deny: string[]; ask: string[] }> = [];
+
+		// Config layers (global → local)
+		if (effectiveConfig.permissionsLayers) {
+			layers.push(...effectiveConfig.permissionsLayers);
+		}
+
+		// Headless overrides (most specific layer)
+		if (options?.permissionOverrides) {
+			layers.push({
+				allow: options.permissionOverrides.allow ?? [],
+				deny: options.permissionOverrides.deny ?? [],
+				ask: options.permissionOverrides.ask ?? [],
+			});
+		}
+
+		permissionChecker = new PermissionChecker(effectiveConfig.approvalMode, {
+			layers: layers.length > 0 ? layers : undefined,
+			projectDir: process.cwd(),
+		});
+	}
 
 	return {
 		config: effectiveConfig,
