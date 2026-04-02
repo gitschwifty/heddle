@@ -83,11 +83,15 @@ describe("createSession()", () => {
 			.sort();
 		expect(toolNames).toEqual([
 			"bash",
+			"create_task",
 			"edit_file",
 			"glob",
 			"grep",
+			"list_tasks",
 			"read_file",
 			"save_memory",
+			"subagent",
+			"update_task",
 			"web_fetch",
 			"write_file",
 		]);
@@ -101,15 +105,26 @@ describe("createSession()", () => {
 			.all()
 			.map((t) => t.name)
 			.sort();
-		expect(toolNames).toEqual(["glob", "read_file", "save_memory"]);
+		expect(toolNames).toEqual([
+			"create_task",
+			"glob",
+			"list_tasks",
+			"read_file",
+			"save_memory",
+			"subagent",
+			"update_task",
+		]);
 	});
 
 	test("SessionOptions.tools empty array: creates tool-free session with save_memory", async () => {
 		setupEnv();
 		const ctx = await createSession({ tools: [] });
 
-		const toolNames = ctx.registry.all().map((t) => t.name);
-		expect(toolNames).toEqual(["save_memory"]);
+		const toolNames = ctx.registry
+			.all()
+			.map((t) => t.name)
+			.sort();
+		expect(toolNames).toEqual(["create_task", "list_tasks", "save_memory", "subagent", "update_task"]);
 	});
 
 	test("config.tools fallback: HEDDLE_TOOLS env limits tools", async () => {
@@ -120,7 +135,15 @@ describe("createSession()", () => {
 			.all()
 			.map((t) => t.name)
 			.sort();
-		expect(toolNames).toEqual(["glob", "read_file", "save_memory"]);
+		expect(toolNames).toEqual([
+			"create_task",
+			"glob",
+			"list_tasks",
+			"read_file",
+			"save_memory",
+			"subagent",
+			"update_task",
+		]);
 	});
 
 	test("SessionOptions.tools overrides config.tools", async () => {
@@ -131,7 +154,15 @@ describe("createSession()", () => {
 			.all()
 			.map((t) => t.name)
 			.sort();
-		expect(toolNames).toEqual(["edit_file", "save_memory", "write_file"]);
+		expect(toolNames).toEqual([
+			"create_task",
+			"edit_file",
+			"list_tasks",
+			"save_memory",
+			"subagent",
+			"update_task",
+			"write_file",
+		]);
 	});
 
 	test("model override: options.model used in provider", async () => {

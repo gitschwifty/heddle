@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { loadAgentDefinitions } from "../agents/loader.ts";
+import type { AgentDefinition } from "../agents/types.ts";
 import { loadAgentsContext } from "../config/agents-md.ts";
 import { type DiscoveryResult, resolveDiscovery } from "../config/discovery.ts";
 import type { FeatureFlags } from "../config/features.ts";
@@ -15,6 +17,7 @@ import { loadMemoryContext } from "../memory/loader.ts";
 import { PermissionChecker } from "../permissions/index.ts";
 import { createProviders } from "../provider/factory.ts";
 import type { Provider } from "../provider/types.ts";
+import { formatTasksSummary, loadTasks } from "../tasks/storage.ts";
 import { createBashTool } from "../tools/bash.ts";
 import { createEditTool } from "../tools/edit.ts";
 import { createGlobTool } from "../tools/glob.ts";
@@ -22,6 +25,8 @@ import { createGrepTool } from "../tools/grep.ts";
 import { createReadTool } from "../tools/read.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { createSaveMemoryTool } from "../tools/save-memory.ts";
+import { createSubagentTool } from "../tools/subagent.ts";
+import { createCreateTaskTool, createListTasksTool, createUpdateTaskTool } from "../tools/task-tools.ts";
 import type { HeddleTool } from "../tools/types.ts";
 import { createWebFetchTool } from "../tools/web-fetch.ts";
 import { createWriteTool } from "../tools/write.ts";
@@ -48,6 +53,7 @@ export interface SessionContext {
 	hooksRunner?: HooksRunner;
 	features: FeatureFlags;
 	discovery?: DiscoveryResult;
+	agentDefinitions: Map<string, AgentDefinition>;
 }
 
 export interface SessionOptions {
@@ -58,6 +64,7 @@ export interface SessionOptions {
 	resume?: string;
 	fork?: string;
 	sessionName?: string;
+	agent?: string;
 	permissionOverrides?: { allow?: string[]; deny?: string[]; ask?: string[] };
 }
 
@@ -93,7 +100,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 	}
 
 	// Apply model override before creating providers
-	const effectiveConfig = options?.model ? { ...config, model: options.model } : config;
+	const effectiveConfig = { ...config, ...(options?.model ? { model: options.model } : {}) };
 	const providers = createProviders(effectiveConfig);
 	const provider = providers.main;
 
@@ -107,6 +114,27 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		registry.register(tool);
 	}
 	registry.register(createSaveMemoryTool(getProjectMemoryDir()));
+
+	// Load agent definitions from discovery
+	const agentDefinitions = loadAgentDefinitions(discovery);
+
+	// Apply agent definition if --agent specified
+	let agentDef: AgentDefinition | undefined;
+	if (options?.agent) {
+		agentDef = agentDefinitions.get(options.agent);
+		if (!agentDef) {
+			const available = [...agentDefinitions.keys()].join(", ");
+			throw new Error(
+				available
+					? `Agent not found: "${options.agent}". Available: ${available}`
+					: `Agent not found: "${options.agent}". No agent definitions found.`,
+			);
+		}
+		// Override model if agent definition specifies one
+		if (agentDef.model) {
+			effectiveConfig.model = agentDef.model;
+		}
+	}
 
 	// Session file — resume, fork, or create new
 	let sessionId: string;
@@ -147,9 +175,18 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		// System message
 		const agentsContext = loadAgentsContext();
 		const memoryContext = loadMemoryContext();
-		const systemContent = [agentsContext, memoryContext, options?.systemPrompt ?? config.systemPrompt ?? DEFAULT_PROMPT]
-			.filter(Boolean)
-			.join("\n\n");
+		const basePrompt = agentDef?.systemPrompt ?? options?.systemPrompt ?? config.systemPrompt ?? DEFAULT_PROMPT;
+
+		// Inject task summary if tasks feature is enabled
+		let tasksContext = "";
+		if (features.tasks) {
+			const tasks = await loadTasks();
+			if (tasks.length > 0) {
+				tasksContext = `## Current Tasks\n\n${formatTasksSummary(tasks, sessionId)}`;
+			}
+		}
+
+		const systemContent = [agentsContext, memoryContext, tasksContext, basePrompt].filter(Boolean).join("\n\n");
 
 		const systemMessage: Message = { role: "system", content: systemContent };
 		messages = [systemMessage];
@@ -192,6 +229,22 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		});
 	}
 
+	// Register subagent tool
+	registry.register(
+		createSubagentTool(provider, registry, {
+			permissionChecker,
+			costTracker,
+			hooksRunner,
+		}),
+	);
+
+	// Register task tools if tasks feature is enabled
+	if (features.tasks) {
+		registry.register(createCreateTaskTool(sessionId));
+		registry.register(createUpdateTaskTool());
+		registry.register(createListTasksTool(sessionId));
+	}
+
 	return {
 		config: effectiveConfig,
 		provider,
@@ -207,5 +260,6 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		hooksRunner,
 		features,
 		discovery,
+		agentDefinitions,
 	};
 }

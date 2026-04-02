@@ -1,4 +1,5 @@
 import { loadHistory } from "../history/reader.ts";
+import { formatTasksSummary, loadTasks, saveTasks } from "../tasks/storage.ts";
 import type { CommandRegistry } from "./registry.ts";
 import type { SlashCommand } from "./types.ts";
 
@@ -209,6 +210,66 @@ export function createBuiltinCommands(commandRegistry: CommandRegistry): SlashCo
 				const result = await forkSession(ctx.sessionFile);
 				console.log(`  Forked to: ${result.sessionFile}`);
 				console.log(`  New session ID: ${result.sessionId}`);
+			},
+		},
+		{
+			name: "tasks",
+			description: "List or clear tracked tasks (usage: /tasks [clear])",
+			execute: async (args, ctx) => {
+				if (args.trim() === "clear") {
+					const tasks = await loadTasks();
+					const remaining = tasks.filter((t) => t.status !== "done");
+					await saveTasks(remaining);
+					console.log(`  Cleared ${tasks.length - remaining.length} completed tasks.`);
+					return;
+				}
+				const tasks = await loadTasks();
+				if (tasks.length === 0) {
+					console.log("  No tasks tracked.");
+					return;
+				}
+				console.log(formatTasksSummary(tasks, ctx.sessionId));
+			},
+		},
+		{
+			name: "agents",
+			description: "List available agent definitions",
+			execute: async (_args, ctx) => {
+				if (ctx.agentDefinitions.size === 0) {
+					console.log("  No agent definitions found.");
+					return;
+				}
+				for (const [name, def] of ctx.agentDefinitions) {
+					const model = def.model ? ` (${def.model})` : "";
+					console.log(`  ${name}${model} — ${def.description}`);
+				}
+			},
+		},
+		{
+			name: "agent",
+			description: "Show agent definition details (usage: /agent <name>)",
+			execute: async (args, ctx) => {
+				const name = args.trim();
+				if (!name) {
+					console.log("  Usage: /agent <name>");
+					console.log("  Use /agents to list available definitions.");
+					return;
+				}
+				const def = ctx.agentDefinitions.get(name);
+				if (!def) {
+					console.log(`  Agent not found: "${name}"`);
+					const available = [...ctx.agentDefinitions.keys()].join(", ");
+					if (available) console.log(`  Available: ${available}`);
+					return;
+				}
+				console.log(`  Name:        ${def.name}`);
+				console.log(`  Description: ${def.description}`);
+				if (def.model) console.log(`  Model:       ${def.model}`);
+				if (def.tools) console.log(`  Tools:       ${def.tools.join(", ")}`);
+				console.log(`  Source:      ${def.source}`);
+				if (def.systemPrompt) {
+					console.log(`  Prompt:      ${def.systemPrompt.slice(0, 200)}${def.systemPrompt.length > 200 ? "..." : ""}`);
+				}
 			},
 		},
 	];

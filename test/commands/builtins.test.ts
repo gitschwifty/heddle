@@ -19,6 +19,7 @@ function mockContext(overrides?: Partial<CommandContext>): CommandContext {
 		sessionFile: "/tmp/test-session.jsonl",
 		sessionId: "test-session-id",
 		provider: {} as Provider,
+		agentDefinitions: new Map(),
 		rl: { close: () => {} } as unknown as readline.Interface,
 		setModel: () => {},
 		...overrides,

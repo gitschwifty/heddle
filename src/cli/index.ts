@@ -72,6 +72,9 @@ export async function startCli(): Promise<void> {
 		sessionId: ctx.sessionId,
 		provider: activeProvider,
 		weakProvider: ctx.weakProvider,
+		editorProvider: ctx.editorProvider,
+		discovery: ctx.discovery,
+		agentDefinitions: ctx.agentDefinitions,
 		rl,
 		setModel,
 	};
