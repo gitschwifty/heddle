@@ -1,7 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 
 /**
  * Create an isolated test sandbox in $TMPDIR. No user-level side effects.

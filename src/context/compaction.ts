@@ -109,7 +109,7 @@ Provide a structured summary:`;
 export async function compactContext(
 	messages: Message[],
 	weakProvider: Provider,
-	modelLimit: number,
+	_modelLimit: number,
 	config?: Partial<CompactionConfig>,
 ): Promise<CompactionStats> {
 	const tokensBefore = estimateTokens(messages);

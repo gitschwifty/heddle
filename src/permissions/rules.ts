@@ -224,7 +224,7 @@ export function evaluateRules(
 export function mergeConfigs(...configs: PermissionConfig[]): PermissionConfig {
 	if (configs.length === 0) return { allow: [], deny: [], ask: [] };
 	if (configs.length === 1) {
-		const c = configs[0]!;
+		const c = configs[0] as PermissionConfig;
 		return { allow: [...c.allow], deny: [...c.deny], ask: [...c.ask] };
 	}
 
