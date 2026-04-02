@@ -94,7 +94,13 @@ export async function startCli(): Promise<void> {
 		...(ctx.permissionChecker ? { permissionChecker: ctx.permissionChecker } : {}),
 		...(ctx.permissionChecker ? { permissionResolver: buildPermissionResolver(rl) } : {}),
 		...(config.approvalMode === "plan" ? { toolFilter: readOnlyToolFilter, planMode: true } : {}),
+		...(ctx.hooksRunner ? { hooksRunner: ctx.hooksRunner } : {}),
 	};
+
+	// Fire session_start hooks
+	if (ctx.hooksRunner) {
+		ctx.hooksRunner.run("session_start", {}).catch(() => {});
+	}
 
 	console.log(`Heddle CLI — model: ${config.model}`);
 	console.log(`Session: ${sessionFile}`);
@@ -108,6 +114,9 @@ export async function startCli(): Promise<void> {
 				return;
 			}
 			if (trimmed === "exit" || trimmed === "quit") {
+				if (ctx.hooksRunner) {
+					await ctx.hooksRunner.run("session_end", {}).catch(() => {});
+				}
 				console.log("Goodbye!");
 				rl.close();
 				return;
@@ -182,6 +191,17 @@ export async function startCli(): Promise<void> {
 					message_preview: trimmed.slice(0, 200),
 					content_type: mentions.injectedFiles.length > 0 ? "mention" : "text",
 				});
+			}
+
+			// Pre-prompt hooks
+			if (ctx.hooksRunner) {
+				const hookResults = await ctx.hooksRunner.run("pre_prompt", { userInput: trimmed });
+				const blocked = hookResults.find((r) => r.blocked);
+				if (blocked) {
+					console.log(`\n  [hook blocked] ${blocked.reason ?? "hook rejected"}`);
+					prompt();
+					return;
+				}
 			}
 
 			try {
@@ -277,7 +297,14 @@ export async function startCli(): Promise<void> {
 						}
 					}
 				}
+				// Post-turn hooks
+				if (ctx.hooksRunner) {
+					await ctx.hooksRunner.run("post_turn", {}).catch(() => {});
+				}
 			} catch (err) {
+				if (ctx.hooksRunner) {
+					ctx.hooksRunner.run("error", {}).catch(() => {});
+				}
 				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
 			}
 

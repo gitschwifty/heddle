@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTestSandbox } from "../helpers/sandbox.ts";
 import { HooksRunner } from "../../src/hooks/runner.ts";
 import type { ResolvedHooksConfig } from "../../src/hooks/types.ts";
+import { createTestSandbox } from "../helpers/sandbox.ts";
 
 let sandbox: ReturnType<typeof createTestSandbox>;
 let scriptDir: string;

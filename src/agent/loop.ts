@@ -1,4 +1,5 @@
 import { debug } from "../debug.ts";
+import type { HooksRunner } from "../hooks/runner.ts";
 import type { PermissionChecker } from "../permissions/checker.ts";
 import type { Provider, RequestOverrides } from "../provider/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
@@ -14,6 +15,7 @@ export interface AgentLoopOptions {
 	toolFilter?: (tools: ToolDefinition[]) => ToolDefinition[];
 	planMode?: boolean;
 	signal?: AbortSignal;
+	hooksRunner?: HooksRunner;
 }
 
 const DEFAULT_MAX_ITERATIONS = 20;
@@ -139,6 +141,7 @@ export async function* runAgentLoop(
 	const checker = options?.permissionChecker;
 	const resolver = options?.permissionResolver;
 	const signal = options?.signal;
+	const hooksRunner = options?.hooksRunner;
 	let lastAssistantContent: string | null = null;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
@@ -194,13 +197,48 @@ export async function* runAgentLoop(
 				}
 			}
 
+			// Pre-tool hooks
+			if (hooksRunner) {
+				const hookResults = await hooksRunner.run("pre_tool", {
+					toolName: call.function.name,
+					toolArgs: call.function.arguments,
+				});
+				const blocked = hookResults.find((r) => r.blocked);
+				if (blocked) {
+					toolMessages.push({
+						role: "tool",
+						tool_call_id: call.id,
+						content: `Error: Blocked by hook — ${blocked.reason ?? "hook rejected"}`,
+					});
+					continue;
+				}
+			}
+
 			yield { type: "tool_start", name: call.function.name, call };
 			const result = await registry.execute(call.function.name, call.function.arguments, { signal });
 			yield { type: "tool_end", name: call.function.name, result, call };
+
+			// Post-tool hooks
+			let finalResult = result;
+			if (hooksRunner) {
+				const hookResults = await hooksRunner.run("post_tool", {
+					toolName: call.function.name,
+					toolArgs: call.function.arguments,
+					toolResult: result,
+				});
+				const feedback = hookResults
+					.map((r) => r.feedback)
+					.filter(Boolean)
+					.join("\n");
+				if (feedback) {
+					finalResult = `${result}\n\n[hook feedback] ${feedback}`;
+				}
+			}
+
 			toolMessages.push({
 				role: "tool",
 				tool_call_id: call.id,
-				content: result,
+				content: finalResult,
 			});
 		}
 		messages.push(...toolMessages);
@@ -245,6 +283,7 @@ export async function* runAgentLoopStreaming(
 	const checker = options?.permissionChecker;
 	const resolver = options?.permissionResolver;
 	const signal = options?.signal;
+	const hooksRunner = options?.hooksRunner;
 	let lastAssistantContent: string | null = null;
 
 	for (let iteration = 0; iteration < maxIterations; iteration++) {
@@ -338,13 +377,48 @@ export async function* runAgentLoopStreaming(
 				}
 			}
 
+			// Pre-tool hooks
+			if (hooksRunner) {
+				const hookResults = await hooksRunner.run("pre_tool", {
+					toolName: call.function.name,
+					toolArgs: call.function.arguments,
+				});
+				const blocked = hookResults.find((r) => r.blocked);
+				if (blocked) {
+					toolMessages.push({
+						role: "tool",
+						tool_call_id: call.id,
+						content: `Error: Blocked by hook — ${blocked.reason ?? "hook rejected"}`,
+					});
+					continue;
+				}
+			}
+
 			yield { type: "tool_start", name: call.function.name, call };
 			const result = await registry.execute(call.function.name, call.function.arguments, { signal });
 			yield { type: "tool_end", name: call.function.name, result, call };
+
+			// Post-tool hooks
+			let finalResult = result;
+			if (hooksRunner) {
+				const hookResults = await hooksRunner.run("post_tool", {
+					toolName: call.function.name,
+					toolArgs: call.function.arguments,
+					toolResult: result,
+				});
+				const feedback = hookResults
+					.map((r) => r.feedback)
+					.filter(Boolean)
+					.join("\n");
+				if (feedback) {
+					finalResult = `${result}\n\n[hook feedback] ${feedback}`;
+				}
+			}
+
 			toolMessages.push({
 				role: "tool",
 				tool_call_id: call.id,
-				content: result,
+				content: finalResult,
 			});
 		}
 		messages.push(...toolMessages);
