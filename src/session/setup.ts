@@ -10,6 +10,7 @@ import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectMemoryDir, getProjectSessionsDir } from "../config/paths.ts";
 import { ModelPricing } from "../cost/pricing.ts";
 import { CostTracker } from "../cost/tracker.ts";
+import { HooksRunner } from "../hooks/runner.ts";
 import { loadMemoryContext } from "../memory/loader.ts";
 import { PermissionChecker } from "../permissions/index.ts";
 import { createProviders } from "../provider/factory.ts";
@@ -44,6 +45,7 @@ export interface SessionContext {
 	costTracker: CostTracker;
 	modelPricing: ModelPricing;
 	permissionChecker?: PermissionChecker;
+	hooksRunner?: HooksRunner;
 	features: FeatureFlags;
 	discovery?: DiscoveryResult;
 }
@@ -181,6 +183,15 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		});
 	}
 
+	let hooksRunner: HooksRunner | undefined;
+	if (features.hooks && effectiveConfig.hooks && Object.keys(effectiveConfig.hooks).length > 0) {
+		hooksRunner = new HooksRunner(effectiveConfig.hooks, "interactive", {
+			sessionId,
+			project: process.cwd(),
+			model: effectiveConfig.model,
+		});
+	}
+
 	return {
 		config: effectiveConfig,
 		provider,
@@ -193,6 +204,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		costTracker,
 		modelPricing,
 		permissionChecker,
+		hooksRunner,
 		features,
 		discovery,
 	};

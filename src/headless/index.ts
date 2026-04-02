@@ -2,6 +2,8 @@ import readline from "node:readline";
 import { runAgentLoopStreaming } from "../agent/loop.ts";
 import type { AgentEvent } from "../agent/types.ts";
 import { debug, setHeadless } from "../debug.ts";
+import { loadHooks, mergeHooksWithIpc } from "../hooks/loader.ts";
+import { HooksRunner } from "../hooks/runner.ts";
 import {
 	buildError,
 	buildResult,
@@ -142,6 +144,22 @@ async function handleInit(request: IpcRequest & { type: "init" }): Promise<void>
 			}),
 		);
 
+		// Hooks — merge file hooks with IPC hooks if provided
+		if (session.features.hooks) {
+			let hooks = session.config.hooks ?? {};
+			if (request.config.hooks) {
+				const ipcHooks = loadHooks({ hooks: request.config.hooks }, {});
+				hooks = mergeHooksWithIpc(hooks, ipcHooks);
+			}
+			if (Object.keys(hooks).length > 0) {
+				session.hooksRunner = new HooksRunner(hooks, "headless", {
+					sessionId: session.sessionId,
+					project: process.cwd(),
+					model: session.config.model,
+				});
+			}
+		}
+
 		correlationCtx = {
 			session_id: session.sessionId,
 			...(request.config.task_id ? { task_id: request.config.task_id } : {}),
@@ -227,6 +245,7 @@ async function handleSend(request: IpcRequest & { type: "send" }): Promise<void>
 	try {
 		const gen = runAgentLoopStreaming(session.provider, session.registry, session.messages, {
 			...(session.permissionChecker ? { permissionChecker: session.permissionChecker } : {}),
+			...(session.hooksRunner ? { hooksRunner: session.hooksRunner } : {}),
 			signal: abortController.signal,
 		});
 

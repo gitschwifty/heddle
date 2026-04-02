@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { HooksConfigSchema } from "../hooks/types.ts";
 
 // ── Config TypeBox Schemas ──────────────────────────────────────────────
 // Reusable for headless mode protocol validation (init message config).
@@ -79,5 +80,6 @@ export const HeddleConfigSchema = Type.Object({
 	compact_buffer: Type.Optional(Type.Number()),
 	features: Type.Optional(FeaturesSchema),
 	permissions: Type.Optional(PermissionsConfigSchema),
+	hooks: Type.Optional(HooksConfigSchema),
 });
 export type HeddleConfigSchema = Static<typeof HeddleConfigSchema>;

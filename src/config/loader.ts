@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { debug } from "../debug.ts";
+import { loadHooks } from "../hooks/loader.ts";
+import type { ResolvedHooksConfig } from "../hooks/types.ts";
 import type { FeatureFlags } from "./features.ts";
 import { getHeddleHome, getLocalHeddleDir } from "./paths.ts";
 
@@ -43,6 +45,9 @@ export interface HeddleConfig {
 
 	// ── Permissions ──
 	permissionsLayers?: PermissionsLayer[];
+
+	// ── Hooks ──
+	hooks?: ResolvedHooksConfig;
 }
 
 /** Type aliases for consumer clarity. */
@@ -192,6 +197,10 @@ export function loadConfig(localDir?: string): HeddleConfig {
 	const localPerms = toPermissions(localRaw);
 	if (localPerms) layers.push(localPerms);
 	if (layers.length > 0) merged.permissionsLayers = layers;
+
+	// Hooks — additive merge (global first, local appended)
+	const hooks = loadHooks(globalRaw, localRaw);
+	if (Object.keys(hooks).length > 0) merged.hooks = hooks;
 
 	// Env vars override everything
 	if (process.env.HEDDLE_MODEL) merged.model = process.env.HEDDLE_MODEL;

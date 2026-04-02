@@ -1,5 +1,6 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { PermissionsConfigSchema } from "../config/types.ts";
+import { HooksConfigSchema } from "../hooks/types.ts";
 import { ErrorEnvelopeSchema } from "./errors.ts";
 
 export const InitConfigSchema = Type.Object({
@@ -10,6 +11,7 @@ export const InitConfigSchema = Type.Object({
 	task_id: Type.Optional(Type.String()),
 	worker_id: Type.Optional(Type.String()),
 	permissions: Type.Optional(PermissionsConfigSchema),
+	hooks: Type.Optional(HooksConfigSchema),
 });
 
 export const IpcRequestSchema = Type.Union([
