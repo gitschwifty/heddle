@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveDiscovery } from "../../src/config/discovery.ts";
 import { createTestSandbox } from "../helpers/sandbox.ts";
-import { type DiscoveryLevel, type DiscoveryResult, resolveDiscovery } from "../../src/config/discovery.ts";
 
 describe("config/discovery", () => {
 	let sandbox: ReturnType<typeof createTestSandbox>;
@@ -47,13 +47,23 @@ describe("config/discovery", () => {
 		});
 
 		test("stops walking at homeDir", () => {
+			// Use a project dir under home so the walk actually passes through home
+			const projectUnderHome = join(sandbox.home, "projects", "myproject");
+			mkdirSync(projectUnderHome, { recursive: true });
 			// Create .heddle above home — should not be found
-			const aboveHome = join(sandbox.root, ".heddle");
+			const aboveHome = join(sandbox.root, ".heddle-above");
 			mkdirSync(aboveHome, { recursive: true });
 
-			const result = resolveDiscovery(sandbox.project, sandbox.home);
+			// Set HEDDLE_HOME to something nonexistent to avoid it adding extra levels
+			const origHH = process.env.HEDDLE_HOME;
+			process.env.HEDDLE_HOME = join(sandbox.root, "nonexistent-hh");
+
+			const result = resolveDiscovery(projectUnderHome, sandbox.home);
 			const paths = result.levels.map((l) => l.path);
 			expect(paths).not.toContain(aboveHome);
+
+			if (origHH) process.env.HEDDLE_HOME = origHH;
+			else process.env.HEDDLE_HOME = sandbox.heddleHome;
 		});
 
 		test("finds .agents/skills/ at repo root", () => {

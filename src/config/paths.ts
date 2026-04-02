@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -74,6 +74,79 @@ export function getProjectMemoryDir(projectPath?: string): string {
 /** Global memory directory. */
 export function getGlobalMemoryDir(): string {
 	return join(getHeddleHome(), "memory");
+}
+
+/**
+ * Walk up from startDir toward homeDir, collecting `.heddle/` directories.
+ * Returns deepest-first ordering. Also includes HEDDLE_HOME if it exists
+ * and wasn't already found during the walk.
+ */
+export function walkUpHeddleDirs(startDir?: string, homeDir?: string): string[] {
+	const start = resolve(startDir ?? process.cwd());
+	const home = homeDir ?? homedir();
+	const found: string[] = [];
+
+	let current = start;
+	while (true) {
+		const candidate = join(current, ".heddle");
+		try {
+			const stat = statSync(candidate);
+			if (stat.isDirectory()) {
+				found.push(candidate);
+			}
+		} catch {
+			// Directory doesn't exist or inaccessible — skip
+		}
+
+		if (current === home) break;
+		const parent = resolve(current, "..");
+		if (parent === current) break;
+		current = parent;
+	}
+
+	// Include HEDDLE_HOME if set and not already in the list
+	const heddleHome = getHeddleHome();
+	if (!found.includes(heddleHome)) {
+		try {
+			const stat = statSync(heddleHome);
+			if (stat.isDirectory()) {
+				found.push(heddleHome);
+			}
+		} catch {
+			// HEDDLE_HOME doesn't exist — skip
+		}
+	}
+
+	return found;
+}
+
+/**
+ * Walk up from startDir looking for `.git` (directory or file, for worktree support).
+ * Returns the directory containing `.git`, or undefined if not found.
+ */
+export function findRepoRoot(startDir?: string): string | undefined {
+	let current = resolve(startDir ?? process.cwd());
+
+	while (true) {
+		const gitPath = join(current, ".git");
+		try {
+			statSync(gitPath); // exists as file or directory
+			return current;
+		} catch {
+			// Not found — keep walking
+		}
+
+		const parent = resolve(current, "..");
+		if (parent === current) break;
+		current = parent;
+	}
+
+	return undefined;
+}
+
+/** Returns the system-level heddle config directory path. */
+export function getSystemHeddleDir(): string {
+	return "/etc/heddle";
 }
 
 /** Create the global heddle directory structure and current project dirs. */

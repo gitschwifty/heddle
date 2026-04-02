@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentsContext } from "../config/agents-md.ts";
+import { type DiscoveryResult, resolveDiscovery } from "../config/discovery.ts";
 import type { FeatureFlags } from "../config/features.ts";
 import { getFeatures } from "../config/features.ts";
 import type { HeddleConfig } from "../config/loader.ts";
@@ -44,6 +45,7 @@ export interface SessionContext {
 	modelPricing: ModelPricing;
 	permissionChecker?: PermissionChecker;
 	features: FeatureFlags;
+	discovery?: DiscoveryResult;
 }
 
 export interface SessionOptions {
@@ -82,6 +84,7 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 
 	const config = loadConfig();
 	const features = getFeatures("interactive", config.features);
+	const discovery = resolveDiscovery();
 
 	if (!config.apiKey) {
 		throw new Error("OPENROUTER_API_KEY environment variable or api_key in config.toml is required");
@@ -191,5 +194,6 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		modelPricing,
 		permissionChecker,
 		features,
+		discovery,
 	};
 }

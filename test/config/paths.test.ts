@@ -155,6 +155,8 @@ describe("config/paths", () => {
 			const home = join(TEST_DIR, "walk-empty");
 			const project = join(home, "project");
 			mkdirSync(project, { recursive: true });
+			// Ensure HEDDLE_HOME doesn't contribute extra dirs
+			process.env.HEDDLE_HOME = join(TEST_DIR, "nonexistent-hh");
 
 			const result = walkUpHeddleDirs(project, home);
 			expect(result).toEqual([]);
@@ -167,6 +169,8 @@ describe("config/paths", () => {
 			mkdirSync(project, { recursive: true });
 			// .heddle above home should not be found
 			mkdirSync(join(root, ".heddle"), { recursive: true });
+			// Prevent HEDDLE_HOME from adding extra dirs
+			process.env.HEDDLE_HOME = join(TEST_DIR, "nonexistent-hh-stop");
 
 			const result = walkUpHeddleDirs(project, home);
 			expect(result.some((p) => p.includes(join(root, ".heddle")))).toBe(false);
@@ -218,7 +222,11 @@ describe("config/paths", () => {
 		});
 
 		test("returns undefined when no .git found", () => {
-			const noRepo = join(TEST_DIR, "no-repo");
+			// Use tmpdir-based path to avoid walking up into the real repo
+			const { tmpdir } = require("node:os");
+			const { realpathSync } = require("node:fs");
+			const tmpBase = realpathSync(tmpdir());
+			const noRepo = join(tmpBase, "heddle-no-repo-test");
 			mkdirSync(noRepo, { recursive: true });
 
 			const result = findRepoRoot(noRepo);

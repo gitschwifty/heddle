@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTestSandbox } from "../helpers/sandbox.ts";
 import type { DiscoveryLevel } from "../../src/config/discovery.ts";
-import { type Skill, loadSkillsFromDiscovery, parseFrontmatter, parseSkillFile } from "../../src/config/skills.ts";
+import { loadSkillsFromDiscovery, parseFrontmatter, parseSkillFile } from "../../src/config/skills.ts";
+import { createTestSandbox } from "../helpers/sandbox.ts";
 
 describe("config/skills", () => {
 	let sandbox: ReturnType<typeof createTestSandbox>;
