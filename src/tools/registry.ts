@@ -32,6 +32,18 @@ export class ToolRegistry {
 		}));
 	}
 
+	/** Create a new registry containing only the named tools (ignores unknown names). */
+	subset(names: string[]): ToolRegistry {
+		const sub = new ToolRegistry();
+		for (const name of names) {
+			const tool = this.tools.get(name);
+			if (tool) {
+				sub.register(tool);
+			}
+		}
+		return sub;
+	}
+
 	/** Execute a tool by name, parsing JSON string arguments. */
 	async execute(name: string, argsJson: string, options?: { signal?: AbortSignal }): Promise<string> {
 		const tool = this.tools.get(name);
