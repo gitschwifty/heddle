@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import {
 	encodePath,
 	ensureHeddleDirs,
+	findRepoRoot,
 	getAgentsDir,
 	getConfigPath,
 	getHeddleHome,
@@ -11,6 +12,8 @@ import {
 	getProjectDir,
 	getProjectSessionsDir,
 	getSkillsDir,
+	getSystemHeddleDir,
+	walkUpHeddleDirs,
 } from "../../src/config/paths.ts";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-paths-test");
@@ -131,6 +134,101 @@ describe("config/paths", () => {
 		test("returns skills dir under heddle home", () => {
 			delete process.env.HEDDLE_HOME;
 			expect(getSkillsDir()).toBe(join(process.env.HOME!, ".heddle", "skills"));
+		});
+	});
+
+	describe("walkUpHeddleDirs()", () => {
+		test("finds .heddle/ dirs walking up from startDir to homeDir", () => {
+			const home = join(TEST_DIR, "walk-home");
+			const deep = join(home, "a", "b", "c");
+			mkdirSync(deep, { recursive: true });
+			mkdirSync(join(home, "a", ".heddle"), { recursive: true });
+			mkdirSync(join(home, "a", "b", ".heddle"), { recursive: true });
+
+			const result = walkUpHeddleDirs(deep, home);
+			// Deepest first
+			expect(result[0]).toBe(join(home, "a", "b", ".heddle"));
+			expect(result[1]).toBe(join(home, "a", ".heddle"));
+		});
+
+		test("returns empty array when no .heddle/ dirs exist", () => {
+			const home = join(TEST_DIR, "walk-empty");
+			const project = join(home, "project");
+			mkdirSync(project, { recursive: true });
+
+			const result = walkUpHeddleDirs(project, home);
+			expect(result).toEqual([]);
+		});
+
+		test("stops at homeDir (does not go above)", () => {
+			const root = join(TEST_DIR, "walk-stop");
+			const home = join(root, "home");
+			const project = join(home, "project");
+			mkdirSync(project, { recursive: true });
+			// .heddle above home should not be found
+			mkdirSync(join(root, ".heddle"), { recursive: true });
+
+			const result = walkUpHeddleDirs(project, home);
+			expect(result.some((p) => p.includes(join(root, ".heddle")))).toBe(false);
+		});
+
+		test("includes .heddle/ at homeDir itself", () => {
+			const home = join(TEST_DIR, "walk-athome");
+			const project = join(home, "project");
+			mkdirSync(project, { recursive: true });
+			mkdirSync(join(home, ".heddle"), { recursive: true });
+
+			const result = walkUpHeddleDirs(project, home);
+			expect(result).toContain(join(home, ".heddle"));
+		});
+
+		test("includes HEDDLE_HOME if different from walk path", () => {
+			const home = join(TEST_DIR, "walk-hh");
+			const project = join(home, "project");
+			const customHome = join(TEST_DIR, "walk-hh-custom");
+			mkdirSync(project, { recursive: true });
+			mkdirSync(customHome, { recursive: true });
+			process.env.HEDDLE_HOME = customHome;
+
+			const result = walkUpHeddleDirs(project, home);
+			expect(result).toContain(customHome);
+		});
+	});
+
+	describe("findRepoRoot()", () => {
+		test("finds directory containing .git dir", () => {
+			const repo = join(TEST_DIR, "repo-dir");
+			const sub = join(repo, "src", "lib");
+			mkdirSync(sub, { recursive: true });
+			mkdirSync(join(repo, ".git"), { recursive: true });
+
+			const result = findRepoRoot(sub);
+			expect(result).toBe(repo);
+		});
+
+		test("finds directory containing .git file (worktree)", () => {
+			const repo = join(TEST_DIR, "repo-file");
+			const sub = join(repo, "src");
+			mkdirSync(sub, { recursive: true });
+			const { writeFileSync } = require("node:fs");
+			writeFileSync(join(repo, ".git"), "gitdir: /some/path/.git/worktrees/branch");
+
+			const result = findRepoRoot(sub);
+			expect(result).toBe(repo);
+		});
+
+		test("returns undefined when no .git found", () => {
+			const noRepo = join(TEST_DIR, "no-repo");
+			mkdirSync(noRepo, { recursive: true });
+
+			const result = findRepoRoot(noRepo);
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe("getSystemHeddleDir()", () => {
+		test("returns /etc/heddle", () => {
+			expect(getSystemHeddleDir()).toBe("/etc/heddle");
 		});
 	});
 
