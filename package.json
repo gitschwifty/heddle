@@ -28,6 +28,7 @@
 	},
 	"dependencies": {
 		"@sinclair/typebox": "^0.34.48",
+		"gray-matter": "4.0.3",
 		"smol-toml": "^1.6.0"
 	}
 }
