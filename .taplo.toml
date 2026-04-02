@@ -1,0 +1,11 @@
+[rule]
+# Associate heddle config files with the config schema
+[[rule.association]]
+keys = ["**/.heddle/config.toml", "**/config.toml"]
+
+[schema]
+enabled = true
+
+[[schema.associations]]
+url = "./schemas/config.schema.json"
+keys = ["**/.heddle/config.toml"]
