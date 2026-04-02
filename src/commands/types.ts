@@ -2,6 +2,7 @@ import type * as readline from "node:readline";
 import type { AgentDefinition } from "../agents/types.ts";
 import type { DiscoveryResult } from "../config/discovery.ts";
 import type { HeddleConfig } from "../config/loader.ts";
+import type { PasteCache } from "../context/paste-cache.ts";
 import type { CostTracker } from "../cost/tracker.ts";
 import type { Provider } from "../provider/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
@@ -25,6 +26,7 @@ export interface CommandContext {
 	editorProvider?: Provider;
 	discovery?: DiscoveryResult;
 	agentDefinitions: Map<string, AgentDefinition>;
+	pasteCache?: PasteCache;
 	rl: readline.Interface;
 	setModel: (model: string) => void;
 }

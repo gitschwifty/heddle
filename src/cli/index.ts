@@ -5,6 +5,7 @@ import { createBuiltinCommands } from "../commands/builtins.ts";
 import { loadCustomCommands } from "../commands/loader.ts";
 import { CommandRegistry } from "../commands/registry.ts";
 import type { CommandContext } from "../commands/types.ts";
+import { getProjectDir } from "../config/paths.ts";
 import { pruneToolResults } from "../context/index.ts";
 import { appendHistoryEntry } from "../history/writer.ts";
 import { readOnlyToolFilter } from "../permissions/index.ts";
@@ -13,8 +14,10 @@ import type { SessionContext } from "../session/setup.ts";
 import { createSession } from "../session/setup.ts";
 import { createAskUserTool } from "../tools/ask-user.ts";
 import type { Message, ToolCall } from "../types.ts";
+import { writeUsageRecord } from "../usage/writer.ts";
 import { createMentionCompleter } from "./completer.ts";
 import { buildMentionMessage, resolveMentions } from "./mentions.ts";
+import { formatOneshotOutput, runOneshot } from "./oneshot.ts";
 import { formatShellForContext, printShellResult, runShell } from "./shell.ts";
 
 function buildPermissionResolver(rl: readline.Interface) {
@@ -35,6 +38,39 @@ function buildPermissionResolver(rl: readline.Interface) {
 }
 
 export async function startCli(): Promise<void> {
+	// Non-interactive mode: -p <prompt>
+	const pIdx = process.argv.indexOf("-p");
+	const promptIdx = process.argv.indexOf("--prompt");
+	const oneshotIdx = pIdx !== -1 ? pIdx : promptIdx;
+	if (oneshotIdx !== -1) {
+		const prompt = process.argv[oneshotIdx + 1];
+		if (!prompt) {
+			console.error("Error: -p requires a prompt argument");
+			process.exit(1);
+		}
+		const json = process.argv.includes("--json");
+		const quiet = process.argv.includes("--quiet");
+		const agentIdx = process.argv.indexOf("--agent");
+		const agent = agentIdx !== -1 ? process.argv[agentIdx + 1] : undefined;
+		const result = await runOneshot({ prompt, json, quiet, agent });
+		console.log(formatOneshotOutput(result, { prompt, json, quiet }));
+		process.exit(result.exitCode);
+	}
+
+	// Pipe mode: read stdin if not a TTY
+	if (!process.stdin.isTTY && !process.argv.includes("--interactive")) {
+		const chunks: string[] = [];
+		for await (const chunk of process.stdin) {
+			chunks.push(chunk.toString());
+		}
+		const prompt = chunks.join("").trim();
+		if (prompt) {
+			const result = await runOneshot({ prompt });
+			console.log(formatOneshotOutput(result, { prompt }));
+			process.exit(result.exitCode);
+		}
+	}
+
 	let ctx: SessionContext;
 	try {
 		ctx = await createSession();
@@ -75,6 +111,7 @@ export async function startCli(): Promise<void> {
 		editorProvider: ctx.editorProvider,
 		discovery: ctx.discovery,
 		agentDefinitions: ctx.agentDefinitions,
+		pasteCache: ctx.pasteCache,
 		rl,
 		setModel,
 	};
@@ -119,6 +156,22 @@ export async function startCli(): Promise<void> {
 			if (trimmed === "exit" || trimmed === "quit") {
 				if (ctx.hooksRunner) {
 					await ctx.hooksRunner.run("session_end", {}).catch(() => {});
+				}
+				// Write usage record on exit
+				if (ctx.metricsCollector) {
+					const { totalCost } = ctx.costTracker;
+					writeUsageRecord(
+						{
+							session_id: ctx.sessionId,
+							project: process.cwd(),
+							created: new Date(ctx.sessionStartTime).toISOString(),
+							ended: new Date().toISOString(),
+							duration_ms: Date.now() - ctx.sessionStartTime,
+							metrics: ctx.metricsCollector.metrics,
+							...(totalCost !== null ? { cost_usd: totalCost } : {}),
+						},
+						getProjectDir(),
+					).catch(() => {});
 				}
 				console.log("Goodbye!");
 				rl.close();
@@ -186,6 +239,11 @@ export async function startCli(): Promise<void> {
 			messages.push(userMsg);
 			await appendMessage(sessionFile, userMsg);
 
+			// Track user message in metrics
+			if (ctx.metricsCollector) {
+				ctx.metricsCollector.onUserMessage();
+			}
+
 			if (ctx.features.history) {
 				await appendHistoryEntry({
 					timestamp: new Date().toISOString(),
@@ -225,10 +283,12 @@ export async function startCli(): Promise<void> {
 								needsNewline = false;
 							}
 							await appendMessage(sessionFile, event.message);
+							if (ctx.metricsCollector) ctx.metricsCollector.onAssistantMessage();
 							break;
 						}
 						case "tool_start": {
 							console.log(`  [tool] ${event.name}(${event.call.function.arguments})`);
+							if (ctx.metricsCollector) ctx.metricsCollector.onToolCall(event.name);
 							break;
 						}
 						case "tool_end": {
@@ -256,6 +316,7 @@ export async function startCli(): Promise<void> {
 						}
 						case "usage": {
 							ctx.costTracker.addUsage(event.usage);
+							if (ctx.metricsCollector) ctx.metricsCollector.onUsage(event.usage);
 							const { totalInputTokens, totalOutputTokens, totalCost } = ctx.costTracker;
 							const costStr = totalCost !== null ? ` | cost: $${totalCost.toFixed(4)}` : "";
 							console.log(`  [tokens: ${totalInputTokens} in / ${totalOutputTokens} out${costStr}]`);
@@ -269,6 +330,7 @@ export async function startCli(): Promise<void> {
 						}
 						case "error": {
 							console.error(`  [error] ${event.error.message}`);
+							if (ctx.metricsCollector) ctx.metricsCollector.onError("provider");
 							break;
 						}
 					}

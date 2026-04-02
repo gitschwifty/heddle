@@ -90,6 +90,7 @@ describe("createSession()", () => {
 			"list_tasks",
 			"read_file",
 			"save_memory",
+			"save_plan",
 			"subagent",
 			"update_task",
 			"web_fetch",
@@ -111,6 +112,7 @@ describe("createSession()", () => {
 			"list_tasks",
 			"read_file",
 			"save_memory",
+			"save_plan",
 			"subagent",
 			"update_task",
 		]);
@@ -124,7 +126,7 @@ describe("createSession()", () => {
 			.all()
 			.map((t) => t.name)
 			.sort();
-		expect(toolNames).toEqual(["create_task", "list_tasks", "save_memory", "subagent", "update_task"]);
+		expect(toolNames).toEqual(["create_task", "list_tasks", "save_memory", "save_plan", "subagent", "update_task"]);
 	});
 
 	test("config.tools fallback: HEDDLE_TOOLS env limits tools", async () => {
@@ -141,6 +143,7 @@ describe("createSession()", () => {
 			"list_tasks",
 			"read_file",
 			"save_memory",
+			"save_plan",
 			"subagent",
 			"update_task",
 		]);
@@ -159,6 +162,7 @@ describe("createSession()", () => {
 			"edit_file",
 			"list_tasks",
 			"save_memory",
+			"save_plan",
 			"subagent",
 			"update_task",
 			"write_file",

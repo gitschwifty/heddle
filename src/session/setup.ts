@@ -10,6 +10,7 @@ import { getFeatures } from "../config/features.ts";
 import type { HeddleConfig } from "../config/loader.ts";
 import { loadConfig } from "../config/loader.ts";
 import { ensureHeddleDirs, getProjectMemoryDir, getProjectSessionsDir } from "../config/paths.ts";
+import { PasteCache } from "../context/paste-cache.ts";
 import { ModelPricing } from "../cost/pricing.ts";
 import { CostTracker } from "../cost/tracker.ts";
 import { HooksRunner } from "../hooks/runner.ts";
@@ -25,12 +26,14 @@ import { createGrepTool } from "../tools/grep.ts";
 import { createReadTool } from "../tools/read.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { createSaveMemoryTool } from "../tools/save-memory.ts";
+import { createSavePlanTool } from "../tools/save-plan.ts";
 import { createSubagentTool } from "../tools/subagent.ts";
 import { createCreateTaskTool, createListTasksTool, createUpdateTaskTool } from "../tools/task-tools.ts";
 import type { HeddleTool } from "../tools/types.ts";
 import { createWebFetchTool } from "../tools/web-fetch.ts";
 import { createWriteTool } from "../tools/write.ts";
 import type { Message } from "../types.ts";
+import { MetricsCollector } from "../usage/collector.ts";
 import { forkSession } from "./fork.ts";
 import { appendMessage, loadSession, writeSessionMeta } from "./jsonl.ts";
 import { findSession } from "./list.ts";
@@ -54,6 +57,9 @@ export interface SessionContext {
 	features: FeatureFlags;
 	discovery?: DiscoveryResult;
 	agentDefinitions: Map<string, AgentDefinition>;
+	metricsCollector?: MetricsCollector;
+	pasteCache?: PasteCache;
+	sessionStartTime: number;
 }
 
 export interface SessionOptions {
@@ -245,6 +251,15 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		registry.register(createListTasksTool(sessionId));
 	}
 
+	// Register save_plan tool
+	registry.register(createSavePlanTool(sessionId, effectiveConfig.model));
+
+	// Usage metrics collector
+	const metricsCollector = features.usageData ? new MetricsCollector() : undefined;
+
+	// Paste cache for @ mentions
+	const pasteCache = features.pasteCache ? new PasteCache() : undefined;
+
 	return {
 		config: effectiveConfig,
 		provider,
@@ -261,5 +276,8 @@ export async function createSession(options?: SessionOptions): Promise<SessionCo
 		features,
 		discovery,
 		agentDefinitions,
+		metricsCollector,
+		pasteCache,
+		sessionStartTime: Date.now(),
 	};
 }

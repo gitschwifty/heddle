@@ -1,4 +1,5 @@
 import { loadHistory } from "../history/reader.ts";
+import { listPlans, loadPlan } from "../plans/storage.ts";
 import { formatTasksSummary, loadTasks, saveTasks } from "../tasks/storage.ts";
 import type { CommandRegistry } from "./registry.ts";
 import type { SlashCommand } from "./types.ts";
@@ -242,6 +243,97 @@ export function createBuiltinCommands(commandRegistry: CommandRegistry): SlashCo
 				for (const [name, def] of ctx.agentDefinitions) {
 					const model = def.model ? ` (${def.model})` : "";
 					console.log(`  ${name}${model} — ${def.description}`);
+				}
+			},
+		},
+		{
+			name: "plan",
+			description: "Load or list saved plans (usage: /plan list | /plan load <name>)",
+			execute: async (args) => {
+				const parts = args.trim().split(/\s+/);
+				const sub = parts[0];
+				if (sub === "list" || !sub) {
+					const plans = await listPlans();
+					if (plans.length === 0) {
+						console.log("  No saved plans.");
+						return;
+					}
+					for (const p of plans) {
+						const date = p.created ? p.created.replace("T", " ").slice(0, 19) : "unknown";
+						console.log(`  ${p.name} (${date}) — ${p.preview}`);
+					}
+					return;
+				}
+				if (sub === "load") {
+					const name = parts.slice(1).join(" ");
+					if (!name) {
+						console.log("  Usage: /plan load <name>");
+						return;
+					}
+					const plan = await loadPlan(name);
+					if (!plan) {
+						console.log(`  Plan not found: "${name}"`);
+						return;
+					}
+					console.log(`  Plan: ${plan.name}`);
+					if (plan.meta.created) console.log(`  Created: ${plan.meta.created}`);
+					if (plan.meta.model) console.log(`  Model: ${plan.meta.model}`);
+					console.log(`\n${plan.content}`);
+					return;
+				}
+				console.log("  Usage: /plan list | /plan load <name>");
+			},
+		},
+		{
+			name: "stats",
+			description: "Show usage stats (usage: /stats [project])",
+			execute: async (args, ctx) => {
+				if (args.trim() === "project") {
+					const { aggregateUsage } = await import("../usage/reader.ts");
+					const { getProjectDir } = await import("../config/paths.ts");
+					const stats = await aggregateUsage(getProjectDir());
+					console.log(`  Sessions:      ${stats.totalSessions}`);
+					console.log(`  Input tokens:  ${stats.totalTokens.input}`);
+					console.log(`  Output tokens: ${stats.totalTokens.output}`);
+					console.log(`  Total cost:    $${stats.totalCost.toFixed(4)}`);
+					if (Object.keys(stats.toolCalls).length > 0) {
+						console.log("  Tool calls:");
+						for (const [tool, count] of Object.entries(stats.toolCalls).sort(([, a], [, b]) => b - a)) {
+							console.log(`    ${tool}: ${count}`);
+						}
+					}
+					return;
+				}
+				const { totalInputTokens, totalOutputTokens, totalCost } = ctx.costTracker;
+				console.log(`  Input tokens:  ${totalInputTokens}`);
+				console.log(`  Output tokens: ${totalOutputTokens}`);
+				const costStr = totalCost !== null ? `$${totalCost.toFixed(4)}` : "N/A";
+				console.log(`  Total cost:    ${costStr}`);
+			},
+		},
+		{
+			name: "paste",
+			description: "Manage paste cache (usage: /paste [list|clear])",
+			execute: async (args, ctx) => {
+				if (!ctx.pasteCache) {
+					console.log("  Paste cache is disabled.");
+					return;
+				}
+				const sub = args.trim();
+				if (sub === "clear") {
+					ctx.pasteCache.clear();
+					console.log("  Paste cache cleared.");
+					return;
+				}
+				const entries = ctx.pasteCache.list();
+				if (entries.length === 0) {
+					console.log("  Paste cache is empty.");
+					return;
+				}
+				for (const e of entries) {
+					const id = e.pasteId ? ` [paste:${e.pasteId}]` : "";
+					const size = Buffer.byteLength(e.content, "utf-8");
+					console.log(`  ${e.path} (${e.lines} lines, ${size} bytes)${id}`);
 				}
 			},
 		},
