@@ -11,3 +11,6 @@ dist
 .zed
 coverage
 *.log
+
+# Rust
+/target
