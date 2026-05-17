@@ -212,12 +212,12 @@ impl Provider for OpenRouterProvider {
             let headers = provider.build_headers().map_err(|e| anyhow!(e))?;
             let resp = provider.fetch_with_retry(&url, headers, &body).await?;
             let status = resp.status();
-            let mut byte_stream = if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                Err(anyhow!("OpenRouter API error ({status}): {text}"))?;
-                unreachable!();
-            } else {
+            let mut byte_stream = if status.is_success() {
                 resp.bytes_stream()
+            } else {
+                let text = resp.text().await.unwrap_or_default();
+                Err::<reqwest::Response, _>(anyhow!("OpenRouter API error ({status}): {text}"))?
+                    .bytes_stream()
             };
             let mut buffer = String::new();
             while let Some(chunk) = byte_stream.next().await {

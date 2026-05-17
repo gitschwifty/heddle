@@ -123,8 +123,3 @@ fn same_file_uses_same_uuid_across_calls() {
     let uuid = map.keys().next().unwrap();
     assert_eq!(map[uuid]["versions"], 3);
 }
-
-#[test]
-fn _unused() {
-    let _ = Path::new("");
-}

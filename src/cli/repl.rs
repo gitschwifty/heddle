@@ -5,7 +5,7 @@
 //! readline; here we use rustyline synchronously inside the async runtime via
 //! `spawn_blocking`.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -482,13 +482,4 @@ pub async fn start_cli() -> Result<()> {
         }
     }
     Ok(())
-}
-
-trait ReadToString {
-    fn read_to_string(&mut self, buf: &mut String) -> std::io::Result<usize>;
-}
-impl<R: std::io::Read> ReadToString for R {
-    fn read_to_string(&mut self, buf: &mut String) -> std::io::Result<usize> {
-        std::io::Read::read_to_string(self, buf)
-    }
 }

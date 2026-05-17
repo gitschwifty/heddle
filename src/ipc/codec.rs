@@ -1,6 +1,5 @@
 //! Encode/decode IPC messages over JSONL.
 
-use anyhow::Result;
 use serde_json::Value;
 
 use super::errors::ErrorEnvelope;
@@ -110,9 +109,4 @@ pub fn build_error(
         tool_latency_ms: None,
         total_latency_ms: None,
     }
-}
-
-#[allow(dead_code)]
-fn _unused_result() -> Result<()> {
-    Ok(())
 }

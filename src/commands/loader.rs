@@ -3,8 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::Utc;
-
 use super::types::{CommandContext, SlashCommand};
 use crate::config::discovery::{DiscoveryResult, DiscoverySource};
 use crate::config::paths::{get_heddle_home, get_local_heddle_dir};
@@ -102,9 +100,4 @@ pub fn load_custom_commands(discovery: Option<&DiscoveryResult>) -> Vec<SlashCom
         }
     }
     command_map.into_values().collect()
-}
-
-#[allow(dead_code)]
-fn _unused_chrono() -> String {
-    Utc::now().to_rfc3339()
 }

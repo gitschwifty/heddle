@@ -93,7 +93,7 @@ fn load_roundtrips_content_and_metadata() {
         plan.meta.get("session_id").map(String::as_str),
         Some("sess-rt")
     );
-    assert!(plan.meta.get("created").is_some());
+    assert!(plan.meta.contains_key("created"));
 }
 
 #[test]
