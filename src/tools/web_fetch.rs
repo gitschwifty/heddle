@@ -1,10 +1,9 @@
-//! web_fetch tool — strips HTML tags, 10s timeout, 50KB cap.
+//! web_fetch tool — converts HTML to readable text via html2text, 10s timeout, 50KB cap.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use regex::Regex;
 use serde_json::{json, Value};
 
 use super::types::{ExecOptions, HeddleTool};
@@ -12,6 +11,7 @@ use super::types::{ExecOptions, HeddleTool};
 pub struct WebFetchTool;
 
 const MAX_LENGTH: usize = 50_000;
+const RENDER_WIDTH: usize = 80;
 
 pub fn create_web_fetch_tool() -> Arc<dyn HeddleTool> {
     Arc::new(WebFetchTool)
@@ -23,7 +23,7 @@ impl HeddleTool for WebFetchTool {
         "web_fetch"
     }
     fn description(&self) -> &str {
-        "Fetch the contents of a URL. Returns the text content with HTML tags stripped."
+        "Fetch the contents of a URL. HTML pages are converted to readable text."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -77,11 +77,15 @@ impl HeddleTool for WebFetchTool {
             Ok(t) => t,
             Err(e) => return format!("Error: {e}"),
         };
-        let html_re = Regex::new(r"<[^>]*>").unwrap();
-        let mut stripped = html_re.replace_all(&text, "").into_owned();
-        if stripped.len() > MAX_LENGTH {
-            stripped.truncate(MAX_LENGTH);
+
+        let mut rendered = if content_type.contains("html") {
+            html2text::from_read(text.as_bytes(), RENDER_WIDTH)
+        } else {
+            text
+        };
+        if rendered.len() > MAX_LENGTH {
+            rendered.truncate(MAX_LENGTH);
         }
-        stripped
+        rendered
     }
 }
