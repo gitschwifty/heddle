@@ -111,16 +111,18 @@ impl ModelPricing {
     }
 
     async fn ensure_loaded(&self) -> Result<()> {
-        {
-            let guard = self.inner.lock().await;
-            if guard.models.is_some() {
-                return Ok(());
-            }
+        // Hold the lock across the fetch so concurrent callers dedupe to a
+        // single network round-trip (mirrors TS in-flight Promise sharing).
+        let mut guard = self.inner.lock().await;
+        if guard.models.is_some() {
+            return Ok(());
         }
-        self.fetch_models().await
+        let map = self.fetch_models().await?;
+        guard.models = Some(map);
+        Ok(())
     }
 
-    async fn fetch_models(&self) -> Result<()> {
+    async fn fetch_models(&self) -> Result<HashMap<String, ModelPricingInfo>> {
         let client = reqwest::Client::new();
         let resp = client
             .get(format!("{}/models", self.base_url))
@@ -147,7 +149,6 @@ impl ModelPricing {
                 },
             );
         }
-        self.inner.lock().await.models = Some(map);
-        Ok(())
+        Ok(map)
     }
 }
