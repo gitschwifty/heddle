@@ -296,6 +296,9 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
     let heartbeat_token_inner = heartbeat_token.clone();
     let heartbeat_handle = tokio::spawn(async move {
         let mut tick = interval(Duration::from_millis(heartbeat_ms));
+        // `tokio::time::interval` fires immediately at t=0; consume that tick so the
+        // first heartbeat actually waits for the interval (matching the TS setInterval).
+        tick.tick().await;
         let mut local_seq: u64 = 0;
         let started = Instant::now();
         loop {
@@ -394,11 +397,12 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
                 });
             }
             AgentEvent::Error { message } => {
+                let n = normalize_error(&message, "provider_error");
                 error_envelope = Some(ErrorEnvelope {
-                    code: "provider_error".into(),
-                    message,
-                    retryable: true,
-                    details: None,
+                    code: n.code,
+                    message: n.message,
+                    retryable: n.retryable,
+                    details: n.details,
                 });
             }
             _ => {}

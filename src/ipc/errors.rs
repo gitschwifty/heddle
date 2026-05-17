@@ -54,7 +54,7 @@ fn error_code_label(code: &str) -> &'static str {
 }
 
 static PROVIDER_ERROR_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^(.+?)\s+API error\s+\((\d+)\):\s*([\s\S]*)$").unwrap());
+    Lazy::new(|| Regex::new(r"^(.+?)\s+API error\s+\((\d+[^)]*)\):\s*([\s\S]*)$").unwrap());
 
 pub fn normalize_error(err: &str, code: &str) -> NormalizedError {
     let retryable = RETRYABLE_CODES.contains(code);
