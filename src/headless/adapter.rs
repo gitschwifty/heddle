@@ -42,6 +42,7 @@ struct State {
     active_id: Option<String>,
     cancel_target_id: Option<String>,
     active_cancel: Option<CancellationToken>,
+    pending_cancel_ids: Vec<String>,
 }
 
 impl State {
@@ -52,6 +53,7 @@ impl State {
             active_id: None,
             cancel_target_id: None,
             active_cancel: None,
+            pending_cancel_ids: Vec::new(),
         }
     }
 }
@@ -89,6 +91,7 @@ pub async fn run_headless() -> Result<()> {
                 DecodeResult::Err(e) => write_line(&protocol_error(None, e)),
                 DecodeResult::Ok(req) => {
                     // Cancel for active send → flip immediately.
+                    // Cancel arriving before send dispatch → queue for the send to consume.
                     if let IpcRequest::Cancel { target_id, .. } = &req {
                         let mut s = state_for_reader.lock();
                         if s.active_id.as_deref() == Some(target_id) {
@@ -96,6 +99,8 @@ pub async fn run_headless() -> Result<()> {
                             if let Some(tok) = &s.active_cancel {
                                 tok.cancel();
                             }
+                        } else {
+                            s.pending_cancel_ids.push(target_id.clone());
                         }
                     }
                     let _ = tx.send(req);
@@ -256,7 +261,12 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         s.cancel_target_id = None;
         let cancel = CancellationToken::new();
         s.active_cancel = Some(cancel.clone());
-        let _ = cancel; // checked below
+        // If a cancel for this send arrived before dispatch, honor it now.
+        if let Some(pos) = s.pending_cancel_ids.iter().position(|p| p == &id) {
+            s.pending_cancel_ids.remove(pos);
+            s.cancel_target_id = Some(id.clone());
+            cancel.cancel();
+        }
         let session = s.session.take().unwrap();
         let correlation = s.correlation.clone();
         (session, correlation)

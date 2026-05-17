@@ -363,7 +363,20 @@ pub fn run_agent_loop_streaming<'a>(
             let mut assembled: HashMap<u32, (String, String, String)> = HashMap::new(); // index → (id, name, args)
             let mut stream_usage = None;
 
-            while let Some(chunk_res) = chunk_stream.next().await {
+            loop {
+                let chunk_res = match &options.signal {
+                    Some(token) => {
+                        tokio::select! {
+                            _ = token.cancelled() => return,
+                            next = chunk_stream.next() => next,
+                        }
+                    }
+                    None => chunk_stream.next().await,
+                };
+                let chunk_res = match chunk_res {
+                    Some(c) => c,
+                    None => break,
+                };
                 let chunk = match chunk_res {
                     Ok(c) => c,
                     Err(e) => {
