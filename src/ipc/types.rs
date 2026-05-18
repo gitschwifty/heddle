@@ -31,7 +31,7 @@ pub enum IpcRequest {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         protocol_version: Option<String>,
-        config: InitConfig,
+        config: Box<InitConfig>,
     },
     Send {
         id: String,

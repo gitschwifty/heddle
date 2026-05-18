@@ -224,11 +224,7 @@ impl Provider for OpenRouterProvider {
                 let chunk = chunk?;
                 buffer.push_str(std::str::from_utf8(&chunk).unwrap_or(""));
 
-                loop {
-                    let nl_idx = match buffer.find('\n') {
-                        Some(i) => i,
-                        None => break,
-                    };
+                while let Some(nl_idx) = buffer.find('\n') {
                     let line = buffer[..nl_idx].trim().to_string();
                     buffer.drain(..=nl_idx);
 

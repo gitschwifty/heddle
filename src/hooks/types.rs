@@ -16,20 +16,23 @@ pub enum HookEvent {
     Error,
 }
 
-impl HookEvent {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for HookEvent {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
         match s {
-            "session_start" => Some(Self::SessionStart),
-            "session_end" => Some(Self::SessionEnd),
-            "pre_prompt" => Some(Self::PrePrompt),
-            "pre_tool" => Some(Self::PreTool),
-            "post_tool" => Some(Self::PostTool),
-            "post_turn" => Some(Self::PostTurn),
-            "error" => Some(Self::Error),
-            _ => None,
+            "session_start" => Ok(Self::SessionStart),
+            "session_end" => Ok(Self::SessionEnd),
+            "pre_prompt" => Ok(Self::PrePrompt),
+            "pre_tool" => Ok(Self::PreTool),
+            "post_tool" => Ok(Self::PostTool),
+            "post_turn" => Ok(Self::PostTurn),
+            "error" => Ok(Self::Error),
+            _ => Err(()),
         }
     }
+}
 
+impl HookEvent {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SessionStart => "session_start",

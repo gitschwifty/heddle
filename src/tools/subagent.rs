@@ -86,11 +86,13 @@ impl HeddleTool for SubagentTool {
             Message::User(UserMessage { content: prompt }),
         ];
 
-        let mut loop_opts = AgentLoopOptions::default();
-        loop_opts.max_iterations = self.options.max_iterations;
-        loop_opts.permission_checker = self.options.permission_checker.clone();
-        loop_opts.hooks_runner = self.options.hooks_runner.clone();
-        loop_opts.signal = exec_options.signal.clone();
+        let loop_opts = AgentLoopOptions {
+            max_iterations: self.options.max_iterations,
+            permission_checker: self.options.permission_checker.clone(),
+            hooks_runner: self.options.hooks_runner.clone(),
+            signal: exec_options.signal.clone(),
+            ..AgentLoopOptions::default()
+        };
 
         let mut messages = messages;
         let mut stream = run_agent_loop(

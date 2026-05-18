@@ -60,13 +60,14 @@ fn is_summary_anchor(msg: &Message) -> bool {
 
 pub fn get_compactable_messages(messages: &[Message], config: CompactionConfig) -> Vec<usize> {
     let boundary = protection_boundary(messages, config.prune_protect);
-    let mut indices = Vec::new();
-    for i in 1..boundary {
-        if is_summary_anchor(&messages[i]) {
-            continue;
-        }
-        indices.push(i);
-    }
+    let indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .take(boundary)
+        .skip(1)
+        .filter(|(_, m)| !is_summary_anchor(m))
+        .map(|(i, _)| i)
+        .collect();
     if indices.len() < config.prune_minimum {
         return Vec::new();
     }
@@ -105,8 +106,8 @@ pub async fn compact_context(
     let boundary = protection_boundary(messages, config.prune_protect);
     let mut indices_to_remove: std::collections::BTreeSet<usize> =
         compactable_indices.iter().copied().collect();
-    for i in 1..boundary {
-        if is_summary_anchor(&messages[i]) {
+    for (i, msg) in messages.iter().enumerate().take(boundary).skip(1) {
+        if is_summary_anchor(msg) {
             indices_to_remove.insert(i);
         }
     }

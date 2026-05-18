@@ -23,7 +23,7 @@ fn decode_valid_init_request() {
     let line = serde_json::to_string(&IpcRequest::Init {
         id: "1".into(),
         protocol_version: None,
-        config: InitConfig {
+        config: Box::new(InitConfig {
             model: "m".into(),
             system_prompt: "s".into(),
             tools: vec![],
@@ -32,7 +32,7 @@ fn decode_valid_init_request() {
             worker_id: None,
             permissions: None,
             hooks: None,
-        },
+        }),
     })
     .unwrap();
     match decode_request(&line) {

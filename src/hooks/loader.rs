@@ -84,9 +84,9 @@ fn extract_hooks(raw: &TomlValue) -> ResolvedHooksConfig {
         None => return out,
     };
     for (event_name, entries) in hooks.iter() {
-        let event = match HookEvent::from_str(event_name) {
-            Some(e) => e,
-            None => continue,
+        let event = match event_name.parse::<HookEvent>() {
+            Ok(e) => e,
+            Err(_) => continue,
         };
         let arr = match entries.as_array() {
             Some(a) => a,

@@ -1,4 +1,5 @@
 use heddle::hooks::types::{HookEvent, HookMode};
+use std::str::FromStr;
 
 #[test]
 fn hook_event_from_str_accepts_valid_names() {
@@ -12,7 +13,7 @@ fn hook_event_from_str_accepts_valid_names() {
         "error",
     ] {
         assert!(
-            HookEvent::from_str(name).is_some(),
+            HookEvent::from_str(name).is_ok(),
             "expected {name} to parse"
         );
     }
@@ -20,8 +21,8 @@ fn hook_event_from_str_accepts_valid_names() {
 
 #[test]
 fn hook_event_from_str_rejects_invalid_names() {
-    assert!(HookEvent::from_str("invalid").is_none());
-    assert!(HookEvent::from_str("").is_none());
+    assert!(HookEvent::from_str("invalid").is_err());
+    assert!(HookEvent::from_str("").is_err());
 }
 
 #[test]
@@ -37,7 +38,7 @@ fn hook_event_round_trips_through_as_str() {
     ];
     for e in events {
         let s = e.as_str();
-        assert_eq!(HookEvent::from_str(s), Some(e));
+        assert_eq!(HookEvent::from_str(s), Ok(e));
     }
 }
 

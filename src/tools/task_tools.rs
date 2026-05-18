@@ -108,7 +108,7 @@ impl HeddleTool for UpdateTaskTool {
         let status = params
             .get("status")
             .and_then(Value::as_str)
-            .and_then(TaskStatus::from_str);
+            .and_then(|s| s.parse::<TaskStatus>().ok());
         let title = params
             .get("title")
             .and_then(Value::as_str)

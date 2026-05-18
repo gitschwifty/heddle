@@ -18,14 +18,17 @@ impl TaskStatus {
             Self::Blocked => "blocked",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for TaskStatus {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
         match s {
-            "pending" => Some(Self::Pending),
-            "in_progress" => Some(Self::InProgress),
-            "done" => Some(Self::Done),
-            "blocked" => Some(Self::Blocked),
-            _ => None,
+            "pending" => Ok(Self::Pending),
+            "in_progress" => Ok(Self::InProgress),
+            "done" => Ok(Self::Done),
+            "blocked" => Ok(Self::Blocked),
+            _ => Err(()),
         }
     }
 }

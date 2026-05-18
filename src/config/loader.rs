@@ -22,18 +22,21 @@ pub enum ApprovalMode {
     Yolo,
 }
 
-impl ApprovalMode {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for ApprovalMode {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
         match s {
-            "suggest" => Some(Self::Suggest),
-            "auto-edit" => Some(Self::AutoEdit),
-            "full-auto" => Some(Self::FullAuto),
-            "plan" => Some(Self::Plan),
-            "yolo" => Some(Self::Yolo),
-            _ => None,
+            "suggest" => Ok(Self::Suggest),
+            "auto-edit" => Ok(Self::AutoEdit),
+            "full-auto" => Ok(Self::FullAuto),
+            "plan" => Ok(Self::Plan),
+            "yolo" => Ok(Self::Yolo),
+            _ => Err(()),
         }
     }
+}
 
+impl ApprovalMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Suggest => "suggest",
@@ -204,7 +207,7 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     if let Some(am) = table
         .get("approval_mode")
         .and_then(as_str)
-        .and_then(ApprovalMode::from_str)
+        .and_then(|s| s.parse::<ApprovalMode>().ok())
     {
         config.approval_mode = Some(am);
     }
@@ -323,7 +326,7 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
         merged.weak_model = Some(v);
     }
     if let Ok(v) = std::env::var("HEDDLE_APPROVAL_MODE") {
-        if let Some(am) = ApprovalMode::from_str(&v) {
+        if let Ok(am) = v.parse::<ApprovalMode>() {
             merged.approval_mode = Some(am);
         }
     }

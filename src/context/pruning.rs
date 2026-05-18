@@ -33,7 +33,7 @@ fn estimate_one(msg: &Message) -> u64 {
     json.len().div_ceil(4) as u64
 }
 
-pub fn prune_tool_results(messages: &mut Vec<Message>, options: &PruningOptions) -> PruneResult {
+pub fn prune_tool_results(messages: &mut [Message], options: &PruningOptions) -> PruneResult {
     let tokens_before = estimate_tokens(messages);
     if options.is_compaction_output {
         return PruneResult {
@@ -72,8 +72,8 @@ pub fn prune_tool_results(messages: &mut Vec<Message>, options: &PruningOptions)
 
     // Prune tool messages in [1, protection_boundary)
     let mut count: u64 = 0;
-    for i in 1..protection_boundary {
-        if let Message::Tool(tm) = &mut messages[i] {
+    for msg in messages.iter_mut().take(protection_boundary).skip(1) {
+        if let Message::Tool(tm) = msg {
             if !tm.content.starts_with("[pruned") {
                 let original_len = tm.content.len();
                 tm.content = format!("[pruned — original: {original_len} chars]");
