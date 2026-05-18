@@ -272,11 +272,7 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         (session, correlation)
     };
 
-    let cancel = state
-        .lock()
-        .active_cancel
-        .clone()
-        .unwrap_or_else(CancellationToken::new);
+    let cancel = state.lock().active_cancel.clone().unwrap_or_default();
 
     let mut event_seq: u64 = 0;
     let user_msg = Message::User(UserMessage {
@@ -327,10 +323,12 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         }
     });
 
-    let mut loop_opts = AgentLoopOptions::default();
-    loop_opts.permission_checker = session.permission_checker.clone();
-    loop_opts.hooks_runner = session.hooks_runner.clone();
-    loop_opts.signal = Some(cancel.clone());
+    let loop_opts = AgentLoopOptions {
+        permission_checker: session.permission_checker.clone(),
+        hooks_runner: session.hooks_runner.clone(),
+        signal: Some(cancel.clone()),
+        ..AgentLoopOptions::default()
+    };
 
     let provider = session.provider.clone();
     let registry = session.registry.clone();

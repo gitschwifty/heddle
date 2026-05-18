@@ -106,7 +106,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
                     .iter()
                     .map(|m| m.content_str().map(|s| s.len()).unwrap_or(0))
                     .sum();
-                let est = (total + 3) / 4;
+                let est = total.div_ceil(4);
                 println!("  Messages:         {}", ctx.messages.len());
                 println!("  Estimated tokens: ~{est}");
                 None
@@ -144,7 +144,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
         "Show recent message history",
         |args, _ctx| {
             Box::pin(async move {
-                let parts: Vec<&str> = args.trim().split_whitespace().collect();
+                let parts: Vec<&str> = args.split_whitespace().collect();
                 let mut limit: usize = 20;
                 let mut search: Option<String> = None;
                 let mut i = 0;
@@ -182,7 +182,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
         "Restore a file from backup (usage: /restore <file> [version])",
         |args, _ctx| {
             Box::pin(async move {
-                let parts: Vec<&str> = args.trim().split_whitespace().collect();
+                let parts: Vec<&str> = args.split_whitespace().collect();
                 let file_path = match parts.first() {
                     Some(p) => *p,
                     None => {
@@ -362,7 +362,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
         "Load or list saved plans (usage: /plan list | /plan load <name>)",
         |args, _ctx| {
             Box::pin(async move {
-                let parts: Vec<&str> = args.trim().split_whitespace().collect();
+                let parts: Vec<&str> = args.split_whitespace().collect();
                 let sub = parts.first().copied().unwrap_or("");
                 if sub == "list" || sub.is_empty() {
                     let plans = list_plans(None);

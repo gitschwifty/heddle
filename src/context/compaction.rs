@@ -44,7 +44,7 @@ fn protection_boundary(messages: &[Message], protect: u64) -> usize {
     if messages.len() > 1 {
         for i in (1..messages.len()).rev() {
             let json = serde_json::to_string(&messages[i]).unwrap_or_default();
-            accumulated += ((json.len() + 3) / 4) as u64;
+            accumulated += json.len().div_ceil(4) as u64;
             if accumulated > protect {
                 boundary = i + 1;
                 break;

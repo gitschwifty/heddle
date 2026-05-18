@@ -23,8 +23,10 @@ struct DebugState {
 static STATE: Lazy<RwLock<DebugState>> = Lazy::new(|| RwLock::new(load_state()));
 
 fn load_state() -> DebugState {
-    let mut state = DebugState::default();
-    state.log_file = std::env::var("HEDDLE_DEBUG_FILE").ok();
+    let mut state = DebugState {
+        log_file: std::env::var("HEDDLE_DEBUG_FILE").ok(),
+        ..DebugState::default()
+    };
     match std::env::var("HEDDLE_DEBUG") {
         Ok(val) if val == "1" || val == "true" => state.debug_all = true,
         Ok(val) if !val.is_empty() => {
@@ -59,9 +61,9 @@ pub fn debug(channel: &str, msg: &str) {
         if let Ok(mut file) = OpenOptions::new().append(true).create(true).open(log_path) {
             let _ = writeln!(file, "{timestamp} {prefix} {msg}");
         }
-    } else if state.headless {
-        eprintln!("{prefix} {msg}");
     } else {
+        // Both headless and CLI variants write to stderr in Rust (Rust has no
+        // separate console.debug channel like TS).
         eprintln!("{prefix} {msg}");
     }
 }

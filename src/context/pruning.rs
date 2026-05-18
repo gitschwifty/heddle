@@ -25,12 +25,12 @@ pub fn estimate_tokens(messages: &[Message]) -> u64 {
         return 0;
     }
     let json = serde_json::to_string(messages).unwrap_or_default();
-    ((json.len() + 3) / 4) as u64
+    json.len().div_ceil(4) as u64
 }
 
 fn estimate_one(msg: &Message) -> u64 {
     let json = serde_json::to_string(msg).unwrap_or_default();
-    ((json.len() + 3) / 4) as u64
+    json.len().div_ceil(4) as u64
 }
 
 pub fn prune_tool_results(messages: &mut Vec<Message>, options: &PruningOptions) -> PruneResult {

@@ -165,7 +165,7 @@ pub async fn start_cli() -> Result<()> {
         loop_options.permission_resolver = Some(build_permission_resolver());
     }
     if matches!(ctx.config.approval_mode, Some(ApprovalMode::Plan)) {
-        loop_options.tool_filter = Some(Arc::new(|tools| read_only_tool_filter(tools)));
+        loop_options.tool_filter = Some(Arc::new(read_only_tool_filter));
         loop_options.plan_mode = true;
     }
     if let Some(runner) = &ctx.hooks_runner {
