@@ -2,6 +2,8 @@
 //! `OPENROUTER_API_KEY` being set. Hits the real OpenRouter API with free
 //! models. Mirrors `ts-test/provider/openrouter.integration.test.ts`.
 
+mod common;
+
 use futures::StreamExt;
 use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::ProviderConfig;
@@ -23,6 +25,7 @@ const REASONING_MODELS: &[&str] = &[
 ];
 
 fn enabled() -> Option<String> {
+    common::env::init();
     if std::env::var("HEDDLE_INTEGRATION_TESTS").ok().as_deref() != Some("1") {
         return None;
     }
