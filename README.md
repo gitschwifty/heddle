@@ -300,38 +300,15 @@ src/
 
 ## Development
 
+Build, test, lint, and contributor docs live in [DEVELOPMENT.md](DEVELOPMENT.md). Quick recap:
+
 ```bash
-cargo build                                # debug build
-cargo build --release                      # release build (both bins)
-cargo test                                 # full suite (832 tests across 83 files)
-cargo test --test tools_edit               # single test binary
-cargo test --test tools_edit -- match_     # filter inside a binary
-cargo clippy --all-targets                 # lint (must be warning-free)
-cargo fmt                                  # format
+cargo build --release        # both bins
+cargo test                   # 834 tests
+cargo clippy --all-targets   # 0 warnings required
 ```
 
-### Test env / Integration tests
-
-`cargo test` does **not** auto-load `.env.test` (unlike `bun test`). Tests that need env vars opt in via `tests/common/env.rs`:
-
-```rust
-mod common;
-
-#[tokio::test]
-async fn my_integration_test() {
-    common::env::init();  // loads .env.test via dotenvy, OnceLock-guarded
-    // ...
-}
-```
-
-Provider integration tests (`tests/provider_openrouter_integration.rs`) are gated on both:
-
-- `HEDDLE_INTEGRATION_TESTS=1`
-- `OPENROUTER_API_KEY=...`
-
-Set these in `.env.test` (gitignored) and they'll be picked up automatically. Without them, the tests skip with a `skip:` message and pass.
-
-The two heddle binaries themselves load `.env.local` and `.env` via dotenvy at startup; secrets in `.env.local` are picked up automatically for `cargo run`.
+Integration tests against the real OpenRouter API are env-gated — see [DEVELOPMENT.md](DEVELOPMENT.md#integration--live-model-tests).
 
 ## Dependencies
 
