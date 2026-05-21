@@ -30,7 +30,7 @@ fn tool(id: &str, content: &str) -> Message {
 fn estimate_tokens_roughly_length_over_4() {
     let messages = vec![user("hello world")];
     let serialized = serde_json::to_string(&messages).unwrap();
-    let expected = ((serialized.len() + 3) / 4) as u64;
+    let expected = serialized.len().div_ceil(4) as u64;
     assert_eq!(estimate_tokens(&messages), expected);
 }
 

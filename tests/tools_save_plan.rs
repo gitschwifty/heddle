@@ -51,7 +51,7 @@ async fn execute_without_model_still_saves() {
     assert!(result.contains("no-model-plan"), "got: {result}");
 
     let plan = load_plan("no-model-plan", None).expect("plan should exist");
-    assert!(plan.meta.get("model").is_none());
+    assert!(!plan.meta.contains_key("model"));
 }
 
 #[tokio::test]

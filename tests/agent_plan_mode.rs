@@ -196,7 +196,7 @@ async fn tool_filter_strips_non_read_tools() {
         full_registry(),
         &mut messages,
         AgentLoopOptions {
-            tool_filter: Some(Arc::new(|defs| read_only_tool_filter(defs))),
+            tool_filter: Some(Arc::new(read_only_tool_filter)),
             ..Default::default()
         },
     );
@@ -225,7 +225,7 @@ async fn write_tool_denied_even_when_llm_hallucinates() {
                 None,
                 None,
             )))),
-            tool_filter: Some(Arc::new(|defs| read_only_tool_filter(defs))),
+            tool_filter: Some(Arc::new(read_only_tool_filter)),
             ..Default::default()
         },
     );
@@ -288,7 +288,7 @@ async fn plan_mode_with_filter_and_checker_integration() {
                 None,
                 None,
             )))),
-            tool_filter: Some(Arc::new(|defs| read_only_tool_filter(defs))),
+            tool_filter: Some(Arc::new(read_only_tool_filter)),
             plan_mode: true,
             ..Default::default()
         },

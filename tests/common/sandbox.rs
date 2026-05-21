@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Isolated test sandbox: tempdir + HEDDLE_HOME override + cwd switch.
 //!
 //! Mirrors `ts-test/helpers/sandbox.ts`. Drop the sandbox to restore env/cwd

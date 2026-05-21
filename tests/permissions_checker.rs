@@ -252,7 +252,7 @@ fn deny_returns_a_reason() {
     let c = PermissionChecker::new(ApprovalMode::Plan, None, None);
     let r = c.check("write_file", None);
     assert_eq!(r.decision, Decision::Deny);
-    assert!(r.reason.unwrap().len() > 0);
+    assert!(!r.reason.unwrap().is_empty());
 }
 
 #[test]

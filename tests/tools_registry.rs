@@ -128,6 +128,6 @@ async fn execute_returns_error_for_invalid_json() {
 async fn duplicate_registration_returns_error() {
     let mut r = ToolRegistry::new();
     r.register(echo("dupe")).unwrap();
-    let err = r.register(echo("dupe")).err().expect("expected error");
+    let err = r.register(echo("dupe")).expect_err("expected error");
     assert!(err.to_string().contains("already registered"), "got: {err}");
 }

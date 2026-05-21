@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use heddle::agent::loop_::{run_agent_loop, AgentLoopOptions};
-use heddle::agent::types::AgentEvent;
 use heddle::provider::types::{ChunkStream, Provider};
 use heddle::session::jsonl::{append_message, load_session, write_session_meta, SessionMeta};
 use heddle::tools::edit::create_edit_tool;

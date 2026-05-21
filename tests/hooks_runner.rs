@@ -154,8 +154,10 @@ async fn env_vars_are_set() {
         ),
         HookMode::Interactive,
     );
-    let mut ctx = HookContext::default();
-    ctx.tool_name = Some("read".to_string());
+    let ctx = HookContext {
+        tool_name: Some("read".to_string()),
+        ..HookContext::default()
+    };
     let results = runner.run(HookEvent::PreTool, ctx).await;
     assert_eq!(
         results[0].feedback.as_deref(),
@@ -174,10 +176,12 @@ async fn stdin_pipes_json_payload() {
         ),
         HookMode::Interactive,
     );
-    let mut ctx = HookContext::default();
-    ctx.tool_args = Some(r#"{"file_path":"test.ts"}"#.to_string());
-    ctx.tool_result = Some("file contents here".to_string());
-    ctx.user_input = Some("read the file".to_string());
+    let ctx = HookContext {
+        tool_args: Some(r#"{"file_path":"test.ts"}"#.to_string()),
+        tool_result: Some("file contents here".to_string()),
+        user_input: Some("read the file".to_string()),
+        ..HookContext::default()
+    };
     let results = runner.run(HookEvent::PreTool, ctx).await;
     let parsed: serde_json::Value =
         serde_json::from_str(results[0].feedback.as_ref().unwrap()).unwrap();

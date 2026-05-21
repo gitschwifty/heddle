@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use heddle::config::paths::get_file_history_dir;
 use heddle::file_history::backup::backup_file;
 

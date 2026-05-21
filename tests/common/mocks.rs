@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Mock helpers for non-streaming and streaming OpenRouter-style responses.
 //!
 //! Mirrors `ts-test/mocks/openrouter.ts`. The mock provider is enough to drive

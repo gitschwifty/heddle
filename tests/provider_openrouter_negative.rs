@@ -31,8 +31,7 @@ async fn send_errors_on_network_failure() {
     let err = p
         .send(&user_msgs(), None, &json!({}))
         .await
-        .err()
-        .expect("expected error");
+        .expect_err("expected error");
     let msg = err.to_string().to_lowercase();
     assert!(
         msg.contains("connection") || msg.contains("refused") || msg.contains("error"),
@@ -55,8 +54,7 @@ async fn send_includes_status_code_in_error() {
     let err = p
         .send(&user_msgs(), None, &json!({}))
         .await
-        .err()
-        .expect("expected error");
+        .expect_err("expected error");
     assert!(err.to_string().contains("401"), "got: {err}");
 }
 
@@ -73,8 +71,7 @@ async fn send_includes_error_body_in_error() {
     let err = p
         .send(&user_msgs(), None, &json!({}))
         .await
-        .err()
-        .expect("expected error");
+        .expect_err("expected error");
     assert!(
         err.to_string().contains("Internal server error"),
         "got: {err}"

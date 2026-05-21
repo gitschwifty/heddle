@@ -50,9 +50,11 @@ async fn pre_tool_blocking_marks_result_blocked() {
     );
     let runner = make_runner(cfg);
 
-    let mut ctx = HookContext::default();
-    ctx.tool_name = Some("bash".to_string());
-    ctx.tool_args = Some(r#"{"command":"rm -rf /"}"#.to_string());
+    let ctx = HookContext {
+        tool_name: Some("bash".to_string()),
+        tool_args: Some(r#"{"command":"rm -rf /"}"#.to_string()),
+        ..HookContext::default()
+    };
     let results = runner.run(HookEvent::PreTool, ctx).await;
     let blocked = results.iter().find(|r| r.blocked).expect("blocked result");
     assert_eq!(blocked.reason.as_deref(), Some("blocked by policy"));
@@ -73,9 +75,11 @@ async fn post_tool_feedback_collected_from_stdout() {
     );
     let runner = make_runner(cfg);
 
-    let mut ctx = HookContext::default();
-    ctx.tool_name = Some("write".to_string());
-    ctx.tool_result = Some("File written successfully".to_string());
+    let ctx = HookContext {
+        tool_name: Some("write".to_string()),
+        tool_result: Some("File written successfully".to_string()),
+        ..HookContext::default()
+    };
     let results = runner.run(HookEvent::PostTool, ctx).await;
     assert_eq!(results.len(), 1);
     assert_eq!(
@@ -100,13 +104,17 @@ async fn pre_prompt_can_block_user_input() {
     );
     let runner = make_runner(cfg);
 
-    let mut blocked_ctx = HookContext::default();
-    blocked_ctx.user_input = Some("deploy to production".to_string());
+    let blocked_ctx = HookContext {
+        user_input: Some("deploy to production".to_string()),
+        ..HookContext::default()
+    };
     let blocked = runner.run(HookEvent::PrePrompt, blocked_ctx).await;
     assert!(blocked.iter().any(|r| r.blocked));
 
-    let mut ok_ctx = HookContext::default();
-    ok_ctx.user_input = Some("write some tests".to_string());
+    let ok_ctx = HookContext {
+        user_input: Some("write some tests".to_string()),
+        ..HookContext::default()
+    };
     let allowed = runner.run(HookEvent::PrePrompt, ok_ctx).await;
     assert!(allowed.iter().all(|r| !r.blocked));
 }
@@ -125,8 +133,10 @@ async fn mixed_sync_and_async_only_returns_sync_results() {
         ],
     );
     let runner = make_runner(cfg);
-    let mut ctx = HookContext::default();
-    ctx.tool_name = Some("read".to_string());
+    let ctx = HookContext {
+        tool_name: Some("read".to_string()),
+        ..HookContext::default()
+    };
     let results = runner.run(HookEvent::PostTool, ctx).await;
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].feedback.as_deref(), Some("sync feedback"));
@@ -145,13 +155,17 @@ async fn matchers_filter_hooks_before_execution() {
     cfg.insert(HookEvent::PreTool, vec![h]);
     let runner = make_runner(cfg);
 
-    let mut read_ctx = HookContext::default();
-    read_ctx.tool_name = Some("read".to_string());
+    let read_ctx = HookContext {
+        tool_name: Some("read".to_string()),
+        ..HookContext::default()
+    };
     let read_results = runner.run(HookEvent::PreTool, read_ctx).await;
     assert!(read_results.is_empty(), "read should not match");
 
-    let mut write_ctx = HookContext::default();
-    write_ctx.tool_name = Some("write".to_string());
+    let write_ctx = HookContext {
+        tool_name: Some("write".to_string()),
+        ..HookContext::default()
+    };
     let write_results = runner.run(HookEvent::PreTool, write_ctx).await;
     assert_eq!(write_results.len(), 1);
     assert_eq!(write_results[0].feedback.as_deref(), Some("matched"));

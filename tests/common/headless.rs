@@ -2,6 +2,8 @@
 //!
 //! Mirrors `spawnHeadless` in `ts-test/headless/headless.test.ts`.
 
+#![allow(dead_code)]
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
