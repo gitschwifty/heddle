@@ -4,11 +4,12 @@
 //! separate module so the loader can produce internal config from these and the
 //! IPC layer can validate inbound payloads against the same shape.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::hooks::types::HooksConfig;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalModeWire {
     Suggest,
@@ -18,7 +19,7 @@ pub enum ApprovalModeWire {
     Yolo,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderConfigSchema {
     pub model: Option<String>,
     pub weak_model: Option<String>,
@@ -28,7 +29,7 @@ pub struct ProviderConfigSchema {
     pub base_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SessionConfigSchema {
     pub system_prompt: Option<String>,
     pub approval_mode: Option<ApprovalModeWire>,
@@ -42,7 +43,7 @@ pub struct SessionConfigSchema {
     pub compact_buffer: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct FeaturesSchema {
     pub history: Option<bool>,
     pub usage_data: Option<bool>,
@@ -54,14 +55,14 @@ pub struct FeaturesSchema {
     pub tasks: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionsConfigSchema {
     pub allow: Option<Vec<String>>,
     pub deny: Option<Vec<String>>,
     pub ask: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HeddleConfigSchema {
     pub api_key: Option<String>,
     pub model: Option<String>,

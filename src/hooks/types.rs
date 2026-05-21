@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HookEvent {
     SessionStart,
@@ -46,7 +47,7 @@ impl HookEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum HookMode {
     Interactive,
@@ -54,7 +55,7 @@ pub enum HookMode {
     Both,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HookMatchers {
     /// Either a single tool name or a list of names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +68,7 @@ pub struct HookMatchers {
     pub match_input: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ToolMatch {
     Single(String),
@@ -75,7 +76,7 @@ pub enum ToolMatch {
 }
 
 /// Wire-format hook entry from TOML/JSON before defaults are applied.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HookDefinition {
     pub command: String,
     pub timeout: Option<u64>,
