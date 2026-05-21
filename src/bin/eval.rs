@@ -251,7 +251,12 @@ struct DirDiffEntry {
 struct EfficiencyScore {
     tool_calls: u32,
     turns: u32,
-    within_budget: bool,
+    /// Tool-call count fell within task.toml [min, max] range.
+    tool_calls_in_range: bool,
+    /// Total tokens stayed under the per-task budget (CLI default or task
+    /// override). When false, the task was force-aborted but still scored
+    /// on whatever workspace state existed at the time.
+    tokens_in_budget: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -654,6 +659,7 @@ async fn run_one(
     let mut tokens_out = 0u64;
     let mut error: Option<String> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
+    let mut budget_exceeded = false;
 
     let prev_cwd = std::env::current_dir().ok();
     if std::env::set_current_dir(workspace).is_err() {
@@ -679,10 +685,11 @@ async fn run_one(
                 tokens_in += usage.prompt_tokens;
                 tokens_out += usage.completion_tokens;
                 if tokens_in + tokens_out > effective_max_tokens {
-                    error = Some(format!(
-                        "token budget exceeded: {} > {effective_max_tokens}",
-                        tokens_in + tokens_out
-                    ));
+                    // Cost-control kill switch, NOT a correctness failure.
+                    // Break so we don't burn more tokens, but still attempt
+                    // the dir diff below — the agent may have done the work
+                    // and just emitted verbose tail-text after.
+                    budget_exceeded = true;
                     break;
                 }
             }
@@ -707,7 +714,7 @@ async fn run_one(
         Some(e) => (e.min_tool_calls, e.max_tool_calls),
         None => (None, None),
     };
-    let within_budget = eff_min.map(|m| tool_calls >= m).unwrap_or(true)
+    let tool_calls_in_range = eff_min.map(|m| tool_calls >= m).unwrap_or(true)
         && eff_max.map(|m| tool_calls <= m).unwrap_or(true);
 
     TaskResult {
@@ -728,7 +735,8 @@ async fn run_one(
             efficiency: EfficiencyScore {
                 tool_calls,
                 turns,
-                within_budget,
+                tool_calls_in_range,
+                tokens_in_budget: !budget_exceeded,
             },
             cost: CostScore {
                 tokens_in,
@@ -765,7 +773,8 @@ fn error_result(
             efficiency: EfficiencyScore {
                 tool_calls: 0,
                 turns: 0,
-                within_budget: false,
+                tool_calls_in_range: false,
+                tokens_in_budget: true,
             },
             cost: CostScore {
                 tokens_in: 0,
@@ -790,9 +799,10 @@ fn git_short_sha() -> Option<String> {
 
 // ─── Output ──────────────────────────────────────────────────────────────
 
-fn print_summary(results: &[TaskResult]) {
+fn format_summary(results: &[TaskResult]) -> String {
+    let mut out = String::new();
     if results.is_empty() {
-        return;
+        return out;
     }
     let header = [
         "task", "prompt", "model", "outcome", "tools", "turns", "tokens", "err",
@@ -800,10 +810,13 @@ fn print_summary(results: &[TaskResult]) {
     let mut rows: Vec<[String; 8]> = Vec::with_capacity(results.len() + 1);
     rows.push(header.map(String::from));
     for r in results {
-        let outcome = if r.scores.outcome.passed {
-            "pass"
-        } else {
-            "FAIL"
+        let outcome = match (
+            r.scores.outcome.passed,
+            r.scores.efficiency.tokens_in_budget,
+        ) {
+            (true, true) => "pass",
+            (true, false) => "pass*",
+            (false, _) => "FAIL",
         };
         let err = r.scores.error.as_deref().unwrap_or("");
         let err = if err.len() > 50 { &err[..50] } else { err };
@@ -833,39 +846,61 @@ fn print_summary(results: &[TaskResult]) {
         format!("| {} |", cells.join(" | "))
     };
     let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
-    println!();
-    println!("{}", render(&rows[0]));
-    println!("|-{}-|", sep.join("-|-"));
+    out.push('\n');
+    out.push_str(&render(&rows[0]));
+    out.push('\n');
+    out.push_str(&format!("|-{}-|", sep.join("-|-")));
+    out.push('\n');
     for row in &rows[1..] {
-        println!("{}", render(row));
+        out.push_str(&render(row));
+        out.push('\n');
     }
-    println!();
+    let pass = results.iter().filter(|r| r.scores.outcome.passed).count();
+    let over_budget = results
+        .iter()
+        .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
+        .count();
+    let fail = results.len() - pass;
+    out.push('\n');
+    out.push_str(&format!(
+        "{pass} passed ({over_budget} over budget), {fail} failed of {} total\n",
+        results.len()
+    ));
+    if over_budget > 0 {
+        out.push_str(
+            "(`pass*` = correct outcome but token budget exceeded mid-run; not a failure)\n",
+        );
+    }
+    out.push('\n');
+    out
 }
 
-fn print_failure_details(results: &[TaskResult]) {
+fn format_failure_details(results: &[TaskResult]) -> String {
+    let mut out = String::new();
     let fails: Vec<&TaskResult> = results
         .iter()
         .filter(|r| !r.scores.outcome.passed)
         .collect();
     if fails.is_empty() {
-        return;
+        return out;
     }
-    println!("failures ({}):", fails.len());
+    out.push_str(&format!("failures ({}):\n", fails.len()));
     for r in fails {
-        println!("  {} | {}", r.task_id, r.prompt_id);
+        out.push_str(&format!("  {} | {}\n", r.task_id, r.prompt_id));
         if let Some(e) = &r.scores.error {
-            println!("    error: {e}");
+            out.push_str(&format!("    error: {e}\n"));
         }
         if !r.scores.outcome.diff_files.is_empty() {
             for d in &r.scores.outcome.diff_files {
-                println!("    diff: {} ({})", d.path, d.kind);
+                out.push_str(&format!("    diff: {} ({})\n", d.path, d.kind));
             }
         }
         if !r.tool_sequence.is_empty() {
-            println!("    tools: {}", r.tool_sequence.join(" -> "));
+            out.push_str(&format!("    tools: {}\n", r.tool_sequence.join(" -> ")));
         }
     }
-    println!();
+    out.push('\n');
+    out
 }
 
 fn write_result(results_dir: &Path, r: &TaskResult) -> Result<()> {
@@ -1018,10 +1053,13 @@ async fn cmd_run(
                 max_tokens_per_response,
             )
             .await;
-            let outcome = if r.scores.outcome.passed {
-                "pass"
-            } else {
-                "FAIL"
+            let outcome = match (
+                r.scores.outcome.passed,
+                r.scores.efficiency.tokens_in_budget,
+            ) {
+                (true, true) => "pass",
+                (true, false) => "pass*", // outcome correct, but token budget exceeded
+                (false, _) => "FAIL",
             };
             println!(
                 "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
@@ -1035,7 +1073,119 @@ async fn cmd_run(
             results.push(r);
         }
     }
-    print_summary(&results);
-    print_failure_details(&results);
+    let summary = format_summary(&results);
+    let failures = format_failure_details(&results);
+    print!("{summary}");
+    print!("{failures}");
+
+    write_run_artifacts(
+        &results_dir,
+        &model,
+        &chosen_prompts
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>(),
+        &chosen_tasks
+            .iter()
+            .map(|t| t.spec.id.clone())
+            .collect::<Vec<_>>(),
+        max_tokens_per_task,
+        max_tokens_per_response,
+        max_turns,
+        &results,
+        &summary,
+        &failures,
+    )?;
+    println!(
+        "Wrote summary.md, summary.json, run_meta.json -> {}",
+        results_dir.display()
+    );
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct RunMeta {
+    timestamp: String,
+    heddle_commit: String,
+    evals_version: String,
+    model: String,
+    prompts: Vec<String>,
+    tasks: Vec<String>,
+    max_tokens_per_task: u64,
+    max_tokens_per_response: u32,
+    max_turns: u32,
+    counts: RunCounts,
+}
+
+#[derive(Debug, Serialize)]
+struct RunCounts {
+    total: usize,
+    passed: usize,
+    passed_over_budget: usize,
+    failed: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_run_artifacts(
+    results_dir: &Path,
+    model: &str,
+    prompts: &[String],
+    tasks: &[String],
+    max_tokens_per_task: u64,
+    max_tokens_per_response: u32,
+    max_turns: u32,
+    results: &[TaskResult],
+    summary_md: &str,
+    failures_md: &str,
+) -> Result<()> {
+    fs::create_dir_all(results_dir)?;
+
+    let passed = results.iter().filter(|r| r.scores.outcome.passed).count();
+    let passed_over_budget = results
+        .iter()
+        .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
+        .count();
+    let meta = RunMeta {
+        timestamp: Utc::now().to_rfc3339(),
+        heddle_commit: git_short_sha().unwrap_or_else(|| "unknown".into()),
+        evals_version: "0.1.0".into(),
+        model: model.to_string(),
+        prompts: prompts.to_vec(),
+        tasks: tasks.to_vec(),
+        max_tokens_per_task,
+        max_tokens_per_response,
+        max_turns,
+        counts: RunCounts {
+            total: results.len(),
+            passed,
+            passed_over_budget,
+            failed: results.len() - passed,
+        },
+    };
+
+    fs::write(
+        results_dir.join("run_meta.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
+    fs::write(
+        results_dir.join("summary.json"),
+        serde_json::to_string_pretty(results)?,
+    )?;
+
+    // summary.md: meta header + table + failures, paste-ready.
+    let mut md = String::new();
+    md.push_str(&format!("# Eval run — {}\n\n", meta.timestamp));
+    md.push_str(&format!("- model: `{}`\n", meta.model));
+    md.push_str(&format!("- heddle: `{}`\n", meta.heddle_commit));
+    md.push_str(&format!("- evals_version: `{}`\n", meta.evals_version));
+    md.push_str(&format!("- prompts: {}\n", meta.prompts.join(", ")));
+    md.push_str(&format!("- tasks: {}\n", meta.tasks.join(", ")));
+    md.push_str(&format!(
+        "- caps: max_tokens_per_task={}, max_tokens_per_response={}, max_turns={}\n",
+        meta.max_tokens_per_task, meta.max_tokens_per_response, meta.max_turns
+    ));
+    md.push_str(summary_md);
+    md.push_str(failures_md);
+    fs::write(results_dir.join("summary.md"), md)?;
     Ok(())
 }
