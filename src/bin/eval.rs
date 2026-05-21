@@ -67,6 +67,11 @@ enum Cmd {
         /// Hard cap on tokens per task (default 10000).
         #[arg(long, default_value_t = 10_000)]
         max_tokens_per_task: u64,
+        /// Hard cap on a single model response, sent as `max_tokens` to
+        /// the provider. This is the load-bearing cost guard — the session
+        /// budget only fires *after* a response arrives.
+        #[arg(long, default_value_t = 1500)]
+        max_tokens_per_response: u32,
         /// Hard cap on turns per task (default 8).
         #[arg(long, default_value_t = 8)]
         max_turns: u32,
@@ -214,6 +219,9 @@ struct TaskResult {
     duration_ms: u128,
     scores: Scores,
     rendered_system_prompt_chars: usize,
+    /// Order of tool calls (names only). Useful for diagnosing why a task
+    /// failed without re-reading the result JSON.
+    tool_sequence: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -457,56 +465,69 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Normalize file contents for diffing.
+///
+/// Most LLMs are inconsistent about line endings and trailing newlines —
+/// `0.2.0` vs `0.2.0\n` vs `0.2.0\r\n` is noise we don't want to score on.
+/// We:
+///   - decode as UTF-8 (binary files: byte-compare as-is)
+///   - convert CRLF -> LF
+///   - strip trailing whitespace from each line
+///   - strip trailing newlines from the whole file
+fn normalize_for_diff(bytes: &[u8]) -> Vec<u8> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => {
+            let normalized: String = s
+                .replace("\r\n", "\n")
+                .lines()
+                .map(|l| l.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n");
+            normalized.trim_end_matches('\n').as_bytes().to_vec()
+        }
+        Err(_) => bytes.to_vec(),
+    }
+}
+
+fn collect_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for e in WalkDir::new(root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let rel = e
+            .path()
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        if rel == ".keep" {
+            continue;
+        }
+        if let Ok(b) = fs::read(e.path()) {
+            out.insert(rel, b);
+        }
+    }
+    out
+}
+
 fn diff_dirs(actual: &Path, expected: &Path) -> Vec<DirDiffEntry> {
     let mut entries = Vec::new();
-    let mut expected_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for e in WalkDir::new(expected)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
-        let rel = e
-            .path()
-            .strip_prefix(expected)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        if rel == ".keep" {
-            continue;
-        }
-        if let Ok(b) = fs::read(e.path()) {
-            expected_files.insert(rel, b);
-        }
-    }
-    let mut actual_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for e in WalkDir::new(actual)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
-        let rel = e
-            .path()
-            .strip_prefix(actual)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        if rel == ".keep" {
-            continue;
-        }
-        if let Ok(b) = fs::read(e.path()) {
-            actual_files.insert(rel, b);
-        }
-    }
+    let expected_files = collect_files(expected);
+    let actual_files = collect_files(actual);
     for (path, want) in &expected_files {
         match actual_files.get(path) {
             None => entries.push(DirDiffEntry {
                 path: path.clone(),
                 kind: "missing".into(),
             }),
-            Some(got) if got != want => entries.push(DirDiffEntry {
-                path: path.clone(),
-                kind: "differs".into(),
-            }),
+            Some(got) if normalize_for_diff(got) != normalize_for_diff(want) => {
+                entries.push(DirDiffEntry {
+                    path: path.clone(),
+                    kind: "differs".into(),
+                })
+            }
             _ => {}
         }
     }
@@ -554,17 +575,26 @@ const FREE_FALLBACK: &[&str] = &[
     "openrouter/free",
 ];
 
-fn make_provider(model: &str, api_key: String) -> Arc<dyn Provider> {
-    let mut request_params = json!({});
+fn make_provider(model: &str, api_key: String, max_tokens_per_response: u32) -> Arc<dyn Provider> {
+    // Per-response cap is the load-bearing cost guard. The session-level
+    // budget check only fires after a `Usage` event arrives — by that point
+    // the model has already produced (and we've paid for) the response.
+    // `max_tokens` in the request prevents runaway single responses.
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "max_tokens".into(),
+        serde_json::Value::Number(max_tokens_per_response.into()),
+    );
     if model == "openrouter/free" {
         let fallback: Vec<&str> = FREE_FALLBACK.iter().skip(1).copied().collect();
-        request_params = json!({ "models": fallback, "route": "fallback" });
+        params.insert("models".into(), json!(fallback));
+        params.insert("route".into(), json!("fallback"));
     }
     create_openrouter_provider(ProviderConfig {
         api_key,
         model: model.to_string(),
         base_url: None,
-        request_params: Some(request_params),
+        request_params: Some(serde_json::Value::Object(params)),
         retry: None,
     })
 }
@@ -576,6 +606,7 @@ async fn run_one(
     api_key: &str,
     max_turns: u32,
     max_tokens_per_task: u64,
+    max_tokens_per_response: u32,
 ) -> TaskResult {
     let start = Instant::now();
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -609,7 +640,7 @@ async fn run_one(
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };
 
-    let provider = make_provider(model, api_key.to_string());
+    let provider = make_provider(model, api_key.to_string(), max_tokens_per_response);
     let effective_max_turns = task.spec.max_turns.unwrap_or(max_turns).min(max_turns);
 
     let mut tool_calls = 0u32;
@@ -617,6 +648,7 @@ async fn run_one(
     let mut tokens_in = 0u64;
     let mut tokens_out = 0u64;
     let mut error: Option<String> = None;
+    let mut tool_sequence: Vec<String> = Vec::new();
 
     let prev_cwd = std::env::current_dir().ok();
     if std::env::set_current_dir(workspace).is_err() {
@@ -631,7 +663,12 @@ async fn run_one(
     futures::pin_mut!(stream);
     while let Some(event) = stream.next().await {
         match event {
-            AgentEvent::ToolStart { .. } => tool_calls += 1,
+            AgentEvent::ToolStart { name, .. } => {
+                tool_calls += 1;
+                println!("      -> {name}");
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                tool_sequence.push(name);
+            }
             AgentEvent::AssistantMessage { .. } => turns += 1,
             AgentEvent::Usage { usage } => {
                 tokens_in += usage.prompt_tokens;
@@ -677,6 +714,7 @@ async fn run_one(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: composed.chars().count(),
+        tool_sequence,
         scores: Scores {
             outcome: OutcomeScore {
                 passed,
@@ -713,6 +751,7 @@ fn error_result(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
+        tool_sequence: Vec::new(),
         scores: Scores {
             outcome: OutcomeScore {
                 passed: false,
@@ -747,9 +786,14 @@ fn git_short_sha() -> Option<String> {
 // ─── Output ──────────────────────────────────────────────────────────────
 
 fn print_summary(results: &[TaskResult]) {
-    println!();
-    println!("| task | prompt | model | outcome | tools | turns | tokens | err |");
-    println!("|------|--------|-------|---------|-------|-------|--------|-----|");
+    if results.is_empty() {
+        return;
+    }
+    let header = [
+        "task", "prompt", "model", "outcome", "tools", "turns", "tokens", "err",
+    ];
+    let mut rows: Vec<[String; 8]> = Vec::with_capacity(results.len() + 1);
+    rows.push(header.map(String::from));
     for r in results {
         let outcome = if r.scores.outcome.passed {
             "pass"
@@ -758,18 +802,63 @@ fn print_summary(results: &[TaskResult]) {
         };
         let err = r.scores.error.as_deref().unwrap_or("");
         let err = if err.len() > 50 { &err[..50] } else { err };
-        println!(
-            "| {} | {} | {} | {} | {} | {} | {}/{} | {} |",
-            r.task_id,
-            r.prompt_id,
-            r.model,
-            outcome,
-            r.scores.efficiency.tool_calls,
-            r.scores.efficiency.turns,
-            r.scores.cost.tokens_in,
-            r.scores.cost.tokens_out,
-            err,
-        );
+        rows.push([
+            r.task_id.clone(),
+            r.prompt_id.clone(),
+            r.model.clone(),
+            outcome.to_string(),
+            r.scores.efficiency.tool_calls.to_string(),
+            r.scores.efficiency.turns.to_string(),
+            format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
+            err.to_string(),
+        ]);
+    }
+    let mut widths = [0usize; 8];
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+    let render = |row: &[String; 8]| -> String {
+        let cells: Vec<String> = row
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{c:<width$}", width = widths[i]))
+            .collect();
+        format!("| {} |", cells.join(" | "))
+    };
+    let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+    println!();
+    println!("{}", render(&rows[0]));
+    println!("|-{}-|", sep.join("-|-"));
+    for row in &rows[1..] {
+        println!("{}", render(row));
+    }
+    println!();
+}
+
+fn print_failure_details(results: &[TaskResult]) {
+    let fails: Vec<&TaskResult> = results
+        .iter()
+        .filter(|r| !r.scores.outcome.passed)
+        .collect();
+    if fails.is_empty() {
+        return;
+    }
+    println!("failures ({}):", fails.len());
+    for r in fails {
+        println!("  {} | {}", r.task_id, r.prompt_id);
+        if let Some(e) = &r.scores.error {
+            println!("    error: {e}");
+        }
+        if !r.scores.outcome.diff_files.is_empty() {
+            for d in &r.scores.outcome.diff_files {
+                println!("    diff: {} ({})", d.path, d.kind);
+            }
+        }
+        if !r.tool_sequence.is_empty() {
+            println!("    tools: {}", r.tool_sequence.join(" -> "));
+        }
     }
     println!();
 }
@@ -799,6 +888,7 @@ async fn main() -> Result<()> {
             tasks,
             model,
             max_tokens_per_task,
+            max_tokens_per_response,
             max_turns,
             budget_stop_usd: _,
             results_dir,
@@ -809,6 +899,7 @@ async fn main() -> Result<()> {
                 &tasks,
                 model.as_deref(),
                 max_tokens_per_task,
+                max_tokens_per_response,
                 max_turns,
                 results_dir,
             )
@@ -867,12 +958,14 @@ where
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_run(
     evals: &Path,
     prompts: &str,
     tasks: &str,
     model_flag: Option<&str>,
     max_tokens_per_task: u64,
+    max_tokens_per_response: u32,
     max_turns: u32,
     results_dir: Option<PathBuf>,
 ) -> Result<()> {
@@ -904,10 +997,12 @@ async fn cmd_run(
     println!("Results -> {}", results_dir.display());
 
     let mut results: Vec<TaskResult> = Vec::new();
+    let total = chosen_tasks.len() * chosen_prompts.len();
+    let mut idx = 0;
     for task in &chosen_tasks {
         for prompt in &chosen_prompts {
-            print!("  [{:<24}] [{:<24}] ... ", task.spec.id, prompt.id);
-            std::io::Write::flush(&mut std::io::stdout()).ok();
+            idx += 1;
+            println!("[{idx}/{total}] {} | {}", task.spec.id, prompt.id);
             let r = run_one(
                 task,
                 prompt,
@@ -915,6 +1010,7 @@ async fn cmd_run(
                 &api_key,
                 max_turns,
                 max_tokens_per_task,
+                max_tokens_per_response,
             )
             .await;
             let outcome = if r.scores.outcome.passed {
@@ -923,8 +1019,9 @@ async fn cmd_run(
                 "FAIL"
             };
             println!(
-                "{outcome} (tools={}, tokens={}/{}, {}ms)",
+                "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
                 r.scores.efficiency.tool_calls,
+                r.scores.efficiency.turns,
                 r.scores.cost.tokens_in,
                 r.scores.cost.tokens_out,
                 r.duration_ms,
@@ -934,5 +1031,6 @@ async fn cmd_run(
         }
     }
     print_summary(&results);
+    print_failure_details(&results);
     Ok(())
 }
