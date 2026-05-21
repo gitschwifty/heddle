@@ -171,7 +171,10 @@ struct TaskSpec {
     tools: Option<Vec<String>>,
     #[serde(default)]
     max_turns: Option<u32>,
-    #[allow(dead_code)]
+    /// Per-task override for `--max-tokens-per-task`. When set, this wins
+    /// over the CLI default for this task — different tasks need different
+    /// budgets (a 1-line write is 2k; a 3-file refactor on a slow model
+    /// needs 30k+). Use the CLI flag to bump everything globally.
     #[serde(default)]
     budget_tokens: Option<u64>,
     score: TaskScoreSpec,
@@ -642,6 +645,8 @@ async fn run_one(
 
     let provider = make_provider(model, api_key.to_string(), max_tokens_per_response);
     let effective_max_turns = task.spec.max_turns.unwrap_or(max_turns).min(max_turns);
+    // task.toml budget wins when set; else CLI default.
+    let effective_max_tokens = task.spec.budget_tokens.unwrap_or(max_tokens_per_task);
 
     let mut tool_calls = 0u32;
     let mut turns = 0u32;
@@ -673,9 +678,9 @@ async fn run_one(
             AgentEvent::Usage { usage } => {
                 tokens_in += usage.prompt_tokens;
                 tokens_out += usage.completion_tokens;
-                if tokens_in + tokens_out > max_tokens_per_task {
+                if tokens_in + tokens_out > effective_max_tokens {
                     error = Some(format!(
-                        "token budget exceeded: {} > {max_tokens_per_task}",
+                        "token budget exceeded: {} > {effective_max_tokens}",
                         tokens_in + tokens_out
                     ));
                     break;
