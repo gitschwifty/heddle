@@ -61,9 +61,69 @@ fn build_permission_resolver() -> PermissionResolver {
     })
 }
 
+fn print_help() {
+    println!(
+        "heddle — interactive LLM CLI
+
+Usage:
+  heddle [FLAGS]
+  heddle -p <PROMPT> [FLAGS]      run a single prompt and exit
+  echo <PROMPT> | heddle [FLAGS]  read prompt from stdin
+
+Session flags:
+  --resume <ID|NAME>     resume an existing session by id or name
+  --fork <ID|NAME>       fork from an existing session into a new one
+
+One-shot flags:
+  -p, --prompt <TEXT>    run a single prompt non-interactively
+  --json                 emit JSON output (oneshot only)
+  --quiet                suppress diagnostics (oneshot only)
+  --agent <NAME>         run under the named agent persona
+
+Other:
+  --interactive          force interactive mode even with non-TTY stdin
+  -h, --help             print this help
+
+Use /help inside the REPL to list slash commands."
+    );
+}
+
+fn flag_value(args: &[String], names: &[&str]) -> Option<String> {
+    for (i, a) in args.iter().enumerate() {
+        if names.contains(&a.as_str()) {
+            return args.get(i + 1).cloned();
+        }
+        for name in names {
+            let prefix = format!("{name}=");
+            if let Some(rest) = a.strip_prefix(&prefix) {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub async fn start_cli() -> Result<()> {
-    // -p / --prompt non-interactive mode
     let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
+    let resume = flag_value(&args, &["--resume"]);
+    let fork = flag_value(&args, &["--fork"]);
+    if resume.is_some() && fork.is_some() {
+        eprintln!("Error: --resume and --fork are mutually exclusive");
+        std::process::exit(1);
+    }
+    let session_opts_base = SessionOptions {
+        resume: resume.clone(),
+        fork: fork.clone(),
+        ..SessionOptions::default()
+    };
+
+    // -p / --prompt non-interactive mode
     let oneshot_idx = args
         .iter()
         .position(|a| a == "-p")
@@ -78,14 +138,13 @@ pub async fn start_cli() -> Result<()> {
         };
         let json_flag = args.iter().any(|a| a == "--json");
         let quiet = args.iter().any(|a| a == "--quiet");
-        let agent_idx = args.iter().position(|a| a == "--agent");
-        let agent = agent_idx.and_then(|i| args.get(i + 1)).cloned();
+        let agent = flag_value(&args, &["--agent"]);
         let opts = OneshotOptions {
             prompt: prompt.clone(),
             json: json_flag,
             quiet,
             agent,
-            session_options: None,
+            session_options: Some(session_opts_base.clone()),
         };
         let result = run_oneshot(opts.clone()).await;
         println!("{}", format_oneshot_output(&result, &opts));
@@ -100,6 +159,7 @@ pub async fn start_cli() -> Result<()> {
         if !prompt.is_empty() {
             let opts = OneshotOptions {
                 prompt: prompt.clone(),
+                session_options: Some(session_opts_base.clone()),
                 ..Default::default()
             };
             let result = run_oneshot(opts.clone()).await;
@@ -108,7 +168,7 @@ pub async fn start_cli() -> Result<()> {
         }
     }
 
-    let mut ctx = match create_session(SessionOptions::default()).await {
+    let mut ctx = match create_session(session_opts_base).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: {e}");
