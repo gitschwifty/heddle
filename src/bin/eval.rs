@@ -81,6 +81,11 @@ enum Cmd {
         /// Write results under this directory (default <evals>/results/<ts>/).
         #[arg(long)]
         results_dir: Option<PathBuf>,
+        /// Number of times to run each (task, prompt) pair. When >1, the
+        /// summary aggregates with mean ± stddev per pair. Useful for
+        /// averaging out LLM stochastic variance.
+        #[arg(long, default_value_t = 1)]
+        runs: u32,
     },
 }
 
@@ -119,6 +124,11 @@ struct PromptFrontMatter {
     description: Option<String>,
     #[serde(default)]
     context: ContextConfig,
+    /// When true, skip this prompt when running `--prompts all`. The prompt
+    /// is still selectable by explicit name. Use for retired prompts kept
+    /// for reference, or known-failing baselines.
+    #[serde(default)]
+    matrix_exclude: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -228,6 +238,9 @@ struct TaskResult {
     duration_ms: u128,
     scores: Scores,
     rendered_system_prompt_chars: usize,
+    /// 1-indexed run number when --runs N. 0 if single-run.
+    #[serde(default)]
+    run_index: u32,
     /// Order of tool calls (names only). Useful for diagnosing why a task
     /// failed without re-reading the result JSON.
     tool_sequence: Vec<String>,
@@ -732,6 +745,7 @@ async fn run_one(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: composed.chars().count(),
+        run_index: 0,
         tool_sequence,
         scores: Scores {
             outcome: OutcomeScore {
@@ -770,6 +784,7 @@ fn error_result(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
+        run_index: 0,
         tool_sequence: Vec::new(),
         scores: Scores {
             outcome: OutcomeScore {
@@ -881,6 +896,107 @@ fn format_summary(results: &[TaskResult]) -> String {
     out
 }
 
+/// Aggregate per (task, prompt) over multiple runs. Reports pass rate
+/// (X/N), mean tokens (in/out), mean tool_calls and turns, and a stddev
+/// flag when tokens vary by >25% from mean (indicates noise).
+fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
+    use std::collections::BTreeMap;
+    if results.is_empty() {
+        return String::new();
+    }
+    // Group by (task_id, prompt_id).
+    let mut groups: BTreeMap<(String, String), Vec<&TaskResult>> = BTreeMap::new();
+    for r in results {
+        groups
+            .entry((r.task_id.clone(), r.prompt_id.clone()))
+            .or_default()
+            .push(r);
+    }
+
+    let header = [
+        "task",
+        "prompt",
+        "outcome",
+        "tools (avg)",
+        "turns (avg)",
+        "tokens in (avg±std)",
+        "tokens out (avg)",
+    ];
+    let mut rows: Vec<[String; 7]> = Vec::with_capacity(groups.len() + 1);
+    rows.push(header.map(String::from));
+
+    for ((task_id, prompt_id), runs_of) in &groups {
+        let n = runs_of.len() as f64;
+        let passed = runs_of.iter().filter(|r| r.scores.outcome.passed).count();
+        let pass_rate = format!("{}/{}", passed, runs_of.len());
+        let mean_tools = runs_of
+            .iter()
+            .map(|r| r.scores.efficiency.tool_calls as f64)
+            .sum::<f64>()
+            / n;
+        let mean_turns = runs_of
+            .iter()
+            .map(|r| r.scores.efficiency.turns as f64)
+            .sum::<f64>()
+            / n;
+        let toks_in: Vec<f64> = runs_of
+            .iter()
+            .map(|r| r.scores.cost.tokens_in as f64)
+            .collect();
+        let mean_in = toks_in.iter().sum::<f64>() / n;
+        let var_in = toks_in.iter().map(|t| (t - mean_in).powi(2)).sum::<f64>() / n;
+        let std_in = var_in.sqrt();
+        let mean_out = runs_of
+            .iter()
+            .map(|r| r.scores.cost.tokens_out as f64)
+            .sum::<f64>()
+            / n;
+        let pct = if mean_in > 0.0 {
+            std_in / mean_in * 100.0
+        } else {
+            0.0
+        };
+        rows.push([
+            task_id.clone(),
+            prompt_id.clone(),
+            pass_rate,
+            format!("{mean_tools:.1}"),
+            format!("{mean_turns:.1}"),
+            format!("{mean_in:.0}±{std_in:.0} ({pct:.0}%)"),
+            format!("{mean_out:.0}"),
+        ]);
+    }
+
+    let mut widths = [0usize; 7];
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+    let render = |row: &[String; 7]| -> String {
+        let cells: Vec<String> = row
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{c:<width$}", width = widths[i]))
+            .collect();
+        format!("| {} |", cells.join(" | "))
+    };
+    let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str(&format!("Aggregated across {runs} runs per pair\n\n"));
+    out.push_str(&render(&rows[0]));
+    out.push('\n');
+    out.push_str(&format!("|-{}-|\n", sep.join("-|-")));
+    for row in &rows[1..] {
+        out.push_str(&render(row));
+        out.push('\n');
+    }
+    out.push('\n');
+    out
+}
+
 fn format_failure_details(results: &[TaskResult]) -> String {
     let mut out = String::new();
     let fails: Vec<&TaskResult> = results
@@ -911,7 +1027,11 @@ fn format_failure_details(results: &[TaskResult]) -> String {
 
 fn write_result(results_dir: &Path, r: &TaskResult) -> Result<()> {
     fs::create_dir_all(results_dir)?;
-    let name = format!("{}__{}.json", r.task_id, r.prompt_id);
+    let name = if r.run_index > 0 {
+        format!("{}__{}__run{}.json", r.task_id, r.prompt_id, r.run_index)
+    } else {
+        format!("{}__{}.json", r.task_id, r.prompt_id)
+    };
     let path = results_dir.join(name);
     fs::write(&path, serde_json::to_string_pretty(r)?)?;
     Ok(())
@@ -938,6 +1058,7 @@ async fn main() -> Result<()> {
             max_turns,
             budget_stop_usd: _,
             results_dir,
+            runs,
         } => {
             cmd_run(
                 &evals,
@@ -948,6 +1069,7 @@ async fn main() -> Result<()> {
                 max_tokens_per_response,
                 max_turns,
                 results_dir,
+                runs.max(1),
             )
             .await
         }
@@ -1014,6 +1136,7 @@ async fn cmd_run(
     max_tokens_per_response: u32,
     max_turns: u32,
     results_dir: Option<PathBuf>,
+    runs: u32,
 ) -> Result<()> {
     let manifest = load_manifest(evals)?;
     let model = model_flag
@@ -1026,8 +1149,21 @@ async fn cmd_run(
 
     let all_prompts = load_prompts(evals)?;
     let all_tasks = load_tasks(evals)?;
-    let chosen_prompts = select(&all_prompts, prompts, |p| p.id.as_str())?;
+    let mut chosen_prompts = select(&all_prompts, prompts, |p| p.id.as_str())?;
     let chosen_tasks = select(&all_tasks, tasks, |t| t.spec.id.as_str())?;
+
+    // When the user said `--prompts all`, drop prompts marked
+    // `matrix_exclude` (retired-but-kept, known-failing baselines, etc).
+    // Explicit `--prompts <list>` still includes them so they can be
+    // re-tested intentionally.
+    if prompts == "all" {
+        let before = chosen_prompts.len();
+        chosen_prompts.retain(|p| !p.front.matrix_exclude);
+        let excluded = before - chosen_prompts.len();
+        if excluded > 0 {
+            println!("(excluded {excluded} prompt(s) marked matrix_exclude)");
+        }
+    }
 
     if chosen_prompts.is_empty() || chosen_tasks.is_empty() {
         bail!("nothing to run (no prompts or no tasks selected)");
@@ -1134,45 +1270,60 @@ async fn cmd_run(
         eprintln!("Investigate the smoke failures above before re-running the matrix.");
         eprintln!();
     } else {
-        // Pass 2: matrix
+        // Pass 2: matrix, repeated `runs` times to average out variance.
         let matrix_total = matrix_pairs.len();
-        for (i, (task, prompt)) in matrix_pairs.iter().enumerate() {
-            let idx = i + 1;
-            println!(
-                "[matrix {idx}/{matrix_total}] {} | {}",
-                task.spec.id, prompt.id
-            );
-            let r = run_one(
-                task,
-                prompt,
-                &model,
-                &api_key,
-                max_turns,
-                max_tokens_per_task,
-                max_tokens_per_response,
-            )
-            .await;
-            let outcome = match (
-                r.scores.outcome.passed,
-                r.scores.efficiency.tokens_in_budget,
-            ) {
-                (true, true) => "pass",
-                (true, false) => "pass*",
-                (false, _) => "FAIL",
-            };
-            println!(
-                "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
-                r.scores.efficiency.tool_calls,
-                r.scores.efficiency.turns,
-                r.scores.cost.tokens_in,
-                r.scores.cost.tokens_out,
-                r.duration_ms,
-            );
-            write_result(&results_dir, &r)?;
-            results.push(r);
+        for run_n in 1..=runs {
+            if runs > 1 {
+                println!();
+                println!("=== run {run_n}/{runs} ===");
+            }
+            for (i, (task, prompt)) in matrix_pairs.iter().enumerate() {
+                let idx = i + 1;
+                let prefix = if runs > 1 {
+                    format!("[run {run_n}/{runs}, matrix {idx}/{matrix_total}]")
+                } else {
+                    format!("[matrix {idx}/{matrix_total}]")
+                };
+                println!("{prefix} {} | {}", task.spec.id, prompt.id);
+                let mut r = run_one(
+                    task,
+                    prompt,
+                    &model,
+                    &api_key,
+                    max_turns,
+                    max_tokens_per_task,
+                    max_tokens_per_response,
+                )
+                .await;
+                if runs > 1 {
+                    r.run_index = run_n;
+                }
+                let outcome = match (
+                    r.scores.outcome.passed,
+                    r.scores.efficiency.tokens_in_budget,
+                ) {
+                    (true, true) => "pass",
+                    (true, false) => "pass*",
+                    (false, _) => "FAIL",
+                };
+                println!(
+                    "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
+                    r.scores.efficiency.tool_calls,
+                    r.scores.efficiency.turns,
+                    r.scores.cost.tokens_in,
+                    r.scores.cost.tokens_out,
+                    r.duration_ms,
+                );
+                write_result(&results_dir, &r)?;
+                results.push(r);
+            }
         }
     }
-    let summary = format_summary(&results);
+    let summary = if runs > 1 {
+        format_aggregated_summary(&results, runs)
+    } else {
+        format_summary(&results)
+    };
     let failures = format_failure_details(&results);
     print!("{summary}");
     print!("{failures}");
