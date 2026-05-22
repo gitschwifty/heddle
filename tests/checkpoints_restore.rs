@@ -16,19 +16,23 @@ fn read(path: &Path) -> String {
 }
 
 #[test]
-fn restore_code_rolls_modified_file_back_to_version_before() {
+fn restore_code_rolls_modified_file_back_to_pre_turn_content() {
+    // Simulates: turn started with file content "pre-turn"; during the
+    // turn, backup_file ran (writing v{N+1}.bak with the pre-turn content)
+    // and then the file was edited to "post-turn".
     let sb = Sandbox::new("cp-restore-modify");
     let file = sb.project.join("hello.txt");
-    write(&file, "v1");
-    backup_file(&file, None).unwrap(); // versions: 1 (snapshot of v1)
-    write(&file, "v2");
-    backup_file(&file, None).unwrap(); // versions: 2 (snapshot of v2)
-    write(&file, "v3-current-on-disk");
+    write(&file, "ancient");
+    backup_file(&file, None).unwrap(); // versions: 1 (v1.bak = "ancient")
+    write(&file, "pre-turn");
+    backup_file(&file, None).unwrap(); // versions: 2 (v2.bak = "pre-turn")
+    write(&file, "post-turn-current-on-disk");
 
-    // Locate the uuid the file-history layer assigned.
     let mut meta = FileHistoryMeta::new(heddle::config::paths::get_file_history_dir(None));
     let entry = meta.find_by_path(&file).expect("file should be tracked");
 
+    // The "turn" we're rewinding bumped meta from versions=1 to versions=2,
+    // writing v2.bak with the pre-turn content.
     let record = CheckpointRecord::new(
         1,
         0,
@@ -44,10 +48,10 @@ fn restore_code_rolls_modified_file_back_to_version_before() {
     let outcomes = restore_code(&record, None);
     assert_eq!(outcomes.len(), 1);
     match &outcomes[0] {
-        RestoreOutcome::Restored { version, .. } => assert_eq!(*version, 1),
+        RestoreOutcome::Restored { version, .. } => assert_eq!(*version, 2),
         other => panic!("expected Restored, got {other:?}"),
     }
-    assert_eq!(read(&file), "v1");
+    assert_eq!(read(&file), "pre-turn");
 }
 
 #[test]
@@ -62,9 +66,9 @@ fn restore_code_removes_file_created_during_turn() {
         "create".into(),
         vec![FileChange {
             file_path: file.to_string_lossy().to_string(),
-            uuid: "fake-uuid".into(),
+            uuid: String::new(),
             version_before: 0,
-            version_after: 1,
+            version_after: 0,
         }],
     );
 
@@ -90,9 +94,9 @@ fn restore_code_idempotent_when_new_file_already_gone() {
         "create".into(),
         vec![FileChange {
             file_path: file.to_string_lossy().to_string(),
-            uuid: "fake-uuid".into(),
+            uuid: String::new(),
             version_before: 0,
-            version_after: 1,
+            version_after: 0,
         }],
     );
 
@@ -143,14 +147,14 @@ fn restore_code_handles_multiple_changes() {
             FileChange {
                 file_path: a.to_string_lossy().to_string(),
                 uuid: a_uuid,
-                version_before: 1,
+                version_before: 0,
                 version_after: 1,
             },
             FileChange {
                 file_path: b.to_string_lossy().to_string(),
-                uuid: "new-uuid".into(),
+                uuid: String::new(),
                 version_before: 0,
-                version_after: 1,
+                version_after: 0,
             },
         ],
     );

@@ -40,6 +40,40 @@ pub fn snapshot_meta(project_path: Option<&str>) -> MetaSnapshot {
 }
 
 /// Diff two snapshots and return one `FileChange` per uuid whose version
+/// count increased.
+///
+/// For files created from scratch during the turn (e.g. `write_file` on a
+/// path that didn't previously exist), `backup_file` is a no-op and meta
+/// is never updated. The diff therefore misses them. Callers that want
+/// new-file tracking must pass the set of paths touched by edit/write
+/// tools as `touched_paths` — any path in that set that doesn't surface
+/// in the diff is appended as a synthetic `FileChange` with `uuid` empty
+/// and both versions `0`, which `restore_code` interprets as "remove".
+///
+/// Sorted by `file_path` for deterministic test output.
+pub fn compute_changes_with_touched(
+    before: &MetaSnapshot,
+    after: &MetaSnapshot,
+    touched_paths: &std::collections::HashSet<String>,
+) -> Vec<FileChange> {
+    let mut changes = compute_changes(before, after);
+    let already: std::collections::HashSet<String> =
+        changes.iter().map(|c| c.file_path.clone()).collect();
+    for path in touched_paths {
+        if !already.contains(path) {
+            changes.push(FileChange {
+                file_path: path.clone(),
+                uuid: String::new(),
+                version_before: 0,
+                version_after: 0,
+            });
+        }
+    }
+    changes.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+    changes
+}
+
+/// Diff two snapshots and return one `FileChange` per uuid whose version
 /// count increased. Sorted by `file_path` for deterministic test output.
 pub fn compute_changes(before: &MetaSnapshot, after: &MetaSnapshot) -> Vec<FileChange> {
     let mut changes: Vec<FileChange> = after

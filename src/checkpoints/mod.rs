@@ -17,7 +17,7 @@ pub mod io;
 pub mod record;
 pub mod restore;
 
-pub use diff::{compute_changes, snapshot_meta, MetaSnapshot};
+pub use diff::{compute_changes, compute_changes_with_touched, snapshot_meta, MetaSnapshot};
 pub use io::{load_checkpoints, write_checkpoint};
 pub use record::{CheckpointRecord, FileChange};
 pub use restore::restore_code;

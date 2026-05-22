@@ -20,7 +20,7 @@ use crate::agent::loop_::{
     run_agent_loop_streaming, AgentLoopOptions, PermissionResolver, PermissionResponse,
 };
 use crate::agent::types::AgentEvent;
-use crate::checkpoints::diff::{compute_changes, snapshot_meta};
+use crate::checkpoints::diff::{compute_changes_with_touched, snapshot_meta};
 use crate::checkpoints::io::write_checkpoint;
 use crate::checkpoints::record::CheckpointRecord;
 use crate::cli::completer::MentionCompleter;
@@ -375,6 +375,10 @@ pub async fn start_cli() -> Result<()> {
         } else {
             None
         };
+        // Collect file paths touched by edit/write tools during the turn.
+        // Needed because backup_file is a no-op for fresh-file creates, so
+        // the meta diff alone misses brand-new files.
+        let mut touched_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         if let Some(mc) = &ctx.metrics_collector {
             mc.lock().on_user_message();
@@ -448,6 +452,15 @@ pub async fn start_cli() -> Result<()> {
                     if let Some(mc) = &ctx.metrics_collector {
                         mc.lock().on_tool_call(&name);
                     }
+                    if ctx.features.checkpoints && (name == "write_file" || name == "edit_file") {
+                        if let Ok(args) =
+                            serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                        {
+                            if let Some(p) = args.get("file_path").and_then(|v| v.as_str()) {
+                                touched_paths.insert(p.to_string());
+                            }
+                        }
+                    }
                 }
                 AgentEvent::ToolEnd { result, call, .. } => {
                     let preview = if result.len() > 200 {
@@ -511,7 +524,7 @@ pub async fn start_cli() -> Result<()> {
 
         if let Some(before) = meta_before {
             let after = snapshot_meta(None);
-            let changes = compute_changes(&before, &after);
+            let changes = compute_changes_with_touched(&before, &after, &touched_paths);
             if !changes.is_empty() {
                 let rec = CheckpointRecord::new(
                     turn_counter,

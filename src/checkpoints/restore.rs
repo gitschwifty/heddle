@@ -30,9 +30,14 @@ pub fn restore_code(record: &CheckpointRecord, project_path: Option<&str>) -> Ve
 
 fn restore_one(change: &FileChange, project_path: Option<&str>) -> RestoreOutcome {
     let path = Path::new(&change.file_path);
-    if change.version_before == 0 {
-        // File didn't exist before the turn — remove it. If the path is
-        // already gone, treat that as success (idempotent rewind).
+    // `version_after` is the file_history versions count at the END of the
+    // turn. The .bak file written during the turn is named
+    // `v{version_after}.bak` and contains the pre-turn content. To rewind
+    // we restore from that version. `version_after == 0` means the turn
+    // didn't bump versions — the file was created from scratch (backup
+    // skipped because the file didn't exist), so the pre-turn state is
+    // "file does not exist". Remove it.
+    if change.version_after == 0 {
         if !path.exists() {
             return RestoreOutcome::Removed {
                 file_path: change.file_path.clone(),
@@ -48,7 +53,7 @@ fn restore_one(change: &FileChange, project_path: Option<&str>) -> RestoreOutcom
             },
         };
     }
-    let msg = restore_backup(path, change.version_before, project_path);
+    let msg = restore_backup(path, change.version_after, project_path);
     if msg.starts_with("Error") {
         RestoreOutcome::Failed {
             file_path: change.file_path.clone(),
@@ -57,7 +62,7 @@ fn restore_one(change: &FileChange, project_path: Option<&str>) -> RestoreOutcom
     } else {
         RestoreOutcome::Restored {
             file_path: change.file_path.clone(),
-            version: change.version_before,
+            version: change.version_after,
         }
     }
 }

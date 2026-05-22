@@ -4,8 +4,17 @@ use serde::{Deserialize, Serialize};
 
 /// A single file's backup-version movement across a turn.
 ///
-/// `version_before == 0` means the file did not exist (or had no backup
-/// history) before the turn — restoring it means deleting the file.
+/// `version_after` is the load-bearing field for `/rewind`: it names the
+/// backup file (`v{version_after}.bak`) that was written during the turn
+/// and contains the pre-turn content. `version_after == 0` means no
+/// backup was written this turn — the file was created from scratch —
+/// so the pre-turn state is "file does not exist" and rewinding removes
+/// the file.
+///
+/// `version_before` is informational (shown by `/rewind list` and helps
+/// reconstruct history). For files newly created during the turn, both
+/// are 0 and the `uuid` field is empty (no `file_history` entry was
+/// registered).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
     pub file_path: String,
