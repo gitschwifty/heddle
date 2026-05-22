@@ -64,7 +64,6 @@ pub fn compute_changes_with_touched(
             changes.push(FileChange {
                 file_path: path.clone(),
                 uuid: String::new(),
-                version_before: 0,
                 version_after: 0,
             });
         }
@@ -84,7 +83,6 @@ pub fn compute_changes(before: &MetaSnapshot, after: &MetaSnapshot) -> Vec<FileC
                 Some(FileChange {
                     file_path: path.clone(),
                     uuid: uuid.clone(),
-                    version_before: before_v,
                     version_after: *after_v,
                 })
             } else {

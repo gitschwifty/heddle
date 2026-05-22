@@ -246,6 +246,7 @@ pub async fn start_cli() -> Result<()> {
     println!("Type \"exit\" or \"quit\" to stop.\n");
 
     let mut turn_counter: u64 = 0;
+    let mut cached_meta_snapshot: Option<crate::checkpoints::MetaSnapshot> = None;
 
     loop {
         let line = editor.readline("you> ");
@@ -370,8 +371,14 @@ pub async fn start_cli() -> Result<()> {
 
         turn_counter += 1;
         let turn_user_preview: String = trimmed.chars().take(120).collect();
+        // Reuse the prior turn's post-snapshot if we have one — saves a
+        // meta.json read on every turn after the first.
         let meta_before = if ctx.features.checkpoints {
-            Some(snapshot_meta(None))
+            Some(
+                cached_meta_snapshot
+                    .take()
+                    .unwrap_or_else(|| snapshot_meta(None)),
+            )
         } else {
             None
         };
@@ -534,6 +541,7 @@ pub async fn start_cli() -> Result<()> {
                 );
                 let _ = write_checkpoint(&ctx.session_file, &rec);
             }
+            cached_meta_snapshot = Some(after);
         }
 
         let prune_result = prune_tool_results(&mut ctx.messages, &PruningOptions::default());

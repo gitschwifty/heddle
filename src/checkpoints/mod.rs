@@ -5,8 +5,8 @@
 //! versions during the turn. The diff is recorded as a `CheckpointRecord`
 //! line in the session JSONL, alongside the conversation. `/rewind` reads
 //! those records and uses the existing `file_history::restore` machinery
-//! to roll files back to `version_before`, optionally also forking the
-//! session at the turn boundary so the conversation can be replayed from
+//! to roll files back to their pre-turn content, optionally also forking
+//! the session at the turn boundary so the conversation can be replayed from
 //! the same point with code in its pre-turn state.
 //!
 //! Bash-driven file modifications are not tracked — `backup_file` is only

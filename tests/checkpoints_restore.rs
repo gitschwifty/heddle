@@ -40,7 +40,6 @@ fn restore_code_rolls_modified_file_back_to_pre_turn_content() {
         vec![FileChange {
             file_path: file.to_string_lossy().to_string(),
             uuid: entry.uuid,
-            version_before: 1,
             version_after: 2,
         }],
     );
@@ -67,7 +66,6 @@ fn restore_code_removes_file_created_during_turn() {
         vec![FileChange {
             file_path: file.to_string_lossy().to_string(),
             uuid: String::new(),
-            version_before: 0,
             version_after: 0,
         }],
     );
@@ -95,7 +93,6 @@ fn restore_code_idempotent_when_new_file_already_gone() {
         vec![FileChange {
             file_path: file.to_string_lossy().to_string(),
             uuid: String::new(),
-            version_before: 0,
             version_after: 0,
         }],
     );
@@ -117,7 +114,6 @@ fn restore_code_reports_failure_for_missing_backup() {
         vec![FileChange {
             file_path: file.to_string_lossy().to_string(),
             uuid: "uuid-with-no-backups".into(),
-            version_before: 1,
             version_after: 2,
         }],
     );
@@ -147,13 +143,11 @@ fn restore_code_handles_multiple_changes() {
             FileChange {
                 file_path: a.to_string_lossy().to_string(),
                 uuid: a_uuid,
-                version_before: 0,
                 version_after: 1,
             },
             FileChange {
                 file_path: b.to_string_lossy().to_string(),
                 uuid: String::new(),
-                version_before: 0,
                 version_after: 0,
             },
         ],

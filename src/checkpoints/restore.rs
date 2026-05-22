@@ -38,13 +38,11 @@ fn restore_one(change: &FileChange, project_path: Option<&str>) -> RestoreOutcom
     // skipped because the file didn't exist), so the pre-turn state is
     // "file does not exist". Remove it.
     if change.version_after == 0 {
-        if !path.exists() {
-            return RestoreOutcome::Removed {
-                file_path: change.file_path.clone(),
-            };
-        }
         return match std::fs::remove_file(path) {
             Ok(()) => RestoreOutcome::Removed {
+                file_path: change.file_path.clone(),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => RestoreOutcome::Removed {
                 file_path: change.file_path.clone(),
             },
             Err(e) => RestoreOutcome::Failed {

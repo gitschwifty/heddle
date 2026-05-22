@@ -30,22 +30,21 @@ fn compute_changes_detects_version_bump() {
         FileChange {
             file_path: "/a.rs".into(),
             uuid: "u1".into(),
-            version_before: 2,
             version_after: 3,
         }
     );
 }
 
 #[test]
-fn compute_changes_treats_new_uuid_as_version_before_zero() {
+fn compute_changes_records_new_uuid_with_full_version_after() {
     let before = HashMap::new();
     let mut after = HashMap::new();
     after.insert("u-new".into(), ("/freshly-created.rs".into(), 1u32));
 
     let changes = compute_changes(&before, &after);
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].version_before, 0);
     assert_eq!(changes[0].version_after, 1);
+    assert_eq!(changes[0].uuid, "u-new");
 }
 
 #[test]

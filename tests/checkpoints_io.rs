@@ -8,13 +8,12 @@ use heddle::types::{Message, UserMessage};
 mod common;
 use common::Sandbox;
 
-fn make_record(turn: u64, preview: &str, paths: &[(&str, u32, u32)]) -> CheckpointRecord {
+fn make_record(turn: u64, preview: &str, paths: &[(&str, u32)]) -> CheckpointRecord {
     let changes = paths
         .iter()
-        .map(|(p, before, after)| FileChange {
+        .map(|(p, after)| FileChange {
             file_path: (*p).into(),
             uuid: format!("uuid-{p}"),
-            version_before: *before,
             version_after: *after,
         })
         .collect();
@@ -38,7 +37,7 @@ fn write_and_load_round_trip() {
     };
     write_session_meta(&session, &meta).unwrap();
 
-    let r = make_record(1, "hello", &[("/foo.rs", 0, 1)]);
+    let r = make_record(1, "hello", &[("/foo.rs", 1)]);
     write_checkpoint(&session, &r).unwrap();
 
     let loaded = load_checkpoints(&session);
@@ -87,7 +86,7 @@ fn load_skips_non_checkpoint_lines() {
         &serde_json::json!({"type": "context_prune", "tokens_after": 100}),
     )
     .unwrap();
-    write_checkpoint(&session, &make_record(2, "edit", &[("/x.rs", 1, 2)])).unwrap();
+    write_checkpoint(&session, &make_record(2, "edit", &[("/x.rs", 2)])).unwrap();
 
     let loaded = load_checkpoints(&session);
     assert_eq!(loaded.len(), 1);
@@ -114,7 +113,7 @@ fn load_preserves_order() {
     for turn in [3, 1, 2] {
         write_checkpoint(
             &session,
-            &make_record(turn, &format!("turn-{turn}"), &[("/a.rs", 0, 1)]),
+            &make_record(turn, &format!("turn-{turn}"), &[("/a.rs", 1)]),
         )
         .unwrap();
     }
