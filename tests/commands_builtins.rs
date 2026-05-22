@@ -248,8 +248,69 @@ async fn builtins_contains_expected_command_names() {
     for required in &[
         "help", "clear", "exit", "quit", "cost", "status", "context", "model", "tools", "history",
         "compact", "sessions", "fork", "tasks", "agents", "plan", "stats", "paste", "agent",
-        "restore", "name",
+        "restore", "name", "rewind",
     ] {
         assert!(names.contains(required), "missing builtin: {required}");
     }
+}
+
+#[tokio::test]
+async fn rewind_list_empty_when_no_checkpoints() {
+    let sb = Sandbox::new("blt-rewind-empty");
+    let session = sb.project.join("s.jsonl");
+    // Seed a bare session file so load_checkpoints has something to read.
+    heddle::session::jsonl::write_session_meta(
+        &session,
+        &heddle::session::jsonl::SessionMeta {
+            kind: "session_meta".into(),
+            id: "test".into(),
+            cwd: sb.project.to_string_lossy().to_string(),
+            model: "m".into(),
+            created: "2026-05-22T00:00:00Z".into(),
+            heddle_version: "0".into(),
+            name: None,
+            forked_from: None,
+            extra: Default::default(),
+        },
+    )
+    .unwrap();
+    let mut st = CtxState::new(session);
+    let cmds = create_builtin_commands();
+    let rewind = find(&cmds, "rewind");
+    let r = (rewind.execute)("", &mut st.ctx()).await;
+    assert!(r.is_none());
+}
+
+#[tokio::test]
+async fn rewind_to_invalid_index_does_not_panic() {
+    let sb = Sandbox::new("blt-rewind-bad-idx");
+    let session = sb.project.join("s.jsonl");
+    heddle::session::jsonl::write_session_meta(
+        &session,
+        &heddle::session::jsonl::SessionMeta {
+            kind: "session_meta".into(),
+            id: "test".into(),
+            cwd: sb.project.to_string_lossy().to_string(),
+            model: "m".into(),
+            created: "2026-05-22T00:00:00Z".into(),
+            heddle_version: "0".into(),
+            name: None,
+            forked_from: None,
+            extra: Default::default(),
+        },
+    )
+    .unwrap();
+    let mut st = CtxState::new(session);
+    let cmds = create_builtin_commands();
+    let rewind = find(&cmds, "rewind");
+    // Index out of range, malformed scope, missing index — all should be no-ops.
+    assert!((rewind.execute)("to 99", &mut st.ctx()).await.is_none());
+    assert!((rewind.execute)("to notanumber", &mut st.ctx())
+        .await
+        .is_none());
+    assert!((rewind.execute)("to", &mut st.ctx()).await.is_none());
+    assert!((rewind.execute)("to 1 garbage", &mut st.ctx())
+        .await
+        .is_none());
+    assert!((rewind.execute)("bogus", &mut st.ctx()).await.is_none());
 }
