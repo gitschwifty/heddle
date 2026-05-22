@@ -46,7 +46,7 @@ use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_updat
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
 
-const DEFAULT_PROMPT: &str = "You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use them when the user asks you to work with files.";
+const DEFAULT_PROMPT: &str = "You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use tools to take action, not to narrate — if the task is to edit a file, call `edit_file` rather than describing the change.";
 
 pub struct SessionContext {
     pub config: HeddleConfig,

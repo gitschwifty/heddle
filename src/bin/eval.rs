@@ -177,6 +177,12 @@ struct TaskSpec {
     /// needs 30k+). Use the CLI flag to bump everything globally.
     #[serde(default)]
     budget_tokens: Option<u64>,
+    /// Smoke tasks are harness validators, not prompt discriminators. They
+    /// only run against the `default` prompt in matrix mode regardless of
+    /// `--prompts`, so they verify the runner works without polluting the
+    /// matrix table. Use `--include-smoke-matrix` to bypass.
+    #[serde(default)]
+    smoke: bool,
     score: TaskScoreSpec,
 }
 
@@ -1027,22 +1033,115 @@ async fn cmd_run(
         bail!("nothing to run (no prompts or no tasks selected)");
     }
 
+    // Build the (task, prompt) pairs. Smoke tasks only run against the
+    // `default` prompt when matrix mode (>1 chosen prompt), so they don't
+    // pollute the comparison data. When user explicitly selects a single
+    // prompt, smoke tasks run normally.
+    let is_matrix = chosen_prompts.len() > 1;
+    let default_prompt = chosen_prompts
+        .iter()
+        .find(|p| p.id == "default")
+        .copied()
+        .or_else(|| chosen_prompts.first().copied());
+    // Smoke pairs first — if any smoke task fails we abort before burning
+    // budget on the matrix. Non-smoke pairs are run after smoke passes.
+    let mut smoke_pairs: Vec<(&Task, &Prompt)> = Vec::new();
+    let mut matrix_pairs: Vec<(&Task, &Prompt)> = Vec::new();
+    for task in &chosen_tasks {
+        if task.spec.smoke {
+            if let Some(p) = default_prompt {
+                if is_matrix {
+                    smoke_pairs.push((task, p));
+                } else {
+                    // Single-prompt run — smoke still goes through default
+                    // (or whatever the user's single chosen prompt was).
+                    for prompt in &chosen_prompts {
+                        smoke_pairs.push((task, prompt));
+                    }
+                }
+            }
+        } else {
+            for prompt in &chosen_prompts {
+                matrix_pairs.push((task, prompt));
+            }
+        }
+    }
+    let smoke_count = chosen_tasks.iter().filter(|t| t.spec.smoke).count();
+
     let ts = Utc::now().format("%Y%m%dT%H%M%S").to_string();
     let results_dir = results_dir.unwrap_or_else(|| evals.join("results").join(ts));
-    println!(
-        "Running {} prompts × {} tasks against {model}",
-        chosen_prompts.len(),
-        chosen_tasks.len()
-    );
+    let total_pairs = smoke_pairs.len() + matrix_pairs.len();
+    println!("Running {total_pairs} (task, prompt) pairs against {model}");
+    if is_matrix && smoke_count > 0 {
+        println!(
+            "  ({} smoke run(s) up front; {} matrix run(s) after — matrix aborts if any smoke fails)",
+            smoke_pairs.len(),
+            matrix_pairs.len()
+        );
+    }
     println!("Results -> {}", results_dir.display());
 
     let mut results: Vec<TaskResult> = Vec::new();
-    let total = chosen_tasks.len() * chosen_prompts.len();
-    let mut idx = 0;
-    for task in &chosen_tasks {
-        for prompt in &chosen_prompts {
-            idx += 1;
-            println!("[{idx}/{total}] {} | {}", task.spec.id, prompt.id);
+    let mut smoke_failed = false;
+
+    // Pass 1: smoke
+    let smoke_total = smoke_pairs.len();
+    for (i, (task, prompt)) in smoke_pairs.iter().enumerate() {
+        let idx = i + 1;
+        println!(
+            "[smoke {idx}/{smoke_total}] {} | {}",
+            task.spec.id, prompt.id
+        );
+        let r = run_one(
+            task,
+            prompt,
+            &model,
+            &api_key,
+            max_turns,
+            max_tokens_per_task,
+            max_tokens_per_response,
+        )
+        .await;
+        let outcome = match (
+            r.scores.outcome.passed,
+            r.scores.efficiency.tokens_in_budget,
+        ) {
+            (true, true) => "pass",
+            (true, false) => "pass*",
+            (false, _) => "FAIL",
+        };
+        println!(
+            "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
+            r.scores.efficiency.tool_calls,
+            r.scores.efficiency.turns,
+            r.scores.cost.tokens_in,
+            r.scores.cost.tokens_out,
+            r.duration_ms,
+        );
+        if !r.scores.outcome.passed {
+            smoke_failed = true;
+        }
+        write_result(&results_dir, &r)?;
+        results.push(r);
+    }
+
+    if smoke_failed && !matrix_pairs.is_empty() {
+        eprintln!();
+        eprintln!(
+            "❌ smoke failed — aborting before {} matrix run(s) to save budget.",
+            matrix_pairs.len()
+        );
+        eprintln!("Investigate the smoke failures above before re-running the matrix.");
+        eprintln!();
+    } else {
+        // Pass 2: matrix
+        let matrix_total = matrix_pairs.len();
+        for (i, (task, prompt)) in matrix_pairs.iter().enumerate() {
+            let idx = i + 1;
+            println!(
+                "[matrix {idx}/{matrix_total}] {} | {}",
+                task.spec.id, prompt.id
+            );
             let r = run_one(
                 task,
                 prompt,
@@ -1058,7 +1157,7 @@ async fn cmd_run(
                 r.scores.efficiency.tokens_in_budget,
             ) {
                 (true, true) => "pass",
-                (true, false) => "pass*", // outcome correct, but token budget exceeded
+                (true, false) => "pass*",
                 (false, _) => "FAIL",
             };
             println!(
