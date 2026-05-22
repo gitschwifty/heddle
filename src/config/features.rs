@@ -12,6 +12,7 @@ pub struct FeatureFlags {
     pub status_line: bool,
     pub hooks: bool,
     pub tasks: bool,
+    pub checkpoints: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub struct FeatureFlagsOverride {
     pub status_line: Option<bool>,
     pub hooks: Option<bool>,
     pub tasks: Option<bool>,
+    pub checkpoints: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,6 +44,7 @@ const INTERACTIVE: FeatureFlags = FeatureFlags {
     status_line: true,
     hooks: true,
     tasks: true,
+    checkpoints: true,
 };
 
 const NON_INTERACTIVE: FeatureFlags = FeatureFlags {
@@ -53,6 +56,7 @@ const NON_INTERACTIVE: FeatureFlags = FeatureFlags {
     status_line: false,
     hooks: true,
     tasks: true,
+    checkpoints: false,
 };
 
 const HEADLESS: FeatureFlags = FeatureFlags {
@@ -64,6 +68,7 @@ const HEADLESS: FeatureFlags = FeatureFlags {
     status_line: false,
     hooks: true,
     tasks: true,
+    checkpoints: false,
 };
 
 pub fn mode_defaults(mode: Mode) -> FeatureFlags {
@@ -100,6 +105,9 @@ pub fn get_features(mode: Mode, overrides: Option<&FeatureFlagsOverride>) -> Fea
         }
         if let Some(v) = o.tasks {
             out.tasks = v;
+        }
+        if let Some(v) = o.checkpoints {
+            out.checkpoints = v;
         }
     }
     out

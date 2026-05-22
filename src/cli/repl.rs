@@ -20,6 +20,9 @@ use crate::agent::loop_::{
     run_agent_loop_streaming, AgentLoopOptions, PermissionResolver, PermissionResponse,
 };
 use crate::agent::types::AgentEvent;
+use crate::checkpoints::diff::{compute_changes, snapshot_meta};
+use crate::checkpoints::io::write_checkpoint;
+use crate::checkpoints::record::CheckpointRecord;
 use crate::cli::completer::MentionCompleter;
 use crate::cli::mentions::{build_mention_message, resolve_mentions};
 use crate::cli::oneshot::{format_oneshot_output, run_oneshot, OneshotOptions};
@@ -242,6 +245,8 @@ pub async fn start_cli() -> Result<()> {
     println!("Session: {}", ctx.session_file.display());
     println!("Type \"exit\" or \"quit\" to stop.\n");
 
+    let mut turn_counter: u64 = 0;
+
     loop {
         let line = editor.readline("you> ");
         let input = match line {
@@ -358,9 +363,18 @@ pub async fn start_cli() -> Result<()> {
         } else {
             trimmed.to_string()
         };
+        let messages_before_turn = ctx.messages.len() as u64;
         let user_msg = Message::User(UserMessage { content });
         ctx.messages.push(user_msg.clone());
         let _ = append_message(&ctx.session_file, &user_msg);
+
+        turn_counter += 1;
+        let turn_user_preview: String = trimmed.chars().take(120).collect();
+        let meta_before = if ctx.features.checkpoints {
+            Some(snapshot_meta(None))
+        } else {
+            None
+        };
 
         if let Some(mc) = &ctx.metrics_collector {
             mc.lock().on_user_message();
@@ -494,6 +508,20 @@ pub async fn start_cli() -> Result<()> {
             }
         }
         drop(stream);
+
+        if let Some(before) = meta_before {
+            let after = snapshot_meta(None);
+            let changes = compute_changes(&before, &after);
+            if !changes.is_empty() {
+                let rec = CheckpointRecord::new(
+                    turn_counter,
+                    messages_before_turn,
+                    turn_user_preview,
+                    changes,
+                );
+                let _ = write_checkpoint(&ctx.session_file, &rec);
+            }
+        }
 
         let prune_result = prune_tool_results(&mut ctx.messages, &PruningOptions::default());
         if prune_result.messages_pruned > 0 {

@@ -105,6 +105,25 @@ impl FileHistoryMeta {
         })
     }
 
+    /// Return every entry in the store as a flat Vec, sorted by uuid for
+    /// determinism. Used by the checkpoints module to snapshot meta state
+    /// at turn boundaries.
+    pub fn all_entries(&mut self) -> Vec<MetaEntry> {
+        self.load();
+        let mut entries: Vec<MetaEntry> = self
+            .store
+            .iter()
+            .map(|(uuid, e)| MetaEntry {
+                uuid: uuid.clone(),
+                path: e.path.clone(),
+                versions: e.versions,
+                previous_paths: e.previous_paths.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        entries
+    }
+
     pub fn increment_version(&mut self, uuid: &str) -> Result<()> {
         self.load();
         if let Some(entry) = self.store.get_mut(uuid) {

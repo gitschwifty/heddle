@@ -6,6 +6,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::types::{CommandContext, SlashCommand};
+use crate::checkpoints::io::load_checkpoints;
+use crate::checkpoints::restore::{restore_code, RestoreOutcome};
 use crate::config::paths::get_project_dir;
 use crate::context::compaction::{compact_context, CompactionConfig};
 use crate::file_history::restore::{list_backups, restore_backup};
@@ -306,6 +308,96 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
             None
         })
     }));
+
+    out.push(cmd(
+        "rewind",
+        "Rewind to a checkpoint (usage: /rewind [list] | /rewind to <N> [code|convo])",
+        |args, ctx| {
+            Box::pin(async move {
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                let sub = parts.first().copied().unwrap_or("list");
+                let checkpoints = load_checkpoints(&ctx.session_file);
+
+                if sub == "list" {
+                    if checkpoints.is_empty() {
+                        println!("  No checkpoints recorded in this session yet.");
+                        return None;
+                    }
+                    for (i, c) in checkpoints.iter().enumerate() {
+                        let n = i + 1;
+                        let nfiles = c.changes.len();
+                        let preview =
+                            c.user_preview.chars().take(60).collect::<String>();
+                        println!("  [{n}] turn {} — {} file(s) — \"{preview}\"", c.turn_index, nfiles);
+                    }
+                    println!(
+                        "\n  Restore with: /rewind to <N> [code|convo]  (default both; bash-modified files are NOT tracked)"
+                    );
+                    return None;
+                }
+
+                if sub != "to" {
+                    println!("  Usage: /rewind [list] | /rewind to <N> [code|convo]");
+                    return None;
+                }
+
+                let Some(n_str) = parts.get(1) else {
+                    println!("  Usage: /rewind to <N> [code|convo]");
+                    return None;
+                };
+                let Ok(n) = n_str.parse::<usize>() else {
+                    println!("  Checkpoint index must be a positive number.");
+                    return None;
+                };
+                if n == 0 || n > checkpoints.len() {
+                    println!(
+                        "  No checkpoint #{n}. Valid range: 1..={}",
+                        checkpoints.len()
+                    );
+                    return None;
+                }
+                let scope = parts.get(2).copied().unwrap_or("both");
+                if !matches!(scope, "code" | "convo" | "both") {
+                    println!("  Scope must be one of: code, convo, both");
+                    return None;
+                }
+
+                let record = &checkpoints[n - 1];
+                if scope == "code" || scope == "both" {
+                    let outcomes = restore_code(record, None);
+                    let mut restored = 0usize;
+                    let mut removed = 0usize;
+                    let mut failed = 0usize;
+                    for o in &outcomes {
+                        match o {
+                            RestoreOutcome::Restored { .. } => restored += 1,
+                            RestoreOutcome::Removed { .. } => removed += 1,
+                            RestoreOutcome::Failed { file_path, reason } => {
+                                failed += 1;
+                                println!("  [failed] {file_path}: {reason}");
+                            }
+                        }
+                    }
+                    println!(
+                        "  Code: restored {restored}, removed {removed}, failed {failed}"
+                    );
+                }
+                if scope == "convo" || scope == "both" {
+                    let opts = ForkOptions {
+                        up_to_message: Some(record.messages_before_turn as usize),
+                    };
+                    match fork_session(&ctx.session_file, opts) {
+                        Ok(result) => {
+                            println!("  Convo: forked to {}", result.session_file.display());
+                            println!("  Resume with: heddle --session {}", result.session_id);
+                        }
+                        Err(e) => println!("  Convo fork failed: {e}"),
+                    }
+                }
+                None
+            })
+        },
+    ));
 
     out.push(cmd(
         "tasks",

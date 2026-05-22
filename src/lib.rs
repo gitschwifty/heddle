@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod agents;
+pub mod checkpoints;
 pub mod cli;
 pub mod commands;
 pub mod config;
