@@ -459,15 +459,6 @@ pub async fn start_cli() -> Result<()> {
                     if let Some(mc) = &ctx.metrics_collector {
                         mc.lock().on_tool_call(&name);
                     }
-                    if ctx.features.checkpoints && (name == "write_file" || name == "edit_file") {
-                        if let Ok(args) =
-                            serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                        {
-                            if let Some(p) = args.get("file_path").and_then(|v| v.as_str()) {
-                                touched_paths.insert(p.to_string());
-                            }
-                        }
-                    }
                 }
                 AgentEvent::ToolEnd { result, call, .. } => {
                     let preview = if result.len() > 200 {
@@ -476,6 +467,18 @@ pub async fn start_cli() -> Result<()> {
                         result.clone()
                     };
                     println!("  [result] {preview}");
+                    if ctx.features.checkpoints
+                        && call.function.name == "write_file"
+                        && !result.starts_with("Error:")
+                    {
+                        if let Ok(args) =
+                            serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                        {
+                            if let Some(p) = args.get("file_path").and_then(|v| v.as_str()) {
+                                touched_paths.insert(p.to_string());
+                            }
+                        }
+                    }
                     let _ = append_message(
                         &ctx.session_file,
                         &Message::Tool(ToolMessage {
