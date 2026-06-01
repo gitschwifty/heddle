@@ -76,8 +76,8 @@ enum Cmd {
         #[arg(long, default_value_t = 8)]
         max_turns: u32,
         /// Abort the sweep if cumulative cost crosses this USD value.
-        #[arg(long, default_value_t = 1.0)]
-        budget_stop_usd: f64,
+        #[arg(long)]
+        budget_stop_usd: Option<f64>,
         /// Write results under this directory (default <evals>/results/<ts>/).
         #[arg(long)]
         results_dir: Option<PathBuf>,
@@ -97,7 +97,6 @@ struct Manifest {
     version: String,
     #[serde(default)]
     default_model: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     defaults: ManifestDefaults,
 }
@@ -112,7 +111,6 @@ struct ManifestDefaults {
     max_turns: Option<u32>,
     #[allow(dead_code)]
     max_tokens_per_task: Option<u64>,
-    #[allow(dead_code)]
     budget_stop_usd: Option<f64>,
 }
 
@@ -676,6 +674,7 @@ async fn run_one(
     let mut turns = 0u32;
     let mut tokens_in = 0u64;
     let mut tokens_out = 0u64;
+    let mut usd = 0.0f64;
     let mut error: Option<String> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
     let mut budget_exceeded = false;
@@ -703,6 +702,7 @@ async fn run_one(
             AgentEvent::Usage { usage } => {
                 tokens_in += usage.prompt_tokens;
                 tokens_out += usage.completion_tokens;
+                usd += usage.cost.unwrap_or(0.0);
                 if tokens_in + tokens_out > effective_max_tokens {
                     // Cost-control kill switch, NOT a correctness failure.
                     // Break so we don't burn more tokens, but still attempt
@@ -761,7 +761,7 @@ async fn run_one(
             cost: CostScore {
                 tokens_in,
                 tokens_out,
-                usd: 0.0,
+                usd,
             },
             error,
         },
@@ -1056,7 +1056,7 @@ async fn main() -> Result<()> {
             max_tokens_per_task,
             max_tokens_per_response,
             max_turns,
-            budget_stop_usd: _,
+            budget_stop_usd,
             results_dir,
             runs,
         } => {
@@ -1068,6 +1068,7 @@ async fn main() -> Result<()> {
                 max_tokens_per_task,
                 max_tokens_per_response,
                 max_turns,
+                budget_stop_usd,
                 results_dir,
                 runs.max(1),
             )
@@ -1135,6 +1136,7 @@ async fn cmd_run(
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
+    budget_stop_usd_flag: Option<f64>,
     results_dir: Option<PathBuf>,
     runs: u32,
 ) -> Result<()> {
@@ -1143,6 +1145,9 @@ async fn cmd_run(
         .map(|s| s.to_string())
         .or_else(|| manifest.default_model.clone())
         .unwrap_or_else(|| "openrouter/free".into());
+    let budget_stop_usd = budget_stop_usd_flag
+        .or(manifest.defaults.budget_stop_usd)
+        .unwrap_or(1.0);
 
     let api_key = std::env::var("OPENROUTER_API_KEY")
         .map_err(|_| anyhow!("OPENROUTER_API_KEY not set (looked in env, .env.local, .env)"))?;
@@ -1219,6 +1224,8 @@ async fn cmd_run(
 
     let mut results: Vec<TaskResult> = Vec::new();
     let mut smoke_failed = false;
+    let mut budget_stopped = false;
+    let mut cumulative_usd = 0.0f64;
 
     // Pass 1: smoke
     let smoke_total = smoke_pairs.len();
@@ -1258,10 +1265,27 @@ async fn cmd_run(
             smoke_failed = true;
         }
         write_result(&results_dir, &r)?;
+        cumulative_usd += r.scores.cost.usd;
+        if cumulative_usd > budget_stop_usd {
+            budget_stopped = true;
+        }
         results.push(r);
+        if budget_stopped {
+            eprintln!(
+                "budget_stop_usd exceeded (${cumulative_usd:.4} > ${budget_stop_usd:.4}); aborting remaining runs."
+            );
+            break;
+        }
     }
 
-    if smoke_failed && !matrix_pairs.is_empty() {
+    if budget_stopped {
+        eprintln!();
+        eprintln!(
+            "Budget stop hit before {} pending matrix run(s).",
+            matrix_pairs.len() * runs as usize
+        );
+        eprintln!();
+    } else if smoke_failed && !matrix_pairs.is_empty() {
         eprintln!();
         eprintln!(
             "❌ smoke failed — aborting before {} matrix run(s) to save budget.",
@@ -1315,7 +1339,20 @@ async fn cmd_run(
                     r.duration_ms,
                 );
                 write_result(&results_dir, &r)?;
+                cumulative_usd += r.scores.cost.usd;
+                if cumulative_usd > budget_stop_usd {
+                    budget_stopped = true;
+                }
                 results.push(r);
+                if budget_stopped {
+                    eprintln!(
+                        "budget_stop_usd exceeded (${cumulative_usd:.4} > ${budget_stop_usd:.4}); aborting remaining runs."
+                    );
+                    break;
+                }
+            }
+            if budget_stopped {
+                break;
             }
         }
     }
@@ -1342,6 +1379,7 @@ async fn cmd_run(
         max_tokens_per_task,
         max_tokens_per_response,
         max_turns,
+        budget_stop_usd,
         &results,
         &summary,
         &failures,
@@ -1364,6 +1402,7 @@ struct RunMeta {
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
+    budget_stop_usd: f64,
     counts: RunCounts,
 }
 
@@ -1384,6 +1423,7 @@ fn write_run_artifacts(
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
+    budget_stop_usd: f64,
     results: &[TaskResult],
     summary_md: &str,
     failures_md: &str,
@@ -1405,6 +1445,7 @@ fn write_run_artifacts(
         max_tokens_per_task,
         max_tokens_per_response,
         max_turns,
+        budget_stop_usd,
         counts: RunCounts {
             total: results.len(),
             passed,
@@ -1433,6 +1474,10 @@ fn write_run_artifacts(
     md.push_str(&format!(
         "- caps: max_tokens_per_task={}, max_tokens_per_response={}, max_turns={}\n",
         meta.max_tokens_per_task, meta.max_tokens_per_response, meta.max_turns
+    ));
+    md.push_str(&format!(
+        "- budget_stop_usd: `${:.4}`\n",
+        meta.budget_stop_usd
     ));
     md.push_str(summary_md);
     md.push_str(failures_md);
