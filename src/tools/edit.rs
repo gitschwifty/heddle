@@ -59,14 +59,14 @@ impl HeddleTool for EditTool {
             Ok(c) => c,
             Err(_) => return format!("Error: File not found: {file_path}"),
         };
-        if let Err(e) = backup_file(Path::new(&file_path), None) {
-            return format!("Error: backup failed: {e}");
-        }
 
         if content.contains(&old_string) {
             if replace_all {
                 let count = content.matches(&old_string).count();
                 let updated = content.replace(&old_string, &new_string);
+                if let Err(e) = backup_file(Path::new(&file_path), None) {
+                    return format!("Error: backup failed: {e}");
+                }
                 if let Err(e) = tokio::fs::write(&file_path, updated).await {
                     return format!("Error: Could not write file: {e}");
                 }
@@ -81,6 +81,9 @@ impl HeddleTool for EditTool {
                 );
             }
             let updated = content.replacen(&old_string, &new_string, 1);
+            if let Err(e) = backup_file(Path::new(&file_path), None) {
+                return format!("Error: backup failed: {e}");
+            }
             if let Err(e) = tokio::fs::write(&file_path, updated).await {
                 return format!("Error: Could not write file: {e}");
             }
@@ -100,6 +103,9 @@ impl HeddleTool for EditTool {
                 updated.push_str(&content[..fuzzy.start_index]);
                 updated.push_str(&new_string);
                 updated.push_str(&content[fuzzy.start_index + fuzzy.matched_text.len()..]);
+                if let Err(e) = backup_file(Path::new(&file_path), None) {
+                    return format!("Error: backup failed: {e}");
+                }
                 if let Err(e) = tokio::fs::write(&file_path, updated).await {
                     return format!("Error: Could not write file: {e}");
                 }

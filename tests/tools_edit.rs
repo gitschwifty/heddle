@@ -1,5 +1,6 @@
 use heddle::tools::edit::create_edit_tool;
 use heddle::tools::types::ExecOptions;
+use heddle::{checkpoints::diff::snapshot_meta, config::paths::get_file_history_dir};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -60,6 +61,7 @@ async fn fails_when_old_string_not_unique() {
     let result = run_edit(&path, "aaa", "ZZZ", false).await;
     assert!(result.contains("not unique"), "got: {result}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa bbb aaa");
+    assert!(snapshot_meta(None).is_empty());
 }
 
 #[tokio::test]
@@ -71,6 +73,7 @@ async fn fails_when_old_string_not_found() {
 
     let result = run_edit(&path, "nonexistent", "replacement", false).await;
     assert!(result.contains("not found"), "got: {result}");
+    assert!(snapshot_meta(None).is_empty());
 }
 
 #[tokio::test]
@@ -144,4 +147,20 @@ async fn fuzzy_fallback_all_levels_fail() {
 
     let result = run_edit(&path, "totally_nonexistent_string", "replacement", false).await;
     assert!(result.contains("not found"), "got: {result}");
+    assert!(snapshot_meta(None).is_empty());
+}
+
+#[tokio::test]
+async fn successful_edit_creates_backup_metadata() {
+    let sb = Sandbox::new("edit-backup-success");
+    let path = sb.project.join("test.txt");
+    std::fs::write(&path, "hello world").unwrap();
+
+    let result = run_edit(&path, "world", "there", false).await;
+    assert!(result.contains("Applied edit"), "got: {result}");
+
+    let snapshot = snapshot_meta(None);
+    assert_eq!(snapshot.len(), 1);
+    let history_dir = get_file_history_dir(None);
+    assert!(history_dir.join("meta.json").exists());
 }
