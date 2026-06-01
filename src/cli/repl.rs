@@ -339,6 +339,9 @@ pub async fn start_cli() -> Result<()> {
                     ctx.config.model = model.clone();
                     active_provider = ctx.provider.with(json!({ "model": model }));
                 }
+                if ctx.features.checkpoints {
+                    cached_meta_snapshot = None;
+                }
             } else {
                 let suggestion = command_registry.suggest(name);
                 match suggestion {
