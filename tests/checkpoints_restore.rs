@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use heddle::checkpoints::record::{CheckpointRecord, FileChange};
-use heddle::checkpoints::restore::{restore_code, RestoreOutcome};
+use heddle::checkpoints::restore::{restore_code, restore_code_through, RestoreOutcome};
 use heddle::file_history::backup::backup_file;
 use heddle::file_history::meta::FileHistoryMeta;
 
@@ -157,4 +157,88 @@ fn restore_code_handles_multiple_changes() {
     assert_eq!(outcomes.len(), 2);
     assert_eq!(read(&a), "a-original");
     assert!(!b.exists());
+}
+
+#[test]
+fn restore_code_through_reverts_later_checkpoints_too() {
+    let sb = Sandbox::new("cp-restore-through-later");
+    let a = sb.project.join("a.txt");
+    let b = sb.project.join("b.txt");
+    write(&a, "a-before-turn-1");
+    write(&b, "b-before-turn-2");
+
+    backup_file(&a, None).unwrap();
+    write(&a, "a-after-turn-1");
+    backup_file(&b, None).unwrap();
+    write(&b, "b-after-turn-2");
+
+    let mut meta = FileHistoryMeta::new(heddle::config::paths::get_file_history_dir(None));
+    let a_uuid = meta.find_by_path(&a).unwrap().uuid;
+    let b_uuid = meta.find_by_path(&b).unwrap().uuid;
+
+    let checkpoint_1 = CheckpointRecord::new(
+        1,
+        0,
+        "edit a".into(),
+        vec![FileChange {
+            file_path: a.to_string_lossy().to_string(),
+            uuid: a_uuid,
+            version_after: 1,
+        }],
+    );
+    let checkpoint_2 = CheckpointRecord::new(
+        2,
+        2,
+        "edit b".into(),
+        vec![FileChange {
+            file_path: b.to_string_lossy().to_string(),
+            uuid: b_uuid,
+            version_after: 1,
+        }],
+    );
+
+    let outcomes = restore_code_through(&[checkpoint_1, checkpoint_2], None);
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(read(&a), "a-before-turn-1");
+    assert_eq!(read(&b), "b-before-turn-2");
+}
+
+#[test]
+fn restore_code_through_applies_same_file_checkpoints_newest_first() {
+    let sb = Sandbox::new("cp-restore-through-same-file");
+    let file = sb.project.join("same.txt");
+    write(&file, "before-turn-1");
+
+    backup_file(&file, None).unwrap();
+    write(&file, "after-turn-1-before-turn-2");
+    backup_file(&file, None).unwrap();
+    write(&file, "after-turn-2");
+
+    let mut meta = FileHistoryMeta::new(heddle::config::paths::get_file_history_dir(None));
+    let uuid = meta.find_by_path(&file).unwrap().uuid;
+
+    let checkpoint_1 = CheckpointRecord::new(
+        1,
+        0,
+        "first edit".into(),
+        vec![FileChange {
+            file_path: file.to_string_lossy().to_string(),
+            uuid: uuid.clone(),
+            version_after: 1,
+        }],
+    );
+    let checkpoint_2 = CheckpointRecord::new(
+        2,
+        2,
+        "second edit".into(),
+        vec![FileChange {
+            file_path: file.to_string_lossy().to_string(),
+            uuid,
+            version_after: 2,
+        }],
+    );
+
+    let outcomes = restore_code_through(&[checkpoint_1, checkpoint_2], None);
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(read(&file), "before-turn-1");
 }

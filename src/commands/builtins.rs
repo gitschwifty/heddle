@@ -7,7 +7,7 @@ use serde_json::json;
 
 use super::types::{CommandContext, SlashCommand};
 use crate::checkpoints::io::load_checkpoints;
-use crate::checkpoints::restore::{restore_code, RestoreOutcome};
+use crate::checkpoints::restore::{restore_code_through, RestoreOutcome};
 use crate::config::paths::get_project_dir;
 use crate::context::compaction::{compact_context, CompactionConfig};
 use crate::file_history::restore::{list_backups, restore_backup};
@@ -364,7 +364,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
 
                 let record = &checkpoints[n - 1];
                 if scope == "code" || scope == "both" {
-                    let outcomes = restore_code(record, None);
+                    let outcomes = restore_code_through(&checkpoints[n - 1..], None);
                     let mut restored = 0usize;
                     let mut removed = 0usize;
                     let mut failed = 0usize;

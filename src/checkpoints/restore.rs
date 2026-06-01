@@ -28,6 +28,22 @@ pub fn restore_code(record: &CheckpointRecord, project_path: Option<&str>) -> Ve
         .collect()
 }
 
+/// Restore code to the state before the first checkpoint in `records`.
+///
+/// The records must be ordered oldest-to-newest, as returned by
+/// `load_checkpoints`. Applying them newest-to-oldest matters when a later turn
+/// modified a file that was also changed by the selected rewind point.
+pub fn restore_code_through(
+    records: &[CheckpointRecord],
+    project_path: Option<&str>,
+) -> Vec<RestoreOutcome> {
+    records
+        .iter()
+        .rev()
+        .flat_map(|record| restore_code(record, project_path))
+        .collect()
+}
+
 fn restore_one(change: &FileChange, project_path: Option<&str>) -> RestoreOutcome {
     let path = Path::new(&change.file_path);
     // `version_after` is the file_history versions count at the END of the
