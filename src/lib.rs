@@ -23,6 +23,7 @@ pub mod memory;
 pub mod permissions;
 pub mod plans;
 pub mod provider;
+pub mod schema_export;
 pub mod session;
 pub mod tasks;
 pub mod tools;
