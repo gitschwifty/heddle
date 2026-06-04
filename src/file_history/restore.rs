@@ -42,7 +42,7 @@ pub fn list_backups(file_path: &Path, project_path: Option<&str>) -> Vec<BackupE
             })
         })
         .collect();
-    entries.sort_by(|a, b| b.version.cmp(&a.version));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.version));
     entries
 }
 
