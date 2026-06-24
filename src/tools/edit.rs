@@ -38,7 +38,11 @@ impl HeddleTool for EditTool {
     }
 
     async fn execute(&self, params: Value, _options: ExecOptions) -> String {
-        let file_path = match params.get("file_path").and_then(Value::as_str) {
+        let file_path = match params
+            .get("file_path")
+            .or_else(|| params.get("path"))
+            .and_then(Value::as_str)
+        {
             Some(p) => p.to_string(),
             None => return "Error: missing file_path".to_string(),
         };
