@@ -47,7 +47,8 @@ impl HeddleTool for BashTool {
         let mut cmd = Command::new("bash");
         cmd.args(["-c", &command])
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         let child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => return format!("Error: {e}"),

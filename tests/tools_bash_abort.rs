@@ -45,6 +45,37 @@ async fn kills_running_process_on_abort() {
 }
 
 #[tokio::test]
+async fn abort_prevents_later_shell_side_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker.txt");
+    let command = format!("sleep 0.4; printf done > {}", marker.to_string_lossy());
+    let tool = create_bash_tool();
+    let token = CancellationToken::new();
+    let token_for_cancel = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        token_for_cancel.cancel();
+    });
+
+    let result = tool
+        .execute(
+            json!({ "command": command }),
+            ExecOptions {
+                signal: Some(token),
+            },
+        )
+        .await;
+    assert_eq!(result, "Error: Aborted");
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(
+        !marker.exists(),
+        "cancelled shell still created {}",
+        marker.display()
+    );
+}
+
+#[tokio::test]
 async fn works_normally_without_signal() {
     let tool = create_bash_tool();
     let result = tool
