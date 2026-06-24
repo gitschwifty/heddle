@@ -275,6 +275,7 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
     let cancel = state.lock().active_cancel.clone().unwrap_or_default();
 
     let event_seq = Arc::new(Mutex::new(0_u64));
+    let persisted_through = session.messages.len();
     let user_msg = Message::User(UserMessage {
         content: message.clone(),
     });
@@ -480,14 +481,8 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
     };
     write_line(&build_result(&id, result_args));
 
-    // Persist new messages
-    let persist_from = session
-        .messages
-        .iter()
-        .position(|m| matches!(m, Message::User(u) if u.content == message))
-        .map(|i| i + 1)
-        .unwrap_or(session.messages.len());
-    for msg in session.messages.iter().skip(persist_from) {
+    // The user message was appended before the loop; persist only messages produced after it.
+    for msg in session.messages.iter().skip(persisted_through + 1) {
         let _ = append_message(&session.session_file, msg);
     }
     return_session(state, session);

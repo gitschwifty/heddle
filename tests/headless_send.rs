@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -89,6 +90,22 @@ fn count_results(lines: &[String]) -> usize {
         .iter()
         .filter(|m| m["type"] == "result")
         .count()
+}
+
+fn jsonl_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(jsonl_files_under(&path));
+        } else if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+    files
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -305,4 +322,30 @@ async fn multi_send_accumulates_messages_multi_turn() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0]["id"], "2");
     assert_eq!(results[1]["id"], "3");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn repeated_identical_send_persists_only_new_messages() {
+    let server = MockServer::start().await;
+    mount_normal_sse(&server).await;
+
+    let mut h = Headless::spawn(env(&server));
+    h.send_line(&init_msg());
+    h.wait_for_lines(1, T);
+
+    h.send_line(&json!({"type":"send","id":"2","message":"Repeat"}).to_string());
+    h.wait_for(has_result, T);
+
+    h.send_line(&json!({"type":"send","id":"3","message":"Repeat"}).to_string());
+    h.wait_for(|l| count_results(l) >= 2, T);
+
+    let session_files = jsonl_files_under(h.heddle_home());
+    assert_eq!(session_files.len(), 1, "session files: {session_files:#?}");
+    let raw = std::fs::read_to_string(&session_files[0]).unwrap();
+    let repeat_user_lines = raw
+        .lines()
+        .filter(|line| line.contains(r#""content":"Repeat""#))
+        .count();
+    assert_eq!(repeat_user_lines, 2, "session jsonl:\n{raw}");
+    assert_eq!(raw.lines().count(), 6, "session jsonl:\n{raw}");
 }

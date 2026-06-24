@@ -7,7 +7,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -126,6 +126,10 @@ impl Headless {
 
     pub fn line_count(&self) -> usize {
         self.lines.lock().unwrap().len()
+    }
+
+    pub fn heddle_home(&self) -> &Path {
+        self._tempdir.path()
     }
 
     pub fn parse_line(line: &str) -> Value {
