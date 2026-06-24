@@ -237,7 +237,12 @@ impl PermissionChecker {
         if !PATH_ARG_TOOLS.contains(&tool_name) {
             return false;
         }
-        let path = match args.and_then(|a| a.get("path")).and_then(|v| v.as_str()) {
+        let path_arg = match tool_name {
+            "read_file" | "write_file" | "edit_file" => "file_path",
+            "glob" | "grep" => "path",
+            _ => return false,
+        };
+        let path = match args.and_then(|a| a.get(path_arg)).and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return false,
         };
@@ -254,8 +259,15 @@ impl PermissionChecker {
 }
 
 fn is_inside_project(project_dir: &PathBuf, file_path: &str) -> bool {
-    let resolved = std::fs::canonicalize(PathBuf::from(file_path))
-        .unwrap_or_else(|_| PathBuf::from(file_path));
+    let raw = PathBuf::from(file_path);
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&raw))
+            .unwrap_or(raw)
+    };
+    let resolved = std::fs::canonicalize(&absolute).unwrap_or(absolute);
     let project_resolved =
         std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.clone());
     resolved.starts_with(&project_resolved)

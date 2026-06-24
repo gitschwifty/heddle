@@ -364,10 +364,65 @@ fn dir_scope_downgrades_outside() {
     std::fs::write(&outside, "").unwrap();
 
     let c = PermissionChecker::new(ApprovalMode::FullAuto, None, Some(project.clone()));
-    let args = json!({"path": outside.to_string_lossy()});
+    let args = json!({"file_path": outside.to_string_lossy()});
     assert_eq!(c.check("write_file", Some(&args)).decision, Decision::Ask);
     let _ = std::fs::remove_dir_all(&project);
     let _ = std::fs::remove_file(&outside);
+}
+
+#[test]
+fn dir_scope_downgrades_file_path_tools_outside_project() {
+    let tmp = std::env::temp_dir().join(format!("heddle-perm-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let project = std::fs::canonicalize(&tmp).unwrap();
+    let outside = std::env::temp_dir().join(format!("outside-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&outside, "outside").unwrap();
+
+    let c = PermissionChecker::new(ApprovalMode::FullAuto, None, Some(project.clone()));
+    for tool in ["read_file", "write_file", "edit_file"] {
+        let args = json!({"file_path": outside.to_string_lossy()});
+        assert_eq!(
+            c.check(tool, Some(&args)).decision,
+            Decision::Ask,
+            "{tool} should downgrade outside file_path"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&project);
+    let _ = std::fs::remove_file(&outside);
+}
+
+#[test]
+fn dir_scope_allows_nonexistent_relative_file_path_inside_project() {
+    let tmp = std::env::temp_dir().join(format!("heddle-perm-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let project = std::fs::canonicalize(&tmp).unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&project).unwrap();
+
+    let c = PermissionChecker::new(ApprovalMode::FullAuto, None, Some(project.clone()));
+    let args = json!({"file_path": "new/nested/file.txt"});
+    assert_eq!(c.check("write_file", Some(&args)).decision, Decision::Allow);
+
+    std::env::set_current_dir(original).unwrap();
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+#[test]
+fn dir_scope_still_uses_path_for_search_tools() {
+    let tmp = std::env::temp_dir().join(format!("heddle-perm-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let project = std::fs::canonicalize(&tmp).unwrap();
+    let outside = std::env::temp_dir().join(format!("outside-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&outside).unwrap();
+
+    let c = PermissionChecker::new(ApprovalMode::FullAuto, None, Some(project.clone()));
+    let args = json!({"path": outside.to_string_lossy()});
+    assert_eq!(c.check("glob", Some(&args)).decision, Decision::Ask);
+    assert_eq!(c.check("grep", Some(&args)).decision, Decision::Ask);
+
+    let _ = std::fs::remove_dir_all(&project);
+    let _ = std::fs::remove_dir_all(&outside);
 }
 
 #[test]
