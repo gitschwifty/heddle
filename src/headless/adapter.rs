@@ -274,7 +274,7 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
 
     let cancel = state.lock().active_cancel.clone().unwrap_or_default();
 
-    let mut event_seq: u64 = 0;
+    let event_seq = Arc::new(Mutex::new(0_u64));
     let user_msg = Message::User(UserMessage {
         content: message.clone(),
     });
@@ -298,6 +298,7 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         .unwrap_or(5000);
     let id_for_hb = id.clone();
     let correlation_for_hb = correlation.clone();
+    let event_seq_for_hb = event_seq.clone();
     let heartbeat_token = CancellationToken::new();
     let heartbeat_token_inner = heartbeat_token.clone();
     let heartbeat_handle = tokio::spawn(async move {
@@ -305,18 +306,18 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         // `tokio::time::interval` fires immediately at t=0; consume that tick so the
         // first heartbeat actually waits for the interval (matching the TS setInterval).
         tick.tick().await;
-        let mut local_seq: u64 = 0;
         let started = Instant::now();
         loop {
             tokio::select! {
                 _ = tick.tick() => {
+                    let mut seq = event_seq_for_hb.lock();
                     write_line(&wrap_event(
                         WorkerEvent::Heartbeat { duration_ms: started.elapsed().as_millis() as u64 },
                         &id_for_hb,
-                        local_seq,
+                        *seq,
                         Some(&correlation_for_hb),
                     ));
-                    local_seq += 1;
+                    *seq += 1;
                 }
                 _ = heartbeat_token_inner.cancelled() => break,
             }
@@ -365,8 +366,9 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
             return;
         }
         if let Some(mapped) = map_agent_event(&event) {
-            write_line(&wrap_event(mapped, &id, event_seq, Some(&correlation)));
-            event_seq += 1;
+            let mut seq = event_seq.lock();
+            write_line(&wrap_event(mapped, &id, *seq, Some(&correlation)));
+            *seq += 1;
         }
         match event {
             AgentEvent::ContentDelta { .. } => saw_content_delta = true,

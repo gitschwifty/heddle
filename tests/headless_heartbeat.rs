@@ -139,6 +139,14 @@ async fn heartbeat_events_emitted_during_active_send() {
         assert_eq!(hb["send_id"], "2");
         assert!(hb["event"]["duration_ms"].is_number());
     }
+    let seqs: Vec<u64> = msgs
+        .iter()
+        .filter(|m| m["type"] == "event")
+        .map(|m| m["event_seq"].as_u64().unwrap())
+        .collect();
+    for (idx, seq) in seqs.iter().enumerate() {
+        assert_eq!(*seq, idx as u64, "non-monotonic event_seq in {msgs:#?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
