@@ -128,26 +128,6 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         config.model = model.clone();
     }
 
-    let providers = create_providers(&config)?;
-    let provider = providers.main.clone();
-
-    // Tool registry
-    let mut registry = ToolRegistry::new();
-    let all_tools = default_tools();
-    let filter: Option<Vec<String>> = options.tools.clone().or_else(|| config.tools.clone());
-    let to_register: Vec<Arc<dyn HeddleTool>> = match &filter {
-        Some(names) => all_tools
-            .into_iter()
-            .filter(|t| names.iter().any(|n| n == t.name()))
-            .collect(),
-        None => all_tools,
-    };
-    for tool in to_register {
-        registry.register(tool)?;
-    }
-    registry.register(create_save_memory_tool(get_project_memory_dir(None)))?;
-
-    // Agent definitions
     let agent_definitions = load_agent_definitions(&discovery);
     let mut agent_def: Option<AgentDefinition> = None;
     if let Some(name) = &options.agent {
@@ -169,6 +149,25 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
             }
         }
     }
+
+    let providers = create_providers(&config)?;
+    let provider = providers.main.clone();
+
+    // Tool registry
+    let mut registry = ToolRegistry::new();
+    let all_tools = default_tools();
+    let filter: Option<Vec<String>> = options.tools.clone().or_else(|| config.tools.clone());
+    let to_register: Vec<Arc<dyn HeddleTool>> = match &filter {
+        Some(names) => all_tools
+            .into_iter()
+            .filter(|t| names.iter().any(|n| n == t.name()))
+            .collect(),
+        None => all_tools,
+    };
+    for tool in to_register {
+        registry.register(tool)?;
+    }
+    registry.register(create_save_memory_tool(get_project_memory_dir(None)))?;
 
     let (session_id, session_file, messages) = if let Some(target) = &options.resume {
         let found = find_session(Some(target), None)

@@ -1,7 +1,10 @@
 //! Tests for `create_session`. Mirrors `ts-test/session/setup.test.ts`.
 
 use heddle::session::setup::{create_session, SessionOptions};
+use heddle::types::{Message, UserMessage};
 use serde_json::Value;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
 use common::Sandbox;
@@ -19,6 +22,23 @@ fn registered_tool_names(ctx: &heddle::session::setup::SessionContext) -> Vec<St
         .collect();
     names.sort();
     names
+}
+
+fn ok_response() -> Value {
+    serde_json::json!({
+        "id": "chatcmpl-test",
+        "choices": [{
+            "index": 0,
+            "message": { "content": "ok" },
+            "finish_reason": "stop"
+        }]
+    })
+}
+
+fn user_msg() -> Vec<Message> {
+    vec![Message::User(UserMessage {
+        content: "hi".to_string(),
+    })]
 }
 
 const ALL_TOOLS: &[&str] = &[
@@ -194,6 +214,46 @@ async fn agents_md_loaded_into_system_message() {
     } else {
         panic!("expected system message");
     }
+}
+
+#[tokio::test]
+async fn agent_model_override_configures_provider_request_model() {
+    let sb = Sandbox::new("setup-agent-model");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+    let server = MockServer::start().await;
+    std::env::set_var("HEDDLE_BASE_URL", server.uri());
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response()))
+        .mount(&server)
+        .await;
+
+    let agents_dir = sb.project.join(".heddle").join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("writer.md"),
+        r#"---
+name: writer
+model: agent-model
+---
+Use the writer model.
+"#,
+    )
+    .unwrap();
+
+    let mut o = opts();
+    o.agent = Some("writer".into());
+    let ctx = create_session(o).await.unwrap();
+    ctx.provider
+        .send(&user_msg(), None, &Value::Null)
+        .await
+        .unwrap();
+    std::env::remove_var("HEDDLE_BASE_URL");
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(ctx.config.model, "agent-model");
+    assert_eq!(body["model"], "agent-model");
 }
 
 #[tokio::test]
