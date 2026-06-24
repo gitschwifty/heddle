@@ -228,3 +228,34 @@ async fn each_provider_sends_its_own_model() {
     assert_eq!(bodies[1]["model"], "weak-model");
     assert_eq!(bodies[2]["model"], "editor-model");
 }
+
+#[tokio::test]
+async fn factory_providers_retry_429_by_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "0")
+                .set_body_string("Rate limited"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    mount_ok(&server).await;
+
+    let providers = create_providers(&HeddleConfig {
+        base_url: Some(server.uri()),
+        ..base_config()
+    })
+    .unwrap();
+
+    let response = providers
+        .main
+        .send(&user_msg(), None, &json!({}))
+        .await
+        .unwrap();
+
+    assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}

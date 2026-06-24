@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
 use super::openrouter::create_openrouter_provider;
-use super::types::{Provider, ProviderConfig};
+use super::types::{Provider, ProviderConfig, RetryConfig};
 use crate::config::loader::HeddleConfig;
 
 #[derive(Clone)]
@@ -46,7 +46,7 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
             model: model.to_string(),
             base_url: config.base_url.clone(),
             request_params: params.clone(),
-            retry: None,
+            retry: Some(RetryConfig::default()),
         })
     };
 
