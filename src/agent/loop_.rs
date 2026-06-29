@@ -28,6 +28,7 @@ use crate::types::{
 
 const DEFAULT_MAX_ITERATIONS: u32 = 20;
 const DEFAULT_DOOM_LOOP_THRESHOLD: u32 = 3;
+const DEFAULT_EMPTY_RESPONSE_RETRIES: u32 = 1;
 
 /// Returned by the permission resolver callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +196,7 @@ pub fn run_agent_loop<'a>(
             tools = filter(&tools);
         }
         let mut recent_hashes: Vec<String> = Vec::new();
+        let mut empty_response_retries = 0;
         let overrides = options.request_overrides.clone().unwrap_or(json!({}));
 
         #[allow(unused_assignments)]
@@ -213,9 +215,7 @@ pub fn run_agent_loop<'a>(
             };
             if aborted(&options.signal) { return; }
 
-            if let Some(usage) = response.usage.clone() {
-                yield AgentEvent::Usage { usage };
-            }
+            let response_usage = response.usage.clone();
             let choice = match response.choices.into_iter().next() {
                 Some(c) => c,
                 None => {
@@ -227,6 +227,40 @@ pub fn run_agent_loop<'a>(
                 content: choice.message.content.clone(),
                 tool_calls: choice.message.tool_calls.clone().filter(|tcs| !tcs.is_empty()),
             };
+            if assistant_msg
+                .content
+                .as_deref()
+                .is_none_or(|c| c.trim().is_empty())
+                && assistant_msg.tool_calls.is_none()
+            {
+                let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+                let usage = response_usage
+                    .as_ref()
+                    .map(|u| format!(
+                        "prompt_tokens={}, completion_tokens={}, total_tokens={}",
+                        u.prompt_tokens, u.completion_tokens, u.total_tokens
+                    ))
+                    .unwrap_or_else(|| "usage unavailable".to_string());
+                if empty_response_retries < DEFAULT_EMPTY_RESPONSE_RETRIES {
+                    empty_response_retries += 1;
+                    yield AgentEvent::Error {
+                        message: format!(
+                            "Empty assistant response from provider (finish_reason={finish_reason}, {usage}); retrying once"
+                        ),
+                    };
+                    continue;
+                }
+                yield AgentEvent::Error {
+                    message: format!(
+                        "Empty assistant response from provider (finish_reason={finish_reason}, {usage})"
+                    ),
+                };
+                return;
+            }
+            empty_response_retries = 0;
+            if let Some(usage) = response_usage.clone() {
+                yield AgentEvent::Usage { usage };
+            }
             yield AgentEvent::AssistantMessage { message: assistant_msg.clone() };
             messages.push(Message::Assistant(assistant_msg.clone()));
             last_assistant_content = assistant_msg.content.clone();
@@ -347,6 +381,7 @@ pub fn run_agent_loop_streaming<'a>(
             tools = filter(&tools);
         }
         let mut recent_hashes: Vec<String> = Vec::new();
+        let mut empty_response_retries = 0;
         let overrides = options.request_overrides.clone().unwrap_or(json!({}));
 
         #[allow(unused_assignments)]
@@ -362,6 +397,7 @@ pub fn run_agent_loop_streaming<'a>(
             let mut content_parts = String::new();
             let mut assembled: HashMap<u32, (String, String, String)> = HashMap::new(); // index → (id, name, args)
             let mut stream_usage = None;
+            let mut finish_reasons: Vec<String> = Vec::new();
 
             loop {
                 let chunk_res = match &options.signal {
@@ -388,6 +424,9 @@ pub fn run_agent_loop_streaming<'a>(
                     Some(c) => c,
                     None => continue,
                 };
+                if let Some(reason) = choice.finish_reason.clone() {
+                    finish_reasons.push(reason);
+                }
                 if let Some(text) = choice.delta.content.clone() {
                     yield AgentEvent::ContentDelta { text: text.clone() };
                     content_parts.push_str(&text);
@@ -429,6 +468,41 @@ pub fn run_agent_loop_streaming<'a>(
                 content: if content_parts.is_empty() { None } else { Some(content_parts) },
                 tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) },
             };
+            if assistant_msg
+                .content
+                .as_deref()
+                .is_none_or(|c| c.trim().is_empty())
+                && assistant_msg.tool_calls.is_none()
+            {
+                let finish_reason = if finish_reasons.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    finish_reasons.join(",")
+                };
+                let usage = stream_usage
+                    .as_ref()
+                    .map(|u| format!(
+                        "prompt_tokens={}, completion_tokens={}, total_tokens={}",
+                        u.prompt_tokens, u.completion_tokens, u.total_tokens
+                    ))
+                    .unwrap_or_else(|| "usage unavailable".to_string());
+                if empty_response_retries < DEFAULT_EMPTY_RESPONSE_RETRIES {
+                    empty_response_retries += 1;
+                    yield AgentEvent::Error {
+                        message: format!(
+                            "Empty assistant response from provider (finish_reason={finish_reason}, {usage}); retrying once"
+                        ),
+                    };
+                    continue;
+                }
+                yield AgentEvent::Error {
+                    message: format!(
+                        "Empty assistant response from provider (finish_reason={finish_reason}, {usage})"
+                    ),
+                };
+                return;
+            }
+            empty_response_retries = 0;
             yield AgentEvent::AssistantMessage { message: assistant_msg.clone() };
             if let Some(u) = stream_usage.take() {
                 yield AgentEvent::Usage { usage: u };

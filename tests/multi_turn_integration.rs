@@ -156,6 +156,64 @@ async fn two_turn_tool_chain_read_then_edit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn two_turn_chat_only_does_not_call_tools() {
+    let Some(api_key) = enabled() else {
+        eprintln!(
+            "skip: HEDDLE_INTEGRATION_TESTS or HEDDLE_SLOW_TESTS != 1, or OPENROUTER_API_KEY unset"
+        );
+        return;
+    };
+
+    let mut messages = vec![Message::System(SystemMessage {
+        content: SYS_PROMPT.to_string(),
+    })];
+
+    messages.push(Message::User(UserMessage {
+        content: "Hello! Reply with one short sentence and do not inspect files.".to_string(),
+    }));
+    let turn1 = collect(
+        make_provider(api_key.clone()),
+        make_registry(),
+        &mut messages,
+    )
+    .await;
+
+    let turn1_tools = turn1
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolStart { .. }))
+        .count();
+    assert_eq!(turn1_tools, 0, "chat-only turn 1 should not call tools");
+    assert!(
+        messages
+            .last()
+            .is_some_and(|m| matches!(m, Message::Assistant(a) if a.content.as_deref().is_some_and(|c| !c.trim().is_empty()))),
+        "turn 1 should end with a non-empty assistant message"
+    );
+
+    let after_turn1 = messages.len();
+    messages.push(Message::User(UserMessage {
+        content: "Thanks. In one short sentence, say what you can help with.".to_string(),
+    }));
+    let turn2 = collect(make_provider(api_key), make_registry(), &mut messages).await;
+
+    let turn2_tools = turn2
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolStart { .. }))
+        .count();
+    assert_eq!(turn2_tools, 0, "chat-only turn 2 should not call tools");
+    assert!(
+        messages.len() > after_turn1,
+        "messages should grow after turn 2"
+    );
+    assert!(
+        messages
+            .last()
+            .is_some_and(|m| matches!(m, Message::Assistant(a) if a.content.as_deref().is_some_and(|c| !c.trim().is_empty()))),
+        "turn 2 should end with a non-empty assistant message"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn session_persistence_round_trip() {
     let Some(api_key) = enabled() else {
         eprintln!(

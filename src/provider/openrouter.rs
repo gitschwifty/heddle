@@ -19,6 +19,7 @@ use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition}
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_DELAY_MS: u64 = 1000;
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 45;
 
 pub struct OpenRouterProvider {
     config: ProviderConfig,
@@ -28,7 +29,10 @@ pub struct OpenRouterProvider {
 pub fn create_openrouter_provider(config: ProviderConfig) -> Arc<dyn Provider> {
     Arc::new(OpenRouterProvider {
         config,
-        client: reqwest::Client::new(),
+        client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new()),
     })
 }
 
@@ -179,7 +183,10 @@ impl Provider for OpenRouterProvider {
             debug("provider", &format!("error {status}: {text}"));
             return Err(anyhow!("OpenRouter API error ({status}): {text}"));
         }
-        let parsed: ChatCompletionResponse = resp.json().await?;
+        let parsed: ChatCompletionResponse = resp
+            .json()
+            .await
+            .map_err(|e| anyhow!("error decoding provider JSON response: {e}"))?;
         Ok(parsed)
     }
 
@@ -221,7 +228,8 @@ impl Provider for OpenRouterProvider {
             };
             let mut buffer = String::new();
             while let Some(chunk) = byte_stream.next().await {
-                let chunk = chunk?;
+                let chunk = chunk
+                    .map_err(|e| anyhow!("error reading streaming response body: {e}"))?;
                 buffer.push_str(std::str::from_utf8(&chunk).unwrap_or(""));
 
                 while let Some(nl_idx) = buffer.find('\n') {
@@ -235,14 +243,20 @@ impl Provider for OpenRouterProvider {
                     if data == "[DONE]" {
                         return;
                     }
-                    let parsed: StreamChunk = serde_json::from_str(data)?;
+                    let parsed: StreamChunk = serde_json::from_str(data).map_err(|e| {
+                        let preview: String = data.chars().take(500).collect();
+                        anyhow!("error decoding streaming response chunk: {e}; data={preview}")
+                    })?;
                     yield parsed;
                 }
             }
             let trimmed = buffer.trim();
             if let Some(data) = trimmed.strip_prefix("data: ") {
                 if data != "[DONE]" {
-                    let parsed: StreamChunk = serde_json::from_str(data)?;
+                    let parsed: StreamChunk = serde_json::from_str(data).map_err(|e| {
+                        let preview: String = data.chars().take(500).collect();
+                        anyhow!("error decoding trailing streaming response chunk: {e}; data={preview}")
+                    })?;
                     yield parsed;
                 }
             }

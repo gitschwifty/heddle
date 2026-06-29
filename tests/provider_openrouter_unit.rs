@@ -476,6 +476,31 @@ async fn stream_errors_on_non_200() {
 }
 
 #[tokio::test]
+async fn stream_error_includes_context_for_malformed_sse_chunk() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string("data: {not-json}\n\n"),
+        )
+        .mount(&server)
+        .await;
+
+    let p = make_provider(&server.uri(), Some(default_retry()));
+    let mut stream = p.stream(user_msgs(), None, json!({}));
+    let err = stream
+        .next()
+        .await
+        .expect("expected stream item")
+        .expect_err("expected malformed chunk error");
+    let message = err.to_string();
+    assert!(message.contains("error decoding streaming response chunk"));
+    assert!(message.contains("data={not-json}"));
+}
+
+#[tokio::test]
 async fn stream_overrides_merge_into_body() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

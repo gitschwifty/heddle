@@ -42,6 +42,15 @@ cargo test --test tools_edit -- match_       # filter by name inside a binary
 cargo test -- --nocapture                    # show stdout/stderr from tests
 ```
 
+Common commands are also available via `just`:
+
+```bash
+just test
+just test-e2e
+just test-multi-turn-live
+just test-live
+```
+
 ### Integration / live-model tests
 
 `cargo test` does **not** auto-load `.env.test` (unlike `bun test` did on the TS side). Integration tests opt in via `tests/common/env.rs`:
@@ -61,7 +70,7 @@ Two gates exist today:
 | Gate | Tests | Required env |
 |---|---|---|
 | **Provider** | `tests/provider_openrouter_integration.rs` (3 tests) | `HEDDLE_INTEGRATION_TESTS=1`, `OPENROUTER_API_KEY` |
-| **Slow multi-turn** | `tests/multi_turn_integration.rs` (2 tests) | `HEDDLE_INTEGRATION_TESTS=1`, `HEDDLE_SLOW_TESTS=1`, `OPENROUTER_API_KEY` |
+| **Slow multi-turn** | `tests/multi_turn_integration.rs` (3 tests) | `HEDDLE_INTEGRATION_TESTS=1`, `HEDDLE_SLOW_TESTS=1`, `OPENROUTER_API_KEY` |
 
 To run them, put the env vars in `.env.test` (gitignored) and:
 

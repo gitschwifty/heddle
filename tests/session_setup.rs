@@ -196,6 +196,44 @@ async fn system_prompt_override_appears_in_first_message() {
 }
 
 #[tokio::test]
+async fn default_system_prompt_limits_tool_use_to_file_work_requests() {
+    let _sb = Sandbox::new("setup-default-sysprompt");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+    let ctx = create_session(opts()).await.unwrap();
+    if let heddle::types::Message::System(m) = &ctx.messages[0] {
+        assert!(m
+            .content
+            .contains("Use them when the user asks you to work with files."));
+        assert!(m
+            .content
+            .contains("only state facts supported by those results"));
+        assert!(!m.content.contains("Use tools to take action"));
+    } else {
+        panic!("expected system message");
+    }
+}
+
+#[tokio::test]
+async fn system_prompt_includes_runtime_cwd_context() {
+    let sb = Sandbox::new("setup-runtime-context");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+    let cwd_dir = sb.project.join("runtime-cwd");
+    std::fs::create_dir_all(&cwd_dir).unwrap();
+    let mut o = opts();
+    o.cwd = Some(cwd_dir.clone());
+    let ctx = create_session(o).await.unwrap();
+    if let heddle::types::Message::System(m) = &ctx.messages[0] {
+        assert!(m.content.contains("## Runtime Context"));
+        assert!(m
+            .content
+            .contains(&format!("Current working directory: {}", cwd_dir.display())));
+        assert!(m.content.contains("Do not invent absolute paths."));
+    } else {
+        panic!("expected system message");
+    }
+}
+
+#[tokio::test]
 async fn agents_md_loaded_into_system_message() {
     let sb = Sandbox::new("setup-agents-md");
     std::env::set_var("OPENROUTER_API_KEY", "test-key");

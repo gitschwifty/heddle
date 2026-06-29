@@ -440,6 +440,9 @@ pub async fn start_cli() -> Result<()> {
         while let Some(event) = stream.next().await {
             match event {
                 AgentEvent::ContentDelta { text } => {
+                    if !needs_newline && text.trim().is_empty() {
+                        continue;
+                    }
                     if !needs_newline {
                         print!("\nassistant> ");
                         needs_newline = true;

@@ -46,7 +46,14 @@ use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_updat
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
 
-const DEFAULT_PROMPT: &str = "You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use tools to take action, not to narrate — if the task is to edit a file, call `edit_file` rather than describing the change.";
+const DEFAULT_PROMPT: &str = "You are a helpful coding assistant. You have access to file system tools to read, write, edit, and list files. Use them when the user asks you to work with files. When answering from tool results, only state facts supported by those results; if the results are insufficient, say what is missing instead of guessing.";
+
+fn runtime_context(cwd: &std::path::Path) -> String {
+    format!(
+        "## Runtime Context\n\nCurrent working directory: {}\n\nWhen the user asks about files in \"this repo\", \"the README\", or similar relative paths, resolve them from the current working directory. Do not invent absolute paths.",
+        cwd.display()
+    )
+}
 
 pub struct SessionContext {
     pub config: HeddleConfig,
@@ -227,6 +234,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         if !tasks_ctx.is_empty() {
             parts.push(tasks_ctx);
         }
+        parts.push(runtime_context(&std::env::current_dir()?));
         parts.push(base_prompt);
         let system_content = parts.join("\n\n");
         let system_msg = Message::System(SystemMessage {

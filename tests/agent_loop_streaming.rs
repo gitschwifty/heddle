@@ -7,6 +7,7 @@ use heddle::provider::types::{ChunkStream, Provider};
 use heddle::tools::registry::ToolRegistry;
 use heddle::tools::types::{ExecOptions, HeddleTool};
 use heddle::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition, UserMessage};
+use heddle::types::{Choice, ChoiceMessage, Usage};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -131,6 +132,26 @@ fn user(c: &str) -> Vec<Message> {
     vec![Message::User(UserMessage {
         content: c.to_string(),
     })]
+}
+
+fn empty_text_response() -> ChatCompletionResponse {
+    ChatCompletionResponse {
+        id: "chatcmpl-test".to_string(),
+        choices: vec![Choice {
+            index: 0,
+            message: ChoiceMessage {
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
+        usage: Some(Usage {
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            total_tokens: 18,
+            ..Default::default()
+        }),
+    }
 }
 
 fn registry_with_echo() -> ToolRegistry {
@@ -344,6 +365,116 @@ async fn multi_turn_streaming_tool_then_text() {
         ]
     );
     assert_eq!(messages.len(), 4);
+}
+
+#[tokio::test]
+async fn empty_streaming_response_yields_error_with_usage_details() {
+    let p = StreamScript::new(vec![vec![
+        finish_chunk("stop"),
+        usage_chunk(42, 9, 51, None),
+    ]]);
+    let mut messages = user("Hi");
+    let stream = run_agent_loop_streaming(
+        p,
+        ToolRegistry::new(),
+        &mut messages,
+        AgentLoopOptions::default(),
+    );
+    let events = collect(stream).await;
+
+    assert_eq!(messages.len(), 1, "empty assistant should not be appended");
+    let error = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::Error { .. }))
+        .expect("expected error");
+    if let AgentEvent::Error { message } = error {
+        assert!(message.contains("Empty assistant response"));
+        assert!(message.contains("finish_reason=stop"));
+        assert!(message.contains("completion_tokens=9"));
+    }
+}
+
+#[tokio::test]
+async fn empty_streaming_response_retries_once_and_can_recover() {
+    let p = StreamScript::new(vec![
+        vec![finish_chunk("stop"), usage_chunk(42, 9, 51, None)],
+        vec![text_chunk("Recovered"), finish_chunk("stop")],
+    ]);
+    let mut messages = user("Hi");
+    let stream = run_agent_loop_streaming(
+        p,
+        ToolRegistry::new(),
+        &mut messages,
+        AgentLoopOptions::default(),
+    );
+    let events = collect(stream).await;
+
+    let errors = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Error { .. }))
+        .count();
+    assert_eq!(errors, 1);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::AssistantMessage { message }
+                if message.content.as_deref() == Some("Recovered")
+        )),
+        "expected recovered assistant message"
+    );
+    assert_eq!(messages.len(), 2);
+}
+
+#[tokio::test]
+async fn empty_non_streaming_response_yields_error_with_usage_details() {
+    let p = ResponseScript::new(vec![empty_text_response()]);
+    let mut messages = user("Hi");
+    let stream = run_agent_loop(
+        p,
+        ToolRegistry::new(),
+        &mut messages,
+        AgentLoopOptions::default(),
+    );
+    let events = collect(stream).await;
+
+    assert_eq!(messages.len(), 1, "empty assistant should not be appended");
+    let error = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::Error { .. }))
+        .expect("expected error");
+    if let AgentEvent::Error { message } = error {
+        assert!(message.contains("Empty assistant response"));
+        assert!(message.contains("finish_reason=stop"));
+        assert!(message.contains("completion_tokens=7"));
+    }
+}
+
+#[tokio::test]
+async fn empty_non_streaming_response_retries_once_and_can_recover() {
+    let p = ResponseScript::new(vec![empty_text_response(), text_response("Recovered")]);
+    let mut messages = user("Hi");
+    let stream = run_agent_loop(
+        p,
+        ToolRegistry::new(),
+        &mut messages,
+        AgentLoopOptions::default(),
+    );
+    let events = collect(stream).await;
+
+    let errors = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Error { .. }))
+        .count();
+    assert_eq!(errors, 1);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::AssistantMessage { message }
+                if message.content.as_deref() == Some("Recovered")
+        )),
+        "expected recovered assistant message"
+    );
+    assert_eq!(messages.len(), 2);
 }
 
 #[tokio::test]
