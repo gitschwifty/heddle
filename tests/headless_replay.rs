@@ -246,6 +246,12 @@ fn collect_until_shutdown_or_exit(
     }
 }
 
+fn has_shutdown_ok(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .any(|line| parse_line(line)["type"] == "shutdown_ok")
+}
+
 async fn run_fixture(name: &str, mode: Mode) {
     let in_lines = load_lines(&fixtures_dir().join(format!("{name}.in.jsonl")));
     let expected_lines = load_lines(&fixtures_dir().join(format!("{name}.out.jsonl")));
@@ -285,7 +291,11 @@ async fn run_fixture(name: &str, mode: Mode) {
         h.send_line(line);
     }
 
-    let lines = collect_until_shutdown_or_exit(&h, expected_lines.len(), T);
+    let lines = if matches!(mode, Mode::Heartbeat) {
+        h.wait_for(has_shutdown_ok, T)
+    } else {
+        collect_until_shutdown_or_exit(&h, expected_lines.len(), T)
+    };
 
     if matches!(mode, Mode::Heartbeat) {
         compare_heartbeat(&lines, &expected_lines);
@@ -337,7 +347,17 @@ fn compare_heartbeat(actual: &[String], expected: &[String]) {
     assert_eq!(
         actual_non_hb.len(),
         expected_non_hb.len(),
-        "heartbeat fixture: non-heartbeat line count mismatch"
+        "heartbeat fixture: non-heartbeat line count mismatch\nactual:\n{}\nexpected:\n{}",
+        actual
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        expected
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     for (i, (a, e)) in actual_non_hb.iter().zip(expected_non_hb.iter()).enumerate() {
         let mut av = strip_ignored(a);

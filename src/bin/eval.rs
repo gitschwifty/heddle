@@ -651,16 +651,21 @@ fn make_provider(model: &str, api_key: String, max_tokens_per_response: u32) -> 
     })
 }
 
-async fn run_one(
-    task: &Task,
-    prompt: &Prompt,
-    model: &str,
-    api_key: &str,
+#[derive(Debug, Clone, Copy)]
+struct RunOneOptions {
     max_turns: u32,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     task_timeout_secs: u64,
     record_all_text: bool,
+}
+
+async fn run_one(
+    task: &Task,
+    prompt: &Prompt,
+    model: &str,
+    api_key: &str,
+    options: RunOneOptions,
 ) -> TaskResult {
     let start = Instant::now();
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -694,14 +699,21 @@ async fn run_one(
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };
 
-    let provider = make_provider(model, api_key.to_string(), max_tokens_per_response);
-    let effective_max_turns = task.spec.max_turns.unwrap_or(max_turns).min(max_turns);
+    let provider = make_provider(model, api_key.to_string(), options.max_tokens_per_response);
+    let effective_max_turns = task
+        .spec
+        .max_turns
+        .unwrap_or(options.max_turns)
+        .min(options.max_turns);
     // task.toml budget wins when set; else CLI default.
-    let effective_max_tokens = task.spec.budget_tokens.unwrap_or(max_tokens_per_task);
+    let effective_max_tokens = task
+        .spec
+        .budget_tokens
+        .unwrap_or(options.max_tokens_per_task);
     let effective_timeout_secs = task
         .spec
         .task_timeout_secs
-        .unwrap_or(task_timeout_secs)
+        .unwrap_or(options.task_timeout_secs)
         .max(1);
 
     let mut tool_calls = 0u32;
@@ -794,7 +806,7 @@ async fn run_one(
         &task.dir.join(task.spec.score.outcome.expected_dir.as_str()),
     );
     let passed = diff.is_empty() && error.is_none();
-    if passed && !record_all_text {
+    if passed && !options.record_all_text {
         assistant_messages.clear();
     }
 
@@ -1310,6 +1322,13 @@ async fn cmd_run(
     let mut smoke_failed = false;
     let mut budget_stopped = false;
     let mut cumulative_usd = 0.0f64;
+    let run_options = RunOneOptions {
+        max_turns,
+        max_tokens_per_task,
+        max_tokens_per_response,
+        task_timeout_secs,
+        record_all_text,
+    };
 
     // Pass 1: smoke
     let smoke_total = smoke_pairs.len();
@@ -1319,18 +1338,7 @@ async fn cmd_run(
             "[smoke {idx}/{smoke_total}] {} | {}",
             task.spec.id, prompt.id
         );
-        let r = run_one(
-            task,
-            prompt,
-            &model,
-            &api_key,
-            max_turns,
-            max_tokens_per_task,
-            max_tokens_per_response,
-            task_timeout_secs,
-            record_all_text,
-        )
-        .await;
+        let r = run_one(task, prompt, &model, &api_key, run_options).await;
         let outcome = match (
             r.scores.outcome.passed,
             r.scores.efficiency.tokens_in_budget,
@@ -1396,18 +1404,7 @@ async fn cmd_run(
                     format!("[matrix {idx}/{matrix_total}]")
                 };
                 println!("{prefix} {} | {}", task.spec.id, prompt.id);
-                let mut r = run_one(
-                    task,
-                    prompt,
-                    &model,
-                    &api_key,
-                    max_turns,
-                    max_tokens_per_task,
-                    max_tokens_per_response,
-                    task_timeout_secs,
-                    record_all_text,
-                )
-                .await;
+                let mut r = run_one(task, prompt, &model, &api_key, run_options).await;
                 if runs > 1 {
                     r.run_index = run_n;
                 }
