@@ -12,7 +12,7 @@ Heddle uses a two-layer TOML configuration: global settings in `~/.heddle/config
 Override the global config directory with `HEDDLE_HOME`:
 
 ```bash
-HEDDLE_HOME=.heddle-dev bun run dev   # use a dev config
+HEDDLE_HOME=.heddle-dev cargo run --bin heddle   # use a dev config
 ```
 
 ## Full Reference
@@ -26,6 +26,10 @@ base_url = "https://..."       # Custom API base URL (or HEDDLE_BASE_URL)
 model = "openrouter/free"      # Primary model (or HEDDLE_MODEL)
 weak_model = "..."             # Cheap model for compaction/summaries (or HEDDLE_WEAK_MODEL)
 editor_model = "..."           # Model for edit operations
+
+# Heddle fetches OpenRouter `/models` pricing metadata for cost estimates, but
+# `/model <id>` currently switches immediately without validating availability
+# or showing the selected model's current price/context window.
 
 # ── API Parameters ──────────────────────────────────
 max_tokens = 128000            # Max context window (or HEDDLE_MAX_TOKENS)
@@ -94,10 +98,10 @@ Generated JSON schemas live in `schemas/`:
 
 The `.taplo.toml` at repo root associates `.heddle/config.toml` files with the config schema, giving you autocomplete and validation in editors that support taplo.
 
-Regenerate schemas after changing TypeBox definitions:
+Regenerate schemas after changing config schema definitions:
 
 ```bash
-bun run export-schemas
+cargo run --bin export-schemas
 ```
 
 ## Merge Order

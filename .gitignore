@@ -11,3 +11,9 @@ dist
 .zed
 coverage
 *.log
+
+# Rust
+/target
+
+# Eval harness staging (promotes to ~/repos/heddle-evals later)
+/evals-staging

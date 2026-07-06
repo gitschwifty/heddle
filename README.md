@@ -1,26 +1,31 @@
 # Heddle
 
-TypeScript LLM API harness — tool execution, streaming, edits, context management.
+Rust LLM API harness — tool execution, streaming, edits, context management.
 
 Heddle gives LLMs the ability to read, write, edit, and search files, run shell commands, and maintain persistent conversation sessions. Built on OpenRouter's OpenAI-compatible API with a headless JSON-over-stdio mode for embedding in other applications.
 
 ## Quick Start
 
 ```bash
-bun install
+cargo build --release
 
 # Add your API key
 echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' > .env.local
 
 # Run the interactive CLI
-bun run dev
+./target/release/heddle
 ```
 
 The default model is `openrouter/free`. Override it with `HEDDLE_MODEL` or in your config file.
 
+Two binaries are built:
+
+- `heddle` — interactive REPL CLI
+- `heddle-headless` — JSON-over-stdio mode (see [docs/headless.md](docs/headless.md))
+
 ## Requirements
 
-- [Bun](https://bun.sh) (runtime, test runner, package manager)
+- A stable Rust toolchain (1.75+ recommended)
 - An [OpenRouter](https://openrouter.ai) API key
 
 ## Configuration
@@ -108,7 +113,7 @@ All config fields have env var overrides:
 
 ## CLI Usage
 
-The interactive CLI is started with `bun run dev`. Type messages to chat with the agent.
+Start the interactive CLI with `cargo run --release --bin heddle` (or `./target/release/heddle` after building). Type messages to chat with the agent.
 
 ### Slash Commands
 
@@ -141,8 +146,8 @@ The interactive CLI is started with `bun run dev`. Type messages to chat with th
 Reference files with `@` to inject their contents into your message:
 
 ```
-you> Can you refactor @src/config/loader.ts to use async file reads?
-  [injected] src/config/loader.ts (159 lines)
+you> Can you refactor @src/config/loader.rs to use async file reads?
+  [injected] src/config/loader.rs (159 lines)
 ```
 
 ## Tools
@@ -178,23 +183,9 @@ If all levels fail, it reports the closest match with line number.
 
 Sessions are persisted as JSONL files in `~/.heddle/projects/{encoded-path}/sessions/`.
 
-### Resume a Session
+### Resume / Fork a Session
 
-Pass `resume` in session options to continue an existing session by ID or name:
-
-```ts
-const ctx = await createSession({ resume: "abc123" });
-```
-
-### Fork a Session
-
-Create a new session branched from an existing one:
-
-```ts
-const ctx = await createSession({ fork: "abc123" });
-```
-
-Or use `/fork` in the CLI to fork the current session.
+Use `/sessions` to list recent sessions, `/name <name>` to label the current session, and `/fork` to branch the current session into a new one. Session JSONL files are written under `~/.heddle/projects/{encoded-path}/sessions/`; the headless mode can read them back via session APIs.
 
 ### Session Commands
 
@@ -269,9 +260,9 @@ Heddle loads `AGENTS.md` files by walking up from the working directory to the h
 
 | Mode | Entry Point | Feature Defaults |
 |------|-------------|------------------|
-| **Interactive** | `bun run dev` | All features enabled |
-| **Non-interactive** | Scripted / piped input | history=off, statusLine=off |
-| **Headless** | `bun run headless` | history=off, facets=off, statusLine=off, pasteCache=off |
+| **Interactive** | `heddle` | All features enabled |
+| **Non-interactive** | `heddle` with piped stdin | history=off, statusLine=off |
+| **Headless** | `heddle-headless` | history=off, facets=off, statusLine=off, pasteCache=off |
 
 See [docs/headless.md](docs/headless.md) for the headless JSON-over-stdio protocol.
 
@@ -279,7 +270,8 @@ See [docs/headless.md](docs/headless.md) for the headless JSON-over-stdio protoc
 
 ```
 src/
-  types.ts          # Core message/tool types (TypeBox schemas)
+  types.rs          # Core message/tool types
+  bin/              # heddle (CLI) and heddle-headless entry points
   config/           # TOML config loading, paths, feature flags
   provider/         # LLM API client (OpenRouter)
   agent/            # Agent loop (streaming + non-streaming)
@@ -287,38 +279,45 @@ src/
   session/          # JSONL session persistence, resume, fork
   context/          # Pruning + compaction
   memory/           # Agent memory loader
-  file-history/     # File backup, restore, cleanup
+  file_history/     # File backup, restore, cleanup
   history/          # Cross-session message history
   commands/         # Slash command framework
   permissions/      # Tool approval + permission checking
-  cost/             # Token cost tracking
-  cli/              # Interactive REPL
+  cost/             # Token cost tracking + pricing
+  cli/              # Interactive REPL (rustyline)
   headless/         # JSON-over-stdio adapter
   ipc/              # IPC types, codec, protocol versioning
+  agents/           # Agent persona loading
+  plans/            # Plan storage
+  tasks/            # Task storage
+  usage/            # Usage collector
+  hooks/            # Pre/post-tool and prompt hooks
 ```
 
-**Agent loop:** Send messages to the LLM. If it responds with tool calls, execute them, append results, and send again. Repeat until the LLM responds with text only. Both streaming (`runAgentLoopStreaming`) and non-streaming (`runAgentLoop`) variants.
+**Agent loop:** Send messages to the LLM. If it responds with tool calls, execute them, append results, and send again. Repeat until the LLM responds with text only. Both streaming (`run_agent_loop_streaming`) and non-streaming (`run_agent_loop`) variants live in `agent::loop_`.
 
-**TypeBox:** Every type is defined once using TypeBox, producing both a TypeScript type and a JSON Schema. Tool parameter schemas double as OpenAI function definitions.
+**Types:** Message, tool, and IPC types are `serde`-derived structs in `src/types.rs` and `src/ipc/types.rs`. Tool parameter schemas are JSON values (OpenAI function format) stored on each `HeddleTool`.
 
 ## Development
 
+Build, test, lint, and contributor docs live in [DEVELOPMENT.md](DEVELOPMENT.md). Quick recap:
+
 ```bash
-bun test                    # unit tests
-bun run test:integration    # include provider integration tests
-bun run test:all            # everything including slow multi-turn tests
-bun test test/tools/        # specific directory
-bun run tsc --noEmit        # type check
-bun run lint                # lint + format (biome, auto-fixes)
+cargo build --release        # both bins
+cargo test                   # 834 tests
+cargo clippy --all-targets   # 0 warnings required
 ```
 
-Integration tests require `HEDDLE_INTEGRATION_TESTS=1` and real API credentials in `.env.test`.
+Integration tests against the real OpenRouter API are env-gated — see [DEVELOPMENT.md](DEVELOPMENT.md#integration--live-model-tests).
 
 ## Dependencies
 
-- **[@sinclair/typebox](https://github.com/sinclairzx81/typebox)** — TypeScript type + JSON Schema from a single definition
-- **[smol-toml](https://github.com/squirrelchat/smol-toml)** — TOML parser for config files
-- **[@biomejs/biome](https://biomejs.dev)** — Lint + format (dev)
+- **[tokio](https://tokio.rs)** — async runtime
+- **[reqwest](https://docs.rs/reqwest)** — HTTP client (rustls)
+- **[serde](https://serde.rs) / serde_json / toml / serde_yaml** — serialization
+- **[rustyline](https://docs.rs/rustyline)** — interactive line editor for the REPL
+- **[dotenvy](https://docs.rs/dotenvy)** — `.env` loading
+- **[wiremock](https://docs.rs/wiremock)** (dev) — HTTP mocking for provider tests
 
 ## License
 

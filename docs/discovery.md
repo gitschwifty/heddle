@@ -96,7 +96,7 @@ The `commands/` subdirectory is still scanned alongside `skills/` in all discove
 Set `HEDDLE_HOME` to point at an isolated directory for testing:
 
 ```bash
-HEDDLE_HOME=/tmp/test-heddle bun test
+HEDDLE_HOME=/tmp/test-heddle cargo test
 ```
 
-The `createTestSandbox()` helper in `test/helpers/sandbox.ts` automates this for unit tests.
+The `Sandbox::new()` helper in `tests/common/sandbox.rs` automates this for unit tests.

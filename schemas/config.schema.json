@@ -1,604 +1,358 @@
 {
-	"$schema": "http://json-schema.org/draft-07/schema#",
-	"type": "object",
-	"properties": {
-		"api_key": {
-			"type": "string"
-		},
-		"model": {
-			"type": "string"
-		},
-		"weak_model": {
-			"type": "string"
-		},
-		"editor_model": {
-			"type": "string"
-		},
-		"max_tokens": {
-			"type": "number"
-		},
-		"temperature": {
-			"type": "number"
-		},
-		"base_url": {
-			"type": "string"
-		},
-		"system_prompt": {
-			"type": "string"
-		},
-		"approval_mode": {
-			"anyOf": [
-				{
-					"const": "suggest",
-					"type": "string"
-				},
-				{
-					"const": "auto-edit",
-					"type": "string"
-				},
-				{
-					"const": "full-auto",
-					"type": "string"
-				},
-				{
-					"const": "plan",
-					"type": "string"
-				},
-				{
-					"const": "yolo",
-					"type": "string"
-				}
-			]
-		},
-		"instructions": {
-			"type": "array",
-			"items": {
-				"type": "string"
-			}
-		},
-		"tools": {
-			"type": "array",
-			"items": {
-				"type": "string"
-			}
-		},
-		"doom_loop_threshold": {
-			"type": "number"
-		},
-		"budget_limit": {
-			"type": "number"
-		},
-		"compact_trigger": {
-			"type": "number"
-		},
-		"prune_protect": {
-			"type": "number"
-		},
-		"prune_minimum": {
-			"type": "number"
-		},
-		"compact_buffer": {
-			"type": "number"
-		},
-		"features": {
-			"type": "object",
-			"properties": {
-				"history": {
-					"type": "boolean"
-				},
-				"usage_data": {
-					"type": "boolean"
-				},
-				"facets": {
-					"type": "boolean"
-				},
-				"file_history": {
-					"type": "boolean"
-				},
-				"paste_cache": {
-					"type": "boolean"
-				},
-				"status_line": {
-					"type": "boolean"
-				},
-				"hooks": {
-					"type": "boolean"
-				},
-				"tasks": {
-					"type": "boolean"
-				}
-			}
-		},
-		"permissions": {
-			"type": "object",
-			"properties": {
-				"allow": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					}
-				},
-				"deny": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					}
-				},
-				"ask": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					}
-				}
-			}
-		},
-		"hooks": {
-			"additionalProperties": false,
-			"type": "object",
-			"properties": {
-				"session_start": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"session_end": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"pre_prompt": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"pre_tool": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"post_tool": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"post_turn": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				},
-				"error": {
-					"type": "array",
-					"items": {
-						"type": "object",
-						"required": [
-							"command"
-						],
-						"properties": {
-							"command": {
-								"type": "string"
-							},
-							"timeout": {
-								"default": 10000,
-								"type": "number"
-							},
-							"mode": {
-								"default": "both",
-								"anyOf": [
-									{
-										"const": "interactive",
-										"type": "string"
-									},
-									{
-										"const": "headless",
-										"type": "string"
-									},
-									{
-										"const": "both",
-										"type": "string"
-									}
-								]
-							},
-							"async": {
-								"default": false,
-								"type": "boolean"
-							},
-							"matchers": {
-								"type": "object",
-								"properties": {
-									"tool": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											}
-										]
-									},
-									"match_path": {
-										"type": "string"
-									},
-									"match_args": {
-										"type": "string"
-									},
-									"match_input": {
-										"type": "string"
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HeddleConfigSchema",
+  "type": "object",
+  "properties": {
+    "api_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "approval_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ApprovalModeWire"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "base_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "budget_limit": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "compact_buffer": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "compact_trigger": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "doom_loop_threshold": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "editor_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "features": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/FeaturesSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hooks": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/HookDefinition"
+        }
+      }
+    },
+    "instructions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "max_tokens": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "permissions": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PermissionsConfigSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prune_minimum": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "prune_protect": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "system_prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "temperature": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "tools": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "weak_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "definitions": {
+    "ApprovalModeWire": {
+      "type": "string",
+      "enum": [
+        "suggest",
+        "auto-edit",
+        "full-auto",
+        "plan",
+        "yolo"
+      ]
+    },
+    "FeaturesSchema": {
+      "type": "object",
+      "properties": {
+        "facets": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "file_history": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "history": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "hooks": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "paste_cache": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "status_line": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tasks": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "usage_data": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "HookDefinition": {
+      "description": "Wire-format hook entry from TOML/JSON before defaults are applied.",
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "async": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "matchers": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HookMatchers"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HookMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "HookMatchers": {
+      "type": "object",
+      "properties": {
+        "match_args": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "match_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "match_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "description": "Either a single tool name or a list of names.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "HookMode": {
+      "type": "string",
+      "enum": [
+        "interactive",
+        "headless",
+        "both"
+      ]
+    },
+    "PermissionsConfigSchema": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "ask": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ToolMatch": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    }
+  }
 }
