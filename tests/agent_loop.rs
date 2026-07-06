@@ -140,7 +140,7 @@ async fn text_only_response_terminates_immediately() {
     assert_eq!(events.len(), 2);
     assert_eq!(event_kind(&events[0]), "usage");
     assert_eq!(event_kind(&events[1]), "assistant_message");
-    if let AgentEvent::AssistantMessage { message } = &events[1] {
+    if let AgentEvent::AssistantMessage { message, .. } = &events[1] {
         assert_eq!(message.content.as_deref(), Some("Hello!"));
     } else {
         panic!("expected assistant_message");
@@ -180,7 +180,7 @@ async fn tool_call_then_text_response_single_turn() {
     } else {
         panic!("expected tool_end");
     }
-    if let AgentEvent::AssistantMessage { message } = &events[5] {
+    if let AgentEvent::AssistantMessage { message, .. } = &events[5] {
         assert_eq!(message.content.as_deref(), Some("Got: ping"));
     } else {
         panic!("expected final assistant_message");

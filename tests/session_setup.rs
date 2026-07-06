@@ -203,11 +203,13 @@ async fn default_system_prompt_limits_tool_use_to_file_work_requests() {
     if let heddle::types::Message::System(m) = &ctx.messages[0] {
         assert!(m
             .content
-            .contains("Use them when the user asks you to work with files."));
+            .contains("Prefer reading actual file contents over guessing."));
         assert!(m
             .content
-            .contains("only state facts supported by those results"));
-        assert!(!m.content.contains("Use tools to take action"));
+            .contains("Use tools to take action, not to narrate"));
+        assert!(m
+            .content
+            .contains("Don't add error handling, validation, or abstractions"));
     } else {
         panic!("expected system message");
     }

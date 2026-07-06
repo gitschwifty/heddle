@@ -112,7 +112,7 @@ impl HeddleTool for SubagentTool {
         }
 
         let last_assistant_content = events.iter().rev().find_map(|e| match e {
-            AgentEvent::AssistantMessage { message } => message.content.clone(),
+            AgentEvent::AssistantMessage { message, .. } => message.content.clone(),
             _ => None,
         });
         if let Some(c) = last_assistant_content {

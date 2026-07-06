@@ -215,7 +215,7 @@ async fn text_only_streaming_yields_deltas_then_assistant_message() {
         .filter(|e| matches!(e, AgentEvent::AssistantMessage { .. }))
         .collect();
     assert_eq!(assistants.len(), 1);
-    if let AgentEvent::AssistantMessage { message } = assistants[0] {
+    if let AgentEvent::AssistantMessage { message, .. } = assistants[0] {
         assert_eq!(message.content.as_deref(), Some("Hello world"));
     }
 }
@@ -290,7 +290,7 @@ async fn mixed_content_and_tool_calls_in_stream() {
         .filter(|e| matches!(e, AgentEvent::AssistantMessage { .. }))
         .collect();
     assert_eq!(assistants.len(), 2);
-    if let AgentEvent::AssistantMessage { message } = assistants[0] {
+    if let AgentEvent::AssistantMessage { message, .. } = assistants[0] {
         assert_eq!(message.content.as_deref(), Some("Let me do that."));
         assert_eq!(message.tool_calls.as_ref().map(|v| v.len()), Some(1));
     }
@@ -417,7 +417,7 @@ async fn empty_streaming_response_retries_once_and_can_recover() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::AssistantMessage { message }
+            AgentEvent::AssistantMessage { message, .. }
                 if message.content.as_deref() == Some("Recovered")
         )),
         "expected recovered assistant message"
@@ -469,7 +469,7 @@ async fn empty_non_streaming_response_retries_once_and_can_recover() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::AssistantMessage { message }
+            AgentEvent::AssistantMessage { message, .. }
                 if message.content.as_deref() == Some("Recovered")
         )),
         "expected recovered assistant message"

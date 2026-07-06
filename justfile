@@ -22,6 +22,9 @@ test-multi-turn-live:
 test-live:
 	HEDDLE_INTEGRATION_TESTS=1 HEDDLE_SLOW_TESTS=1 cargo test --test provider_openrouter_integration --test multi_turn_integration -- --nocapture
 
+eval evals="evals-staging" prompts="all" tasks="all" model="openrouter/free":
+	cargo run --bin eval -- run --evals {{evals}} --prompts {{prompts}} --tasks {{tasks}} --model {{model}}
+
 clippy:
 	cargo clippy --all-targets
 

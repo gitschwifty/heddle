@@ -27,6 +27,10 @@ model = "openrouter/free"      # Primary model (or HEDDLE_MODEL)
 weak_model = "..."             # Cheap model for compaction/summaries (or HEDDLE_WEAK_MODEL)
 editor_model = "..."           # Model for edit operations
 
+# Heddle fetches OpenRouter `/models` pricing metadata for cost estimates, but
+# `/model <id>` currently switches immediately without validating availability
+# or showing the selected model's current price/context window.
+
 # ── API Parameters ──────────────────────────────────
 max_tokens = 128000            # Max context window (or HEDDLE_MAX_TOKENS)
 temperature = 0.7              # Sampling temperature (or HEDDLE_TEMPERATURE)

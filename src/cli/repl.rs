@@ -450,7 +450,7 @@ pub async fn start_cli() -> Result<()> {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
                 }
-                AgentEvent::AssistantMessage { message } => {
+                AgentEvent::AssistantMessage { message, .. } => {
                     if needs_newline {
                         println!("\n");
                         needs_newline = false;

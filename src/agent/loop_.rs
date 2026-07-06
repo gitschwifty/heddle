@@ -261,7 +261,10 @@ pub fn run_agent_loop<'a>(
             if let Some(usage) = response_usage.clone() {
                 yield AgentEvent::Usage { usage };
             }
-            yield AgentEvent::AssistantMessage { message: assistant_msg.clone() };
+            yield AgentEvent::AssistantMessage {
+                message: assistant_msg.clone(),
+                finish_reason: choice.finish_reason.clone(),
+            };
             messages.push(Message::Assistant(assistant_msg.clone()));
             last_assistant_content = assistant_msg.content.clone();
 
@@ -503,7 +506,14 @@ pub fn run_agent_loop_streaming<'a>(
                 return;
             }
             empty_response_retries = 0;
-            yield AgentEvent::AssistantMessage { message: assistant_msg.clone() };
+            yield AgentEvent::AssistantMessage {
+                message: assistant_msg.clone(),
+                finish_reason: if finish_reasons.is_empty() {
+                    None
+                } else {
+                    Some(finish_reasons.join(","))
+                },
+            };
             if let Some(u) = stream_usage.take() {
                 yield AgentEvent::Usage { usage: u };
             }

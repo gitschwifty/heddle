@@ -261,7 +261,7 @@ async fn editor_phase_produces_final_response() {
         .filter(|e| matches!(e, AgentEvent::AssistantMessage { .. }))
         .collect();
     assert!(assistants.len() >= 2);
-    if let AgentEvent::AssistantMessage { message } = assistants.last().unwrap() {
+    if let AgentEvent::AssistantMessage { message, .. } = assistants.last().unwrap() {
         assert_eq!(message.content.as_deref(), Some("I have done the thing."));
     }
 }

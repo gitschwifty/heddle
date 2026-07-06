@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
@@ -33,6 +33,7 @@ use heddle::tools::write::create_write_tool;
 use heddle::types::{Message, SystemMessage, UserMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::time::timeout;
 use walkdir::WalkDir;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────
@@ -75,6 +76,9 @@ enum Cmd {
         /// Hard cap on turns per task (default 8).
         #[arg(long, default_value_t = 8)]
         max_turns: u32,
+        /// Wall-clock timeout per task, in seconds (default 150).
+        #[arg(long, default_value_t = 150)]
+        task_timeout_secs: u64,
         /// Abort the sweep if cumulative cost crosses this USD value.
         #[arg(long)]
         budget_stop_usd: Option<f64>,
@@ -86,6 +90,10 @@ enum Cmd {
         /// averaging out LLM stochastic variance.
         #[arg(long, default_value_t = 1)]
         runs: u32,
+        /// Include assistant text for passing runs too. Failed runs always
+        /// include assistant text for diagnosis.
+        #[arg(long, default_value_t = false)]
+        record_all_text: bool,
     },
 }
 
@@ -179,6 +187,10 @@ struct TaskSpec {
     tools: Option<Vec<String>>,
     #[serde(default)]
     max_turns: Option<u32>,
+    /// Per-task wall-clock timeout, in seconds. When omitted, the CLI
+    /// `--task-timeout-secs` default applies.
+    #[serde(default)]
+    task_timeout_secs: Option<u64>,
     /// Per-task override for `--max-tokens-per-task`. When set, this wins
     /// over the CLI default for this task — different tasks need different
     /// budgets (a 1-line write is 2k; a 3-file refactor on a slow model
@@ -242,6 +254,21 @@ struct TaskResult {
     /// Order of tool calls (names only). Useful for diagnosing why a task
     /// failed without re-reading the result JSON.
     tool_sequence: Vec<String>,
+    /// Provider finish reasons for each assistant message. Kept for all runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    finish_reasons: Vec<String>,
+    /// Assistant text is stored only for failures by default. Use
+    /// `--record-all-text` to include it for passing runs too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assistant_messages: Vec<AssistantTrace>,
+}
+
+#[derive(Debug, Serialize)]
+struct AssistantTrace {
+    turn: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
+    text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -632,6 +659,8 @@ async fn run_one(
     max_turns: u32,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
+    task_timeout_secs: u64,
+    record_all_text: bool,
 ) -> TaskResult {
     let start = Instant::now();
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -669,6 +698,11 @@ async fn run_one(
     let effective_max_turns = task.spec.max_turns.unwrap_or(max_turns).min(max_turns);
     // task.toml budget wins when set; else CLI default.
     let effective_max_tokens = task.spec.budget_tokens.unwrap_or(max_tokens_per_task);
+    let effective_timeout_secs = task
+        .spec
+        .task_timeout_secs
+        .unwrap_or(task_timeout_secs)
+        .max(1);
 
     let mut tool_calls = 0u32;
     let mut turns = 0u32;
@@ -677,6 +711,8 @@ async fn run_one(
     let mut usd = 0.0f64;
     let mut error: Option<String> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
+    let mut finish_reasons: Vec<String> = Vec::new();
+    let mut assistant_messages: Vec<AssistantTrace> = Vec::new();
     let mut budget_exceeded = false;
 
     let prev_cwd = std::env::current_dir().ok();
@@ -690,7 +726,17 @@ async fn run_one(
     };
     let stream = run_agent_loop(provider, registry, &mut messages, opts);
     futures::pin_mut!(stream);
-    while let Some(event) = stream.next().await {
+    loop {
+        let remaining = Duration::from_secs(effective_timeout_secs).saturating_sub(start.elapsed());
+        let event = match timeout(remaining, stream.next()).await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(_) => {
+                error = Some(format!("Task timed out after {effective_timeout_secs}s"));
+                break;
+            }
+        };
+
         match event {
             AgentEvent::ToolStart { name, .. } => {
                 tool_calls += 1;
@@ -698,7 +744,24 @@ async fn run_one(
                 std::io::Write::flush(&mut std::io::stdout()).ok();
                 tool_sequence.push(name);
             }
-            AgentEvent::AssistantMessage { .. } => turns += 1,
+            AgentEvent::AssistantMessage {
+                message,
+                finish_reason,
+            } => {
+                turns += 1;
+                if let Some(reason) = &finish_reason {
+                    finish_reasons.push(reason.clone());
+                }
+                if let Some(text) = message.content {
+                    if !text.is_empty() {
+                        assistant_messages.push(AssistantTrace {
+                            turn: turns,
+                            finish_reason,
+                            text,
+                        });
+                    }
+                }
+            }
             AgentEvent::Usage { usage } => {
                 tokens_in += usage.prompt_tokens;
                 tokens_out += usage.completion_tokens;
@@ -713,6 +776,9 @@ async fn run_one(
                 }
             }
             AgentEvent::Error { message } => {
+                if message.contains("; retrying once") {
+                    continue;
+                }
                 error = Some(message);
                 break;
             }
@@ -728,6 +794,9 @@ async fn run_one(
         &task.dir.join(task.spec.score.outcome.expected_dir.as_str()),
     );
     let passed = diff.is_empty() && error.is_none();
+    if passed && !record_all_text {
+        assistant_messages.clear();
+    }
 
     let (eff_min, eff_max) = match &task.spec.score.efficiency {
         Some(e) => (e.min_tool_calls, e.max_tool_calls),
@@ -747,6 +816,8 @@ async fn run_one(
         rendered_system_prompt_chars: composed.chars().count(),
         run_index: 0,
         tool_sequence,
+        finish_reasons,
+        assistant_messages,
         scores: Scores {
             outcome: OutcomeScore {
                 passed,
@@ -786,6 +857,8 @@ fn error_result(
         rendered_system_prompt_chars: 0,
         run_index: 0,
         tool_sequence: Vec::new(),
+        finish_reasons: Vec::new(),
+        assistant_messages: Vec::new(),
         scores: Scores {
             outcome: OutcomeScore {
                 passed: false,
@@ -826,9 +899,9 @@ fn format_summary(results: &[TaskResult]) -> String {
         return out;
     }
     let header = [
-        "task", "prompt", "model", "outcome", "tools", "turns", "tokens", "err",
+        "task", "prompt", "model", "outcome", "tools", "turns", "tokens", "usd", "err",
     ];
-    let mut rows: Vec<[String; 8]> = Vec::with_capacity(results.len() + 1);
+    let mut rows: Vec<[String; 9]> = Vec::with_capacity(results.len() + 1);
     rows.push(header.map(String::from));
     for r in results {
         let outcome = match (
@@ -849,16 +922,17 @@ fn format_summary(results: &[TaskResult]) -> String {
             r.scores.efficiency.tool_calls.to_string(),
             r.scores.efficiency.turns.to_string(),
             format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
+            format!("{:.6}", r.scores.cost.usd),
             err.to_string(),
         ]);
     }
-    let mut widths = [0usize; 8];
+    let mut widths = [0usize; 9];
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-    let render = |row: &[String; 8]| -> String {
+    let render = |row: &[String; 9]| -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
@@ -921,8 +995,9 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         "turns (avg)",
         "tokens in (avg±std)",
         "tokens out (avg)",
+        "usd (avg)",
     ];
-    let mut rows: Vec<[String; 7]> = Vec::with_capacity(groups.len() + 1);
+    let mut rows: Vec<[String; 8]> = Vec::with_capacity(groups.len() + 1);
     rows.push(header.map(String::from));
 
     for ((task_id, prompt_id), runs_of) in &groups {
@@ -951,6 +1026,7 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             .map(|r| r.scores.cost.tokens_out as f64)
             .sum::<f64>()
             / n;
+        let mean_usd = runs_of.iter().map(|r| r.scores.cost.usd).sum::<f64>() / n;
         let pct = if mean_in > 0.0 {
             std_in / mean_in * 100.0
         } else {
@@ -964,16 +1040,17 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             format!("{mean_turns:.1}"),
             format!("{mean_in:.0}±{std_in:.0} ({pct:.0}%)"),
             format!("{mean_out:.0}"),
+            format!("{mean_usd:.6}"),
         ]);
     }
 
-    let mut widths = [0usize; 7];
+    let mut widths = [0usize; 8];
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-    let render = |row: &[String; 7]| -> String {
+    let render = |row: &[String; 8]| -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
@@ -1056,9 +1133,11 @@ async fn main() -> Result<()> {
             max_tokens_per_task,
             max_tokens_per_response,
             max_turns,
+            task_timeout_secs,
             budget_stop_usd,
             results_dir,
             runs,
+            record_all_text,
         } => {
             cmd_run(
                 &evals,
@@ -1068,9 +1147,11 @@ async fn main() -> Result<()> {
                 max_tokens_per_task,
                 max_tokens_per_response,
                 max_turns,
+                task_timeout_secs,
                 budget_stop_usd,
                 results_dir,
                 runs.max(1),
+                record_all_text,
             )
             .await
         }
@@ -1099,9 +1180,10 @@ fn cmd_list(evals: &Path) -> Result<()> {
     println!("tasks ({}):", tasks.len());
     for t in &tasks {
         println!(
-            "  {:<28} max_turns={}  tools={:?}",
+            "  {:<28} max_turns={}  timeout={}s  tools={:?}",
             t.spec.id,
             t.spec.max_turns.unwrap_or(8),
+            t.spec.task_timeout_secs.unwrap_or(150),
             t.spec.tools.as_ref().map(|v| v.len()).unwrap_or(7),
         );
     }
@@ -1136,9 +1218,11 @@ async fn cmd_run(
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
+    task_timeout_secs: u64,
     budget_stop_usd_flag: Option<f64>,
     results_dir: Option<PathBuf>,
     runs: u32,
+    record_all_text: bool,
 ) -> Result<()> {
     let manifest = load_manifest(evals)?;
     let model = model_flag
@@ -1243,6 +1327,8 @@ async fn cmd_run(
             max_turns,
             max_tokens_per_task,
             max_tokens_per_response,
+            task_timeout_secs,
+            record_all_text,
         )
         .await;
         let outcome = match (
@@ -1254,11 +1340,12 @@ async fn cmd_run(
             (false, _) => "FAIL",
         };
         println!(
-            "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
+            "      {outcome} (tools={}, turns={}, tokens={}/{}, usd=${:.6}, {}ms)",
             r.scores.efficiency.tool_calls,
             r.scores.efficiency.turns,
             r.scores.cost.tokens_in,
             r.scores.cost.tokens_out,
+            r.scores.cost.usd,
             r.duration_ms,
         );
         if !r.scores.outcome.passed {
@@ -1317,6 +1404,8 @@ async fn cmd_run(
                     max_turns,
                     max_tokens_per_task,
                     max_tokens_per_response,
+                    task_timeout_secs,
+                    record_all_text,
                 )
                 .await;
                 if runs > 1 {
@@ -1331,11 +1420,12 @@ async fn cmd_run(
                     (false, _) => "FAIL",
                 };
                 println!(
-                    "      {outcome} (tools={}, turns={}, tokens={}/{}, {}ms)",
+                    "      {outcome} (tools={}, turns={}, tokens={}/{}, usd=${:.6}, {}ms)",
                     r.scores.efficiency.tool_calls,
                     r.scores.efficiency.turns,
                     r.scores.cost.tokens_in,
                     r.scores.cost.tokens_out,
+                    r.scores.cost.usd,
                     r.duration_ms,
                 );
                 write_result(&results_dir, &r)?;
@@ -1379,6 +1469,7 @@ async fn cmd_run(
         max_tokens_per_task,
         max_tokens_per_response,
         max_turns,
+        task_timeout_secs,
         budget_stop_usd,
         &results,
         &summary,
@@ -1402,6 +1493,7 @@ struct RunMeta {
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
+    task_timeout_secs: u64,
     budget_stop_usd: f64,
     counts: RunCounts,
 }
@@ -1423,6 +1515,7 @@ fn write_run_artifacts(
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
+    task_timeout_secs: u64,
     budget_stop_usd: f64,
     results: &[TaskResult],
     summary_md: &str,
@@ -1445,6 +1538,7 @@ fn write_run_artifacts(
         max_tokens_per_task,
         max_tokens_per_response,
         max_turns,
+        task_timeout_secs,
         budget_stop_usd,
         counts: RunCounts {
             total: results.len(),
@@ -1472,8 +1566,11 @@ fn write_run_artifacts(
     md.push_str(&format!("- prompts: {}\n", meta.prompts.join(", ")));
     md.push_str(&format!("- tasks: {}\n", meta.tasks.join(", ")));
     md.push_str(&format!(
-        "- caps: max_tokens_per_task={}, max_tokens_per_response={}, max_turns={}\n",
-        meta.max_tokens_per_task, meta.max_tokens_per_response, meta.max_turns
+        "- caps: max_tokens_per_task={}, max_tokens_per_response={}, max_turns={}, task_timeout_secs={}\n",
+        meta.max_tokens_per_task,
+        meta.max_tokens_per_response,
+        meta.max_turns,
+        meta.task_timeout_secs
     ));
     md.push_str(&format!(
         "- budget_stop_usd: `${:.4}`\n",

@@ -180,7 +180,7 @@ async fn loop_exits_mid_iteration_when_signal_cancelled_during_tool() {
     let second = events.iter().find(|e| {
         matches!(
             e,
-            AgentEvent::AssistantMessage { message } if message.content.as_deref() == Some("Done!")
+            AgentEvent::AssistantMessage { message, .. } if message.content.as_deref() == Some("Done!")
         )
     });
     assert!(second.is_none(), "should not reach second iteration");

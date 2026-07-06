@@ -128,7 +128,7 @@ async fn read_file_tool_call_then_text_response() {
     } else {
         panic!("expected ToolEnd at index 3");
     }
-    if let AgentEvent::AssistantMessage { message } = &events[5] {
+    if let AgentEvent::AssistantMessage { message, .. } = &events[5] {
         assert!(message
             .content
             .as_deref()

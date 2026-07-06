@@ -384,7 +384,7 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
                     tool_latency_ms += t.elapsed().as_millis() as u64;
                 }
             }
-            AgentEvent::AssistantMessage { message } => {
+            AgentEvent::AssistantMessage { message, .. } => {
                 iterations += 1;
                 if !saw_content_delta {
                     if let Some(c) = message.content {

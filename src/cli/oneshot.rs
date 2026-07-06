@@ -51,7 +51,7 @@ pub async fn run_oneshot_with_context(
     let mut stream = run_agent_loop(provider, registry, messages, AgentLoopOptions::default());
     while let Some(event) = stream.next().await {
         match event {
-            AgentEvent::AssistantMessage { message } => {
+            AgentEvent::AssistantMessage { message, .. } => {
                 output = message.content.unwrap_or_default();
             }
             AgentEvent::ToolStart { .. } => tool_calls += 1,

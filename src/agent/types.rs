@@ -6,6 +6,7 @@ use crate::types::{AssistantMessage, ToolCall, Usage};
 pub enum AgentEvent {
     AssistantMessage {
         message: AssistantMessage,
+        finish_reason: Option<String>,
     },
     ContentDelta {
         text: String,
