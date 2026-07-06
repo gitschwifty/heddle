@@ -1,5 +1,5 @@
 //! Layered TOML config loader (defaults → global → local → env).
-//! Mirrors `ts-src/config/loader.ts`.
+//!
 
 use std::path::Path;
 

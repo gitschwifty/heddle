@@ -1,7 +1,6 @@
-//! Subprocess-driven IPC replay against fixture pairs in `ts-test/ipc/fixtures/`.
+//! Subprocess-driven IPC replay against fixture pairs in `tests/fixtures/ipc/`.
 //!
-//! Mirrors `ts-test/ipc/replay.test.ts`. Strips non-deterministic fields per
-//! `IGNORE_PATHS` before comparison.
+//! Strips non-deterministic fields per `IGNORE_PATHS` before comparison.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -34,7 +33,7 @@ const IGNORE_PATHS: &[&str] = &[
 ];
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ts-test/ipc/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ipc")
 }
 
 fn load_lines(path: &PathBuf) -> Vec<String> {

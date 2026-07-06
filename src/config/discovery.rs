@@ -1,5 +1,5 @@
 //! Discovery: scan `.heddle/` dirs up from cwd, plus `/etc/heddle` and
-//! `.agents/skills/` at the repo root. Mirrors `ts-src/config/discovery.ts`.
+//! `.agents/skills/` at the repo root.
 
 use std::path::{Path, PathBuf};
 

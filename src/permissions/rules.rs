@@ -1,4 +1,4 @@
-//! Rule parsing and evaluation. Mirrors `ts-src/permissions/rules.ts`.
+//! Rule parsing and evaluation.
 
 use std::collections::HashMap;
 

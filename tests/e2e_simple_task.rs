@@ -1,5 +1,5 @@
 //! E2E tests: agent loop driving real tools (read/edit) with a scripted mock
-//! provider. Mirrors `ts-test/e2e/simple-task.test.ts`.
+//! provider.
 
 use async_trait::async_trait;
 use futures::StreamExt;

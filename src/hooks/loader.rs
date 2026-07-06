@@ -1,5 +1,5 @@
 //! Parse hooks from raw TOML and merge global/local layers.
-//! Mirrors `ts-src/hooks/loader.ts`.
+//!
 
 use toml::Value as TomlValue;
 

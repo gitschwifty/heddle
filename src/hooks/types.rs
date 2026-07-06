@@ -1,4 +1,4 @@
-//! Hook types — mirrors `ts-src/hooks/types.ts`.
+//! Hook types.
 
 use std::collections::HashMap;
 

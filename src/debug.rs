@@ -1,4 +1,4 @@
-//! Channel-based debug logging — mirrors `ts-src/debug.ts`.
+//! Channel-based debug logging.
 //!
 //! Channels are configured via the `HEDDLE_DEBUG` env var (comma-separated list,
 //! or `1`/`true` for everything). Output goes to a file if `HEDDLE_DEBUG_FILE`

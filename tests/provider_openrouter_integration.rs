@@ -1,6 +1,6 @@
 //! Integration tests — gated on `HEDDLE_INTEGRATION_TESTS=1` and
 //! `OPENROUTER_API_KEY` being set. Hits the real OpenRouter API with free
-//! models. Mirrors `ts-test/provider/openrouter.integration.test.ts`.
+//! models.
 
 mod common;
 

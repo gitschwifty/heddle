@@ -190,9 +190,9 @@ fn deny_priority_over_ask() {
 
 #[test]
 fn allow_overrides_mode_ask() {
-    let l = layer(&["Bash(bun *)"], &[], &[]);
+    let l = layer(&["Bash(cargo *)"], &[], &[]);
     let c = PermissionChecker::new(ApprovalMode::Suggest, Some(&[l]), None);
-    let args = json!({"command": "bun test"});
+    let args = json!({"command": "cargo test"});
     assert_eq!(c.check("bash", Some(&args)).decision, Decision::Allow);
 }
 

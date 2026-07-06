@@ -348,7 +348,7 @@ fn merge_stacks_rules() {
         ask: vec![],
     };
     let local = PermissionConfig {
-        allow: vec![rule("bash", Some("bun *"))],
+        allow: vec![rule("bash", Some("cargo *"))],
         deny: vec![],
         ask: vec![rule("bash", Some("git push *"))],
     };

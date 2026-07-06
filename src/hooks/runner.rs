@@ -1,5 +1,5 @@
 //! HooksRunner — spawns hook commands and collects their results.
-//! Mirrors `ts-src/hooks/runner.ts`.
+//!
 
 use std::collections::HashMap;
 use std::process::Stdio;

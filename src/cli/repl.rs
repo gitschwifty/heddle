@@ -1,9 +1,5 @@
 //! Interactive REPL loop. Handles `/`-commands, `!`/`!!` shell prefixes, and
 //! `@`-mentions; pipes streaming agent output to stdout.
-//!
-//! The TS version (`ts-src/cli/index.ts`) is callback-driven via Node's
-//! readline; here we use rustyline synchronously inside the async runtime via
-//! `spawn_blocking`.
 
 use std::io::{Read, Write};
 use std::sync::Arc;

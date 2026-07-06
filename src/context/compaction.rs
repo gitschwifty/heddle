@@ -1,4 +1,4 @@
-//! Weak-model compaction. Mirrors `ts-src/context/compaction.ts`.
+//! Weak-model compaction.
 
 use anyhow::Result;
 use serde_json::json;

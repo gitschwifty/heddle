@@ -3,9 +3,9 @@
 Heddle's headless mode exposes the agent loop over a JSON-over-stdio protocol. This is how external applications (like [Orboros](https://github.com/pjtaggart/orboros)) embed heddle as a worker.
 
 ```bash
-bun run headless
+cargo run --bin heddle-headless
 # or build a standalone binary:
-bun run build:headless
+cargo build --release --bin heddle-headless
 ```
 
 ## Protocol Overview
@@ -87,7 +87,7 @@ Send a user message and start the agent loop.
 {
   "type": "send",
   "id": "2",
-  "message": "Read src/index.ts and explain it."
+  "message": "Read src/lib.rs and explain it."
 }
 ```
 
@@ -193,7 +193,7 @@ A text token from the LLM response.
 A tool invocation has started.
 
 ```json
-{ "event": "tool_start", "name": "read_file", "args": { "file_path": "src/index.ts" } }
+{ "event": "tool_start", "name": "read_file", "args": { "file_path": "src/lib.rs" } }
 ```
 
 #### tool_end
@@ -304,9 +304,9 @@ Returned when a send completes (success, error, or cancellation).
   "type": "result",
   "id": "2",
   "status": "ok",
-  "response": "The file contains a TypeScript module that exports...",
+  "response": "The file contains a Rust module that exports...",
   "tool_calls_made": [
-    { "name": "read_file", "args": { "file_path": "src/index.ts" } }
+    { "name": "read_file", "args": { "file_path": "src/lib.rs" } }
   ],
   "usage": {
     "prompt_tokens": 2000,

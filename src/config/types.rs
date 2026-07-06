@@ -1,4 +1,4 @@
-//! Wire-format (snake_case) config schemas. Mirrors `ts-src/config/types.ts`.
+//! Wire-format (snake_case) config schemas.
 //!
 //! Used by both the TOML loader and the headless IPC `init` message. Kept as a
 //! separate module so the loader can produce internal config from these and the

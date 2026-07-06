@@ -1,6 +1,5 @@
-//! Validate and filter request override fields. Mirrors
-//! `ts-src/provider/overrides.ts`. Returns a sanitized JSON object — caller
-//! merges it into the request body.
+//! Validate and filter request override fields.
+//! Returns a sanitized JSON object that the caller merges into the request body.
 
 use once_cell::sync::Lazy;
 use serde_json::{Map, Value};

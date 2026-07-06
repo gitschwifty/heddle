@@ -1,5 +1,5 @@
 //! Tests for the test-only `Sandbox` helper (sets HEDDLE_HOME + cwd, cleans up
-//! on Drop). Mirrors `ts-test/helpers/sandbox.test.ts`.
+//! on Drop).
 
 mod common;
 use common::Sandbox;

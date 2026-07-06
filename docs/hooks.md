@@ -100,8 +100,8 @@ In headless mode, hooks sent via IPC **replace** file-based hooks for the same e
 command = '''
   read stdin
   FILE=$(echo "$stdin" | jq -r '.tool_args | fromjson | .file_path // empty')
-  if [[ "$FILE" == *.ts ]]; then
-    bunx biome check "$FILE" 2>&1 || exit 1
+  if [[ "$FILE" == *.rs ]]; then
+    cargo fmt --check 2>&1 || exit 1
   fi
 '''
 matchers = { tool = ["write", "edit"] }

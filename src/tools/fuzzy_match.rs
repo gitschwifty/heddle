@@ -1,6 +1,6 @@
 //! Cascading fuzzy match for the edit_file tool.
-//! Mirrors `ts-src/tools/fuzzy-match.ts` — exact → whitespace-normalized →
-//! indent-flexible → line-fuzzy.
+//! Attempts exact, whitespace-normalized, indent-flexible, and line-fuzzy
+//! matching in order.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchResult {

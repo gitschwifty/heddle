@@ -1,5 +1,5 @@
 //! PermissionChecker — mode matrix + rule overlay + directory scoping.
-//! Mirrors `ts-src/permissions/checker.ts`.
+//!
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

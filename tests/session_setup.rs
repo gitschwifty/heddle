@@ -1,4 +1,4 @@
-//! Tests for `create_session`. Mirrors `ts-test/session/setup.test.ts`.
+//! Tests for `create_session`.
 
 use heddle::session::setup::{create_session, SessionOptions};
 use heddle::types::{Message, UserMessage};

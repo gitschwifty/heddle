@@ -53,7 +53,7 @@ just test-live
 
 ### Integration / live-model tests
 
-`cargo test` does **not** auto-load `.env.test` (unlike `bun test` did on the TS side). Integration tests opt in via `tests/common/env.rs`:
+`cargo test` does **not** auto-load `.env.test`. Integration tests opt in via `tests/common/env.rs`:
 
 ```rust
 mod common;

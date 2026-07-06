@@ -1,4 +1,4 @@
-//! Core message and tool types — mirrors `ts-src/types.ts`.
+//! Core message and tool types.
 //!
 //! Wire format follows OpenAI Chat Completions. `serde` is the schema source of
 //! truth (TypeBox lived double duty as TS type + JSON schema; we don't need the

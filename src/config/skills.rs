@@ -1,4 +1,4 @@
-//! Skill loading from discovery levels. Mirrors `ts-src/config/skills.ts`.
+//! Skill loading from discovery levels.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,4 @@
-//! Mirrors `ts-test/ipc/types.test.ts`. The Rust port uses tagged enums with
+//! The Rust port uses tagged enums with
 //! serde, so we test serialize/deserialize round-trips rather than schema
 //! validation.
 

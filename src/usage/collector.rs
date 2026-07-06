@@ -1,4 +1,4 @@
-//! Per-session metrics. Mirrors `ts-src/usage/collector.ts`.
+//! Per-session metrics.
 
 use std::collections::BTreeMap;
 

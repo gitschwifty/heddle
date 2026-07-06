@@ -2,7 +2,7 @@
 //!
 //! Run: `cargo run --bin export-schemas`
 //!
-//! Mirrors `ts-src/scripts/export-schemas.ts`. Writes `schemas/config.schema.json`
+//! Writes `schemas/config.schema.json`
 //! and `schemas/hooks.schema.json` from the `JsonSchema`-deriving structs in
 //! `src/config/types.rs` and `src/hooks/types.rs`.
 

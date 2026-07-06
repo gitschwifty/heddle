@@ -1,5 +1,5 @@
 //! OpenRouter chat-completions client (streaming + non-streaming).
-//! Mirrors `ts-src/provider/openrouter.ts`.
+//!
 
 use std::sync::Arc;
 use std::time::Duration;

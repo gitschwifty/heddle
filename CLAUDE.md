@@ -6,8 +6,7 @@ Rust LLM API harness: tool execution, streaming, edits, context management, sess
 
 - **Cargo** for Rust build/test/lint/format.
 - **just** for common local command shortcuts when available.
-- Keep the TypeScript sources and tests under `ts-src/` and `ts-test/` as reference material unless a task explicitly asks to change them.
-- Do not use npm, npx, or vitest for Rust rewrite work.
+- Do not use npm, npx, Bun, or Vitest for Rust rewrite work.
 
 ## Common Commands
 
@@ -60,9 +59,8 @@ src/
   ipc/          # Headless IPC schema and codec
 tests/
   common/       # Shared Rust test helpers
+  fixtures/     # JSONL replay fixtures and other static test data
   *_integration.rs
-ts-src/
-ts-test/
 ```
 
 ## IPC Compatibility

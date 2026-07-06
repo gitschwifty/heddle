@@ -1,6 +1,4 @@
 //! Headless subprocess driver — spawn the binary, send JSONL, collect stdout.
-//!
-//! Mirrors `spawnHeadless` in `ts-test/headless/headless.test.ts`.
 
 #![allow(dead_code)]
 

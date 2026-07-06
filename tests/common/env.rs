@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! Test env loading. Mirrors `bun test`'s auto-load of `.env.test`.
+//! Test env loading for `.env.test`.
 //!
 //! Call [`init`] from any integration test that needs env vars from `.env.test`
 //! (e.g. `OPENROUTER_API_KEY`, `HEDDLE_INTEGRATION_TESTS`). Safe to call from

@@ -1,4 +1,4 @@
-//! AGENTS.md discovery and concatenation. Mirrors `ts-src/config/agents-md.ts`.
+//! AGENTS.md discovery and concatenation.
 
 use std::path::{Path, PathBuf};
 

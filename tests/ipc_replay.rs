@@ -1,12 +1,11 @@
-//! Fixture-based replay tests. The TS port spawns the headless binary,
-//! pipes `.in.jsonl` through it, and compares stdout to `.out.jsonl`. That
-//! full integration belongs in Tier 5 (headless). Here we cover the parts
-//! that don't need a live binary:
+//! Fixture-based replay tests. The subprocess replay test spawns the headless
+//! binary, pipes `.in.jsonl` through it, and compares stdout to `.out.jsonl`.
+//! Here we cover the parts that don't need a live binary:
 //!
 //! 1. Every fixture line is a well-formed `IpcRequest` (`.in.jsonl`) or
 //!    `IpcResponse` (`.out.jsonl`) — schema parity check.
-//! 2. The IGNORE_PATHS normalization logic that the TS replay uses to
-//!    compare against non-deterministic fields.
+//! 2. The IGNORE_PATHS normalization logic used to compare against
+//!    non-deterministic fields.
 
 use heddle::ipc::types::{IpcRequest, IpcResponse};
 use serde_json::Value;
@@ -31,7 +30,7 @@ const IGNORE_PATHS: &[&str] = &[
 ];
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ts-test/ipc/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ipc")
 }
 
 fn load_lines(path: &PathBuf) -> Vec<String> {

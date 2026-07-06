@@ -1,4 +1,4 @@
-//! Feature flags and mode defaults. Mirrors `ts-src/config/features.ts`.
+//! Feature flags and mode defaults.
 
 use serde::{Deserialize, Serialize};
 

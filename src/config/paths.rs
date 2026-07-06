@@ -1,5 +1,5 @@
 //! Path resolution for global/local heddle dirs and project subdirs.
-//! Mirrors `ts-src/config/paths.ts`.
+//!
 
 use std::path::{Path, PathBuf};
 

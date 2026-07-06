@@ -1,4 +1,4 @@
-//! Agent file parsing + multi-level loading. Mirrors `ts-test/agents/loader.test.ts`.
+//! Agent file parsing + multi-level loading.
 
 use heddle::agents::loader::{load_agent_definitions, parse_agent_file};
 use heddle::config::discovery::{DiscoveryLevel, DiscoveryResult, DiscoverySource};

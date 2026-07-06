@@ -1,4 +1,4 @@
-//! Hook matcher predicates. Mirrors `ts-src/hooks/matcher.ts`.
+//! Hook matcher predicates.
 
 use globset::Glob;
 use serde_json::Value;

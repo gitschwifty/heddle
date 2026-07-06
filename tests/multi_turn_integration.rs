@@ -1,5 +1,4 @@
-//! Live-model multi-turn integration tests. Mirrors
-//! `ts-test/integration/multi-turn.integration.test.ts`.
+//! Live-model multi-turn integration tests.
 //!
 //! Gated on:
 //! - `HEDDLE_INTEGRATION_TESTS=1`

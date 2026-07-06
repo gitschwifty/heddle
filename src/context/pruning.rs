@@ -1,4 +1,4 @@
-//! Tool-result pruning. Mirrors `ts-src/context/pruning.ts`.
+//! Tool-result pruning.
 
 use crate::types::Message;
 
