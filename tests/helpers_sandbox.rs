@@ -41,10 +41,10 @@ fn drop_restores_env() {
 
 #[test]
 fn drop_restores_cwd() {
-    let orig = std::env::current_dir().unwrap();
-    {
-        let _sb = Sandbox::new("restore-cwd");
-    }
+    let orig = {
+        let sb = Sandbox::new("restore-cwd");
+        sb.orig_cwd().clone()
+    };
     assert_eq!(std::env::current_dir().unwrap(), orig);
 }
 

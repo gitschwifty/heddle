@@ -58,6 +58,10 @@ impl Sandbox {
             _guard: guard,
         }
     }
+
+    pub fn orig_cwd(&self) -> &PathBuf {
+        &self.orig_cwd
+    }
 }
 
 impl Drop for Sandbox {
