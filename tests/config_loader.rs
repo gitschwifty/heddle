@@ -23,6 +23,7 @@ fn clear_env() {
         "HEDDLE_WEAK_MODEL",
         "HEDDLE_APPROVAL_MODE",
         "HEDDLE_TOOLS",
+        "HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES",
     ] {
         std::env::remove_var(k);
     }
@@ -235,6 +236,7 @@ fn empty_config_all_optional_unset() {
     assert!(cfg.instructions.is_none());
     assert!(cfg.doom_loop_threshold.is_none());
     assert!(cfg.budget_limit.is_none());
+    assert!(!cfg.web_fetch_allow_private_addresses);
 }
 
 #[test]
@@ -245,6 +247,26 @@ fn heddle_base_url_env_overrides() {
     std::env::set_var("HEDDLE_BASE_URL", "http://env-url");
     let cfg = load_config(None);
     assert_eq!(cfg.base_url.as_deref(), Some("http://env-url"));
+    clear_env();
+}
+
+#[test]
+fn loads_web_fetch_private_address_policy() {
+    let sb = Sandbox::new("loader-webfetch-private");
+    clear_env();
+    write_global(&sb, "web_fetch_allow_private_addresses = true\n");
+    let cfg = load_config(None);
+    assert!(cfg.web_fetch_allow_private_addresses);
+}
+
+#[test]
+fn heddle_web_fetch_private_address_env_overrides() {
+    let sb = Sandbox::new("loader-env-webfetch-private");
+    clear_env();
+    write_global(&sb, "web_fetch_allow_private_addresses = false\n");
+    std::env::set_var("HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES", "true");
+    let cfg = load_config(None);
+    assert!(cfg.web_fetch_allow_private_addresses);
     clear_env();
 }
 

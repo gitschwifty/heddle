@@ -107,6 +107,22 @@ fn truncates_first_user_message_to_100() {
 }
 
 #[test]
+fn truncates_first_user_message_on_unicode_boundary() {
+    let dir = tmp();
+    let long = "é".repeat(120);
+    write_jsonl(
+        &dir.path().join("unicode.jsonl"),
+        &[
+            session_line(json!({"id":"unicode"})),
+            message_line("user", &long),
+        ],
+    );
+    let sessions = list_sessions(Some(dir.path()));
+    let preview = sessions[0].first_user_message.as_ref().unwrap();
+    assert_eq!(preview.chars().count(), 100);
+}
+
+#[test]
 fn skips_files_without_valid_session_meta() {
     let dir = tmp();
     std::fs::write(dir.path().join("bad.jsonl"), r#"{"not":"session_meta"}"#).unwrap();

@@ -81,6 +81,7 @@ pub struct HeddleConfigSchema {
     pub prune_protect: Option<f64>,
     pub prune_minimum: Option<f64>,
     pub compact_buffer: Option<f64>,
+    pub web_fetch_allow_private_addresses: Option<bool>,
     pub features: Option<FeaturesSchema>,
     pub permissions: Option<PermissionsConfigSchema>,
     pub hooks: Option<HooksConfig>,

@@ -76,6 +76,7 @@ pub struct HeddleConfig {
     pub prune_protect: Option<u64>,
     pub prune_minimum: Option<u32>,
     pub compact_buffer: Option<f64>,
+    pub web_fetch_allow_private_addresses: bool,
     pub features: Option<FeatureFlagsOverride>,
 
     pub permissions_layers: Option<Vec<PermissionsLayer>>,
@@ -102,6 +103,7 @@ impl Default for HeddleConfig {
             prune_protect: None,
             prune_minimum: None,
             compact_buffer: None,
+            web_fetch_allow_private_addresses: false,
             features: None,
             permissions_layers: None,
             hooks: None,
@@ -202,6 +204,12 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(n) = table.get("compact_buffer").and_then(as_float) {
         config.compact_buffer = Some(n);
+    }
+    if let Some(b) = table
+        .get("web_fetch_allow_private_addresses")
+        .and_then(as_bool)
+    {
+        config.web_fetch_allow_private_addresses = b;
     }
 
     if let Some(am) = table
@@ -339,6 +347,10 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
         if !parsed.is_empty() {
             merged.tools = Some(parsed);
         }
+    }
+    if let Ok(v) = std::env::var("HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES") {
+        merged.web_fetch_allow_private_addresses =
+            matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
     }
 
     debug("config", "loaded (api_key REDACTED if present)");

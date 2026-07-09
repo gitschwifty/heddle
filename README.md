@@ -65,6 +65,7 @@ max_tokens = 128000
 | `approval_mode` | string | — | Permission mode (see [Permissions](#permissions)) |
 | `instructions` | string[] | — | Additional instruction files to inject |
 | `tools` | string[] | — | Allowlist of tools to enable |
+| `web_fetch_allow_private_addresses` | boolean | false | Allow `web_fetch` to access localhost/private IPs for trusted local workflows |
 | `doom_loop_threshold` | number | 3 | Identical tool call iterations before stopping |
 | `budget_limit` | number | — | Cost limit for session |
 | `compact_trigger` | number | 0.80 | Context usage ratio that triggers compaction |
@@ -109,6 +110,7 @@ All config fields have env var overrides:
 | `HEDDLE_WEAK_MODEL` | `weak_model` |
 | `HEDDLE_APPROVAL_MODE` | `approval_mode` |
 | `HEDDLE_TOOLS` | `tools` (comma-separated) |
+| `HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES` | `web_fetch_allow_private_addresses` |
 | `HEDDLE_HOME` | Global config directory (default `~/.heddle`) |
 
 ## CLI Usage

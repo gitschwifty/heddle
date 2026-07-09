@@ -265,11 +265,10 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
                     .as_deref()
                     .map(|m| format!(" — {m}"))
                     .unwrap_or_default();
+                let short_id: String = s.id.chars().take(8).collect();
                 println!(
                     "  {}{name} | {} | {} msgs{preview}",
-                    &s.id[..8.min(s.id.len())],
-                    s.created,
-                    s.message_count
+                    short_id, s.created, s.message_count
                 );
             }
             None

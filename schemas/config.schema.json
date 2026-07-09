@@ -154,6 +154,12 @@
         "string",
         "null"
       ]
+    },
+    "web_fetch_allow_private_addresses": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "definitions": {

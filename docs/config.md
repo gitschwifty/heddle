@@ -40,6 +40,7 @@ system_prompt = "You are..."   # Custom system prompt
 approval_mode = "suggest"      # "suggest" | "auto-edit" | "full-auto" | "plan" | "yolo"
 instructions = ["...", "..."]  # Additional instructions appended to system prompt
 tools = ["read", "write", "edit", "glob", "grep", "bash"]  # Enabled tools (or HEDDLE_TOOLS)
+web_fetch_allow_private_addresses = false  # Allow web_fetch to reach localhost/private IPs
 
 # ── Context Management ──────────────────────────────
 doom_loop_threshold = 3        # Identical tool iterations before stopping
@@ -85,6 +86,7 @@ matchers = { tool = "bash" }
 | `HEDDLE_TEMPERATURE` | `temperature` |
 | `HEDDLE_APPROVAL_MODE` | `approval_mode` |
 | `HEDDLE_TOOLS` | `tools` (comma-separated) |
+| `HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES` | `web_fetch_allow_private_addresses` |
 | `HEDDLE_HOME` | Global config directory |
 
 Env vars always win over file config.

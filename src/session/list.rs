@@ -19,6 +19,10 @@ pub struct SessionInfo {
     pub forked_from: Option<String>,
 }
 
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 pub fn list_sessions(session_dir: Option<&Path>) -> Vec<SessionInfo> {
     let dir = match session_dir {
         Some(d) => d.to_path_buf(),
@@ -57,8 +61,8 @@ pub fn list_sessions(session_dir: Option<&Path>) -> Vec<SessionInfo> {
             .find(|m| m.get("role").and_then(Value::as_str) == Some("user"));
         let first_user_message = first_user.and_then(|m| {
             m.get("content").and_then(Value::as_str).map(|s| {
-                if s.len() > 100 {
-                    s[..100].to_string()
+                if s.chars().count() > 100 {
+                    truncate_chars(s, 100)
                 } else {
                     s.to_string()
                 }

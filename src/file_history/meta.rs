@@ -47,7 +47,11 @@ impl FileHistoryMeta {
         let path = self.base_dir.join("meta.json");
         if path.exists() {
             if let Ok(content) = std::fs::read_to_string(&path) {
-                self.store = serde_json::from_str(&content).unwrap_or_default();
+                self.store = serde_json::from_str::<MetaStore>(&content)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|(uuid, _)| is_valid_uuid_segment(uuid))
+                    .collect();
             }
         }
         self.loaded = true;
@@ -125,6 +129,9 @@ impl FileHistoryMeta {
     }
 
     pub fn increment_version(&mut self, uuid: &str) -> Result<()> {
+        if !is_valid_uuid_segment(uuid) {
+            return Ok(());
+        }
         self.load();
         if let Some(entry) = self.store.get_mut(uuid) {
             entry.versions += 1;
@@ -132,4 +139,8 @@ impl FileHistoryMeta {
         }
         Ok(())
     }
+}
+
+fn is_valid_uuid_segment(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok() && !value.contains('/') && !value.contains('\\')
 }

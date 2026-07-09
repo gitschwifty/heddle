@@ -60,6 +60,10 @@ fn build_permission_resolver() -> PermissionResolver {
     })
 }
 
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 fn print_help() {
     println!(
         "heddle — interactive LLM CLI
@@ -464,7 +468,7 @@ pub async fn start_cli() -> Result<()> {
                 }
                 AgentEvent::ToolEnd { result, call, .. } => {
                     let preview = if result.len() > 200 {
-                        format!("{}...", &result[..200])
+                        format!("{}...", truncate_chars(&result, 200))
                     } else {
                         result.clone()
                     };

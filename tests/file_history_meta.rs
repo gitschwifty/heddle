@@ -86,6 +86,30 @@ fn reloads_existing_meta() {
 }
 
 #[test]
+fn ignores_meta_entries_with_invalid_uuid_keys() {
+    let sb = Sandbox::new("fhmeta-invalid-uuid");
+    std::fs::write(
+        sb.root.join("meta.json"),
+        serde_json::json!({
+            "../escape": {
+                "path": "/danger.ts",
+                "versions": 1
+            },
+            "not/a/uuid": {
+                "path": "/also-danger.ts",
+                "versions": 1
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut meta = FileHistoryMeta::new(&sb.root);
+    assert!(meta.find_by_path(Path::new("/danger.ts")).is_none());
+    assert!(meta.find_by_path(Path::new("/also-danger.ts")).is_none());
+}
+
+#[test]
 fn tracks_previous_paths() {
     let sb = Sandbox::new("fhmeta-prev");
     let mut meta = FileHistoryMeta::new(&sb.root);

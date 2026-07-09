@@ -925,7 +925,7 @@ fn format_summary(results: &[TaskResult]) -> String {
             (false, _) => "FAIL",
         };
         let err = r.scores.error.as_deref().unwrap_or("");
-        let err = if err.len() > 50 { &err[..50] } else { err };
+        let err: String = err.chars().take(50).collect();
         rows.push([
             r.task_id.clone(),
             r.prompt_id.clone(),
@@ -935,7 +935,7 @@ fn format_summary(results: &[TaskResult]) -> String {
             r.scores.efficiency.turns.to_string(),
             format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
             format!("{:.6}", r.scores.cost.usd),
-            err.to_string(),
+            err,
         ]);
     }
     let mut widths = [0usize; 9];

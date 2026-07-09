@@ -39,8 +39,8 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::types::HeddleTool;
 use crate::tools::{
     create_bash_tool, create_edit_tool, create_glob_tool, create_grep_tool, create_read_tool,
-    create_save_memory_tool, create_save_plan_tool, create_subagent_tool, create_web_fetch_tool,
-    create_write_tool, SubagentOptions,
+    create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
+    create_web_fetch_tool_with_options, create_write_tool, SubagentOptions, WebFetchOptions,
 };
 use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_update_task_tool};
 use crate::types::{Message, SystemMessage};
@@ -114,7 +114,7 @@ pub struct SessionOptions {
     pub permission_overrides: Option<PermissionOverrides>,
 }
 
-fn default_tools() -> Vec<Arc<dyn HeddleTool>> {
+fn default_tools(config: &HeddleConfig) -> Vec<Arc<dyn HeddleTool>> {
     vec![
         create_read_tool(),
         create_write_tool(),
@@ -122,7 +122,9 @@ fn default_tools() -> Vec<Arc<dyn HeddleTool>> {
         create_glob_tool(),
         create_grep_tool(),
         create_bash_tool(),
-        create_web_fetch_tool(),
+        create_web_fetch_tool_with_options(WebFetchOptions {
+            allow_private_addresses: config.web_fetch_allow_private_addresses,
+        }),
     ]
 }
 
@@ -180,7 +182,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     // Tool registry
     let mut registry = ToolRegistry::new();
-    let all_tools = default_tools();
+    let all_tools = default_tools(&config);
     let filter: Option<Vec<String>> = options.tools.clone().or_else(|| config.tools.clone());
     let to_register: Vec<Arc<dyn HeddleTool>> = match &filter {
         Some(names) => all_tools

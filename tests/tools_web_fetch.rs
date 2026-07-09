@@ -1,8 +1,15 @@
 use heddle::tools::types::ExecOptions;
-use heddle::tools::web_fetch::create_web_fetch_tool;
+use heddle::tools::web_fetch::{create_web_fetch_tool, create_web_fetch_tool_with_options};
+use heddle::tools::WebFetchOptions;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn local_tool() -> std::sync::Arc<dyn heddle::tools::types::HeddleTool> {
+    create_web_fetch_tool_with_options(WebFetchOptions {
+        allow_private_addresses: true,
+    })
+}
 
 #[tokio::test]
 async fn fetches_url_and_returns_text() {
@@ -17,7 +24,7 @@ async fn fetches_url_and_returns_text() {
         .mount(&server)
         .await;
 
-    let tool = create_web_fetch_tool();
+    let tool = local_tool();
     let result = tool
         .execute(json!({ "url": server.uri() }), ExecOptions::default())
         .await;
@@ -40,7 +47,7 @@ async fn renders_html_via_html2text() {
         .mount(&server)
         .await;
 
-    let tool = create_web_fetch_tool();
+    let tool = local_tool();
     let result = tool
         .execute(json!({ "url": server.uri() }), ExecOptions::default())
         .await;
@@ -66,11 +73,43 @@ async fn truncates_long_responses_at_50k() {
         .mount(&server)
         .await;
 
-    let tool = create_web_fetch_tool();
+    let tool = local_tool();
     let result = tool
         .execute(json!({ "url": server.uri() }), ExecOptions::default())
         .await;
     assert_eq!(result.len(), 50_000);
+}
+
+#[tokio::test]
+async fn rejects_urls_with_credentials() {
+    let tool = create_web_fetch_tool();
+    let result = tool
+        .execute(
+            json!({ "url": "https://user:pass@example.com/" }),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(result.contains("Error"), "got: {result}");
+    assert!(result.contains("credentials"), "got: {result}");
+}
+
+#[tokio::test]
+async fn does_not_follow_redirects() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "https://example.com/private"),
+        )
+        .mount(&server)
+        .await;
+
+    let tool = local_tool();
+    let result = tool
+        .execute(json!({ "url": server.uri() }), ExecOptions::default())
+        .await;
+    assert!(result.contains("Error"), "got: {result}");
+    assert!(result.contains("302"), "got: {result}");
 }
 
 #[tokio::test]
@@ -82,7 +121,7 @@ async fn returns_error_for_non_200() {
         .mount(&server)
         .await;
 
-    let tool = create_web_fetch_tool();
+    let tool = local_tool();
     let result = tool
         .execute(
             json!({ "url": format!("{}/missing", server.uri()) }),
@@ -106,7 +145,7 @@ async fn returns_error_for_non_text_content_type() {
         .mount(&server)
         .await;
 
-    let tool = create_web_fetch_tool();
+    let tool = local_tool();
     let result = tool
         .execute(json!({ "url": server.uri() }), ExecOptions::default())
         .await;
@@ -116,8 +155,9 @@ async fn returns_error_for_non_text_content_type() {
 
 #[tokio::test]
 async fn returns_error_on_network_failure() {
-    let tool = create_web_fetch_tool();
-    // Connection refused on closed local port.
+    let tool = local_tool();
+    // Connection refused on closed local port, allowed here so this exercises
+    // network failure rather than private-address policy.
     let result = tool
         .execute(
             json!({ "url": "http://127.0.0.1:1" }),
@@ -125,6 +165,38 @@ async fn returns_error_on_network_failure() {
         )
         .await;
     assert!(result.contains("Error"), "got: {result}");
+}
+
+#[tokio::test]
+async fn rejects_loopback_by_default() {
+    let tool = create_web_fetch_tool();
+    let result = tool
+        .execute(
+            json!({ "url": "http://127.0.0.1:1" }),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(result.contains("Error"), "got: {result}");
+    assert!(
+        result.contains("loopback/private"),
+        "expected private-address policy error, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_private_addresses_by_default() {
+    let tool = create_web_fetch_tool();
+    let result = tool
+        .execute(
+            json!({ "url": "http://192.168.1.10/" }),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(result.contains("Error"), "got: {result}");
+    assert!(
+        result.contains("loopback/private"),
+        "expected private-address policy error, got: {result}"
+    );
 }
 
 #[tokio::test]
