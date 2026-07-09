@@ -1,5 +1,6 @@
 //! Tests for `create_session`.
 
+use heddle::config::features::Mode;
 use heddle::session::setup::{create_session, SessionOptions};
 use heddle::types::{Message, UserMessage};
 use serde_json::Value;
@@ -66,6 +67,23 @@ async fn returns_valid_session_context_with_all_fields_populated() {
     assert!(matches!(ctx.messages[0], heddle::types::Message::System(_)));
     assert!(!ctx.session_id.is_empty());
     assert!(ctx.session_file.exists());
+}
+
+#[tokio::test]
+async fn session_options_mode_applies_headless_feature_defaults() {
+    let _sb = Sandbox::new("setup-mode-headless");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+    let mut o = opts();
+    o.mode = Some(Mode::Headless);
+    let ctx = create_session(o).await.expect("create_session");
+
+    assert!(!ctx.features.history);
+    assert!(!ctx.features.facets);
+    assert!(!ctx.features.paste_cache);
+    assert!(!ctx.features.status_line);
+    assert!(!ctx.features.checkpoints);
+    assert!(ctx.features.hooks);
+    assert!(ctx.features.tasks);
 }
 
 #[tokio::test]

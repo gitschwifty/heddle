@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::agent::loop_::{run_agent_loop, AgentLoopOptions};
 use crate::agent::types::AgentEvent;
+use crate::config::features::Mode;
 use crate::provider::types::Provider;
 use crate::session::setup::{create_session, SessionOptions};
 use crate::tools::registry::ToolRegistry;
@@ -81,6 +82,7 @@ pub async fn run_oneshot(options: OneshotOptions) -> OneshotResult {
         };
     }
     let mut session_opts = options.session_options.clone().unwrap_or_default();
+    session_opts.mode = Some(Mode::NonInteractive);
     if options.agent.is_some() {
         session_opts.agent = options.agent.clone();
     }

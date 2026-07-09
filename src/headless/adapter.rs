@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use futures::StreamExt;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -16,8 +15,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::loop_::{run_agent_loop_streaming, AgentLoopOptions};
-use crate::agent::types::AgentEvent;
+use crate::config::features::Mode;
 use crate::debug::set_headless;
 use crate::hooks::loader::{load_hooks, merge_hooks_with_ipc};
 use crate::hooks::runner::HooksRunner;
@@ -26,18 +24,20 @@ use crate::ipc::codec::{
     build_error, build_result, decode_request, encode_response, wrap_event, BuildResultArgs,
     CorrelationContext, DecodeResult,
 };
-use crate::ipc::errors::{normalize_error, ErrorEnvelope};
+use crate::ipc::errors::ErrorEnvelope;
 use crate::ipc::protocol::{check_compatibility, PROTOCOL_VERSION};
 use crate::ipc::types::{
     InitConfig, IpcRequest, IpcResponse, ToolCallSummary, UsageSummary, WorkerEvent,
 };
-use crate::session::jsonl::append_message;
+use crate::runtime::{
+    HeddleRuntime, RuntimeError, RuntimeEvent, RuntimeToolCall, RuntimeUsage, TurnOptions,
+    TurnOutcome, TurnStatus,
+};
 use crate::session::setup::{create_session, PermissionOverrides, SessionContext, SessionOptions};
 use crate::tools::ask_user::create_ask_user_tool;
-use crate::types::{Message, UserMessage};
 
 struct State {
-    session: Option<SessionContext>,
+    runtime: Option<HeddleRuntime>,
     correlation: CorrelationContext,
     active_id: Option<String>,
     cancel_target_id: Option<String>,
@@ -48,7 +48,7 @@ struct State {
 impl State {
     fn new() -> Self {
         Self {
-            session: None,
+            runtime: None,
             correlation: CorrelationContext::default(),
             active_id: None,
             cancel_target_id: None,
@@ -173,6 +173,7 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
     let session = wire_ipc_overrides(session, &config);
 
     let session_id = session.session_id.clone();
+    let runtime = HeddleRuntime::from_session(session);
     {
         let mut s = state.lock();
         s.correlation = CorrelationContext {
@@ -180,7 +181,7 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
             task_id: config.task_id.clone(),
             worker_id: config.worker_id.clone(),
         };
-        s.session = Some(session);
+        s.runtime = Some(runtime);
     }
 
     write_line(&IpcResponse::InitOk {
@@ -193,6 +194,7 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
 
 fn build_session_options(config: &InitConfig) -> SessionOptions {
     SessionOptions {
+        mode: Some(Mode::Headless),
         model: Some(config.model.clone()),
         system_prompt: Some(config.system_prompt.clone()),
         tools: Some(config.tools.clone()),
@@ -244,9 +246,9 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         _ => unreachable!(),
     };
 
-    let (mut session, correlation) = {
+    let (mut runtime, correlation) = {
         let mut s = state.lock();
-        if s.session.is_none() {
+        if s.runtime.is_none() {
             write_line(&protocol_error(
                 Some(&id),
                 "Not initialized. Send 'init' first.",
@@ -267,32 +269,14 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
             s.cancel_target_id = Some(id.clone());
             cancel.cancel();
         }
-        let session = s.session.take().unwrap();
+        let runtime = s.runtime.take().unwrap();
         let correlation = s.correlation.clone();
-        (session, correlation)
+        (runtime, correlation)
     };
 
     let cancel = state.lock().active_cancel.clone().unwrap_or_default();
 
     let event_seq = Arc::new(Mutex::new(0_u64));
-    let persisted_through = session.messages.len();
-    let user_msg = Message::User(UserMessage {
-        content: message.clone(),
-    });
-    session.messages.push(user_msg.clone());
-    let _ = append_message(&session.session_file, &user_msg);
-
-    let mut tool_calls_made: Vec<ToolCallSummary> = Vec::new();
-    let mut iterations: u32 = 0;
-    let mut response: Option<String> = None;
-    let mut total_usage: Option<UsageSummary> = None;
-    let mut saw_content_delta = false;
-    let mut error_envelope: Option<ErrorEnvelope> = None;
-    let start = Instant::now();
-    let mut tool_latency_ms: u64 = 0;
-    let mut tool_start: Option<Instant> = None;
-
-    // heartbeat
     let heartbeat_ms: u64 = std::env::var("HEDDLE_HEARTBEAT_INTERVAL")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -325,180 +309,49 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         }
     });
 
-    let loop_opts = AgentLoopOptions {
-        permission_checker: session.permission_checker.clone(),
-        hooks_runner: session.hooks_runner.clone(),
-        signal: Some(cancel.clone()),
-        ..AgentLoopOptions::default()
-    };
-
-    let provider = session.provider.clone();
-    let registry = session.registry.clone();
-    let mut messages = std::mem::take(&mut session.messages);
-    let mut stream = run_agent_loop_streaming(provider, registry, &mut messages, loop_opts);
-
-    while let Some(event) = stream.next().await {
-        if cancel.is_cancelled() {
-            heartbeat_token.cancel();
-            let _ = heartbeat_handle.await;
-            let total = start.elapsed().as_millis() as u64;
-            write_line(&build_result(
-                &id,
-                BuildResultArgs {
-                    status: "error".into(),
-                    error: Some(ErrorEnvelope {
-                        code: "cancelled".into(),
-                        message: "cancelled".into(),
-                        retryable: false,
-                        details: None,
-                    }),
-                    tool_calls_made,
-                    iterations,
-                    correlation: Some(correlation.clone()),
-                    total_latency_ms: Some(total),
-                    tool_latency_ms: Some(tool_latency_ms),
-                    model_latency_ms: Some(total.saturating_sub(tool_latency_ms)),
-                    ..Default::default()
-                },
-            ));
-            drop(stream);
-            session.messages = messages;
-            return_session(state, session);
-            return;
-        }
-        if let Some(mapped) = map_agent_event(&event) {
-            let mut seq = event_seq.lock();
-            write_line(&wrap_event(mapped, &id, *seq, Some(&correlation)));
-            *seq += 1;
-        }
-        match event {
-            AgentEvent::ContentDelta { .. } => saw_content_delta = true,
-            AgentEvent::ToolStart { name, call } => {
-                let args: Value =
-                    serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
-                tool_calls_made.push(ToolCallSummary { name, args });
-                tool_start = Some(Instant::now());
-            }
-            AgentEvent::ToolEnd { .. } => {
-                if let Some(t) = tool_start.take() {
-                    tool_latency_ms += t.elapsed().as_millis() as u64;
+    let id_for_events = id.clone();
+    let correlation_for_events = correlation.clone();
+    let event_seq_for_events = event_seq.clone();
+    let outcome = runtime
+        .send(
+            message,
+            TurnOptions {
+                id: id.clone(),
+                cancel,
+            },
+            |event| {
+                if let Some(mapped) = map_runtime_event(&event) {
+                    let mut seq = event_seq_for_events.lock();
+                    write_line(&wrap_event(
+                        mapped,
+                        &id_for_events,
+                        *seq,
+                        Some(&correlation_for_events),
+                    ));
+                    *seq += 1;
                 }
-            }
-            AgentEvent::AssistantMessage { message, .. } => {
-                iterations += 1;
-                if !saw_content_delta {
-                    if let Some(c) = message.content {
-                        response = Some(c);
-                    }
-                }
-            }
-            AgentEvent::Usage { usage } => {
-                total_usage = Some(UsageSummary {
-                    prompt_tokens: usage.prompt_tokens,
-                    completion_tokens: usage.completion_tokens,
-                    total_tokens: usage.total_tokens,
-                });
-            }
-            AgentEvent::LoopDetected { count } => {
-                error_envelope = Some(ErrorEnvelope {
-                    code: "loop_detected".into(),
-                    message: format!("Doom loop detected: {count} iterations"),
-                    retryable: false,
-                    details: None,
-                });
-            }
-            AgentEvent::Error { message } => {
-                let n = normalize_error(&message, "provider_error");
-                error_envelope = Some(ErrorEnvelope {
-                    code: n.code,
-                    message: n.message,
-                    retryable: n.retryable,
-                    details: n.details,
-                });
-            }
-            _ => {}
-        }
-    }
-    drop(stream);
-    session.messages = messages;
+            },
+        )
+        .await;
+
     heartbeat_token.cancel();
     let _ = heartbeat_handle.await;
 
-    if cancel.is_cancelled() {
-        let total = start.elapsed().as_millis() as u64;
-        write_line(&build_result(
-            &id,
-            BuildResultArgs {
-                status: "error".into(),
-                error: Some(ErrorEnvelope {
-                    code: "cancelled".into(),
-                    message: "cancelled".into(),
-                    retryable: false,
-                    details: None,
-                }),
-                tool_calls_made,
-                iterations,
-                correlation: Some(correlation.clone()),
-                total_latency_ms: Some(total),
-                tool_latency_ms: Some(tool_latency_ms),
-                model_latency_ms: Some(total.saturating_sub(tool_latency_ms)),
-                ..Default::default()
-            },
-        ));
-        return_session(state, session);
-        return;
-    }
-
-    let total = start.elapsed().as_millis() as u64;
-    let result_args = BuildResultArgs {
-        status: if error_envelope.is_some() {
-            "error".into()
-        } else {
-            "ok".into()
-        },
-        response: if error_envelope.is_some() {
-            None
-        } else {
-            response.or_else(|| {
-                if saw_content_delta {
-                    session
-                        .messages
-                        .last()
-                        .and_then(|m| m.content_str().map(String::from))
-                } else {
-                    None
-                }
-            })
-        },
-        tool_calls_made,
-        usage: total_usage,
-        iterations,
-        error: error_envelope,
-        correlation: Some(correlation.clone()),
-        total_latency_ms: Some(total),
-        tool_latency_ms: Some(tool_latency_ms),
-        model_latency_ms: Some(total.saturating_sub(tool_latency_ms)),
-    };
-    write_line(&build_result(&id, result_args));
-
-    // The user message was appended before the loop; persist only messages produced after it.
-    for msg in session.messages.iter().skip(persisted_through + 1) {
-        let _ = append_message(&session.session_file, msg);
-    }
-    return_session(state, session);
+    write_line(&build_result(&id, build_result_args(outcome, correlation)));
+    return_runtime(state, runtime);
 }
 
-fn return_session(state: &Arc<Mutex<State>>, session: SessionContext) {
+fn return_runtime(state: &Arc<Mutex<State>>, runtime: HeddleRuntime) {
     let mut s = state.lock();
-    s.session = Some(session);
+    s.runtime = Some(runtime);
     s.active_cancel = None;
     s.active_id = None;
 }
 
 fn handle_status(state: &Arc<Mutex<State>>, id: String) {
     let s = state.lock();
-    let session = match &s.session {
-        Some(s) => s,
+    let runtime = match &s.runtime {
+        Some(runtime) => runtime,
         None => {
             write_line(&protocol_error(
                 Some(&id),
@@ -507,57 +360,100 @@ fn handle_status(state: &Arc<Mutex<State>>, id: String) {
             return;
         }
     };
+    let status = runtime.status(s.active_id.is_some());
     write_line(&IpcResponse::StatusOk {
         id,
-        model: session.config.model.clone(),
-        messages_count: session.messages.len() as u64,
-        session_id: session.session_id.clone(),
-        active: s.active_id.is_some(),
+        model: status.model,
+        messages_count: status.messages_count,
+        session_id: status.session_id,
+        active: status.active,
     });
 }
 
-fn map_agent_event(event: &AgentEvent) -> Option<WorkerEvent> {
+fn build_result_args(outcome: TurnOutcome, correlation: CorrelationContext) -> BuildResultArgs {
+    BuildResultArgs {
+        status: match outcome.status {
+            TurnStatus::Ok => "ok".into(),
+            TurnStatus::Error | TurnStatus::Cancelled => "error".into(),
+        },
+        response: outcome.response,
+        tool_calls_made: outcome
+            .tool_calls_made
+            .into_iter()
+            .map(tool_call_summary)
+            .collect(),
+        usage: outcome.usage.map(usage_summary),
+        iterations: outcome.iterations,
+        error: outcome.error.map(error_envelope),
+        correlation: Some(correlation),
+        total_latency_ms: Some(outcome.total_latency_ms),
+        tool_latency_ms: Some(outcome.tool_latency_ms),
+        model_latency_ms: Some(outcome.model_latency_ms),
+    }
+}
+
+fn tool_call_summary(call: RuntimeToolCall) -> ToolCallSummary {
+    ToolCallSummary {
+        name: call.name,
+        args: call.args,
+    }
+}
+
+fn usage_summary(usage: RuntimeUsage) -> UsageSummary {
+    UsageSummary {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+    }
+}
+
+fn error_envelope(error: RuntimeError) -> ErrorEnvelope {
+    ErrorEnvelope {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        details: error.details,
+    }
+}
+
+fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
     match event {
-        AgentEvent::ContentDelta { text } => Some(WorkerEvent::ContentDelta { text: text.clone() }),
-        AgentEvent::ToolStart { name, call } => {
+        RuntimeEvent::ContentDelta { text } => {
+            Some(WorkerEvent::ContentDelta { text: text.clone() })
+        }
+        RuntimeEvent::ToolStarted { name, call } => {
             let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
             Some(WorkerEvent::ToolStart {
                 name: name.clone(),
                 args,
             })
         }
-        AgentEvent::ToolEnd { name, result, .. } => Some(WorkerEvent::ToolEnd {
+        RuntimeEvent::ToolFinished { name, result, .. } => Some(WorkerEvent::ToolEnd {
             name: name.clone(),
             result_preview: result.chars().take(500).collect(),
         }),
-        AgentEvent::Usage { usage } => Some(WorkerEvent::Usage {
+        RuntimeEvent::UsageUpdated { usage } => Some(WorkerEvent::Usage {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
         }),
-        AgentEvent::LoopDetected { count } => Some(WorkerEvent::Error {
-            code: "loop_detected".into(),
-            message: format!("Doom loop detected: {count} iterations"),
-            retryable: false,
-            provider: None,
-            details: None,
+        RuntimeEvent::Error { error } => Some(WorkerEvent::Error {
+            code: error.code.clone(),
+            message: error.message.clone(),
+            retryable: error.retryable,
+            provider: error.provider.clone(),
+            details: error.details.clone(),
         }),
-        AgentEvent::Error { message } => {
-            let n = normalize_error(message, "provider_error");
-            Some(WorkerEvent::Error {
-                code: n.code,
-                message: n.message,
-                retryable: n.retryable,
-                provider: n.provider,
-                details: n.details,
+        RuntimeEvent::PermissionDenied { name, reason, .. } => {
+            Some(WorkerEvent::PermissionDenied {
+                name: name.clone(),
+                reason: reason.clone(),
             })
         }
-        AgentEvent::PermissionDenied { name, reason, .. } => Some(WorkerEvent::PermissionDenied {
-            name: name.clone(),
-            reason: reason.clone(),
-        }),
-        AgentEvent::PlanComplete { plan } => Some(WorkerEvent::PlanComplete { plan: plan.clone() }),
-        AgentEvent::ContextPrune {
+        RuntimeEvent::PlanCompleted { plan } => {
+            Some(WorkerEvent::PlanComplete { plan: plan.clone() })
+        }
+        RuntimeEvent::ContextPruned {
             messages_pruned,
             tokens_before,
             tokens_after,
@@ -566,6 +462,10 @@ fn map_agent_event(event: &AgentEvent) -> Option<WorkerEvent> {
             tokens_before: *tokens_before,
             tokens_after: *tokens_after,
         }),
-        _ => None,
+        RuntimeEvent::ContextCompacted => Some(WorkerEvent::ContextCompact),
+        RuntimeEvent::ContextHandoff => Some(WorkerEvent::ContextHandoff),
+        RuntimeEvent::PermissionRequested { .. }
+        | RuntimeEvent::AssistantMessage { .. }
+        | RuntimeEvent::TurnStateChanged { .. } => None,
     }
 }

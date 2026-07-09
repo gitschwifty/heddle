@@ -103,6 +103,7 @@ pub struct PermissionOverrides {
 
 #[derive(Debug, Default, Clone)]
 pub struct SessionOptions {
+    pub mode: Option<Mode>,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
     pub tools: Option<Vec<String>>,
@@ -143,7 +144,8 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     }
 
     let mut config = load_config(None);
-    let features = get_features(Mode::Interactive, config.features.as_ref());
+    let mode = options.mode.unwrap_or(Mode::Interactive);
+    let features = get_features(mode, config.features.as_ref());
     let discovery = resolve_discovery(None, None);
 
     if config.api_key.is_none() {
@@ -306,7 +308,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     {
         Some(Arc::new(HooksRunner::new(
             config.hooks.clone().unwrap_or_default(),
-            HookMode::Interactive,
+            hook_mode_for(mode),
             session_id.clone(),
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -369,4 +371,11 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         paste_cache,
         session_start_time: Utc::now(),
     })
+}
+
+fn hook_mode_for(mode: Mode) -> HookMode {
+    match mode {
+        Mode::Interactive | Mode::NonInteractive => HookMode::Interactive,
+        Mode::Headless => HookMode::Headless,
+    }
 }
