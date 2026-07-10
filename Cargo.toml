@@ -24,6 +24,10 @@ path = "src/bin/export_schemas.rs"
 name = "eval"
 path = "src/bin/eval.rs"
 
+[[bin]]
+name = "heddle-tui"
+path = "src/bin/tui.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -60,6 +64,8 @@ dotenvy = "0.15"
 percent-encoding = "2"
 schemars = "0.8"
 tempfile = "3"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [dev-dependencies]
 wiremock = "0.6"

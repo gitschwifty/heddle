@@ -27,6 +27,7 @@ pub mod schema_export;
 pub mod session;
 pub mod tasks;
 pub mod tools;
+pub mod tui;
 pub mod types;
 pub mod usage;
 
