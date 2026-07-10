@@ -15,7 +15,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Position};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -192,9 +192,12 @@ struct TranscriptItem {
 
 #[derive(Debug, Default)]
 struct TuiApp {
-    input: String,
+    input: InputBuffer,
     transcript: Vec<TranscriptItem>,
     tool_rows: HashMap<String, usize>,
+    active_assistant: Option<usize>,
+    transcript_scroll: u16,
+    follow_tail: bool,
     status: Option<RuntimeStatus>,
     active: bool,
     should_quit: bool,
@@ -203,7 +206,10 @@ struct TuiApp {
 
 impl TuiApp {
     fn new() -> Self {
-        Self::default()
+        Self {
+            follow_tail: true,
+            ..Self::default()
+        }
     }
 
     async fn handle_key(
@@ -221,15 +227,44 @@ impl TuiApp {
                 }
             }
             (KeyCode::Esc, _) => return Ok(true),
+            (KeyCode::PageUp, _) => {
+                self.follow_tail = false;
+                self.transcript_scroll = self.transcript_scroll.saturating_sub(5);
+            }
+            (KeyCode::PageDown, _) => {
+                self.follow_tail = false;
+                self.transcript_scroll = self.transcript_scroll.saturating_add(5);
+            }
+            (KeyCode::End, KeyModifiers::CONTROL) => {
+                self.follow_tail = true;
+            }
+            (KeyCode::Up, _) if !self.active => self.input.move_up(),
+            (KeyCode::Down, _) if !self.active => self.input.move_down(),
+            (KeyCode::Left, _) if !self.active => self.input.move_left(),
+            (KeyCode::Right, _) if !self.active => self.input.move_right(),
+            (KeyCode::Home, _) if !self.active => self.input.move_line_start(),
+            (KeyCode::End, _) if !self.active => self.input.move_line_end(),
             (KeyCode::Backspace, _) => {
-                self.input.pop();
+                if !self.active {
+                    self.input.backspace();
+                }
+            }
+            (KeyCode::Enter, KeyModifiers::SHIFT) => {
+                if !self.active {
+                    self.input.insert_newline();
+                }
+            }
+            (KeyCode::Enter, _) if self.input.consume_trailing_backslash() => {
+                if !self.active {
+                    self.input.insert_newline();
+                }
             }
             (KeyCode::Enter, _) => {
                 self.submit(command_tx, turn_counter).await?;
             }
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 if !self.active {
-                    self.input.push(c);
+                    self.input.insert_char(c);
                 }
             }
             _ => {}
@@ -242,7 +277,7 @@ impl TuiApp {
         command_tx: &mpsc::Sender<RuntimeCommand>,
         turn_counter: &mut u64,
     ) -> Result<()> {
-        let message = self.input.trim().to_string();
+        let message = self.input.text().trim().to_string();
         if message.is_empty() || self.active {
             return Ok(());
         }
@@ -257,10 +292,13 @@ impl TuiApp {
             kind: TranscriptKind::User,
             text: message.clone(),
         });
+        let assistant_row = self.transcript.len();
         self.transcript.push(TranscriptItem {
             kind: TranscriptKind::Assistant,
             text: String::new(),
         });
+        self.active_assistant = Some(assistant_row);
+        self.follow_tail = true;
 
         *turn_counter += 1;
         let cancel = CancellationToken::new();
@@ -375,13 +413,22 @@ impl TuiApp {
                     text: "context handoff".to_string(),
                 });
             }
-            RuntimeEvent::AssistantMessage { .. } => {}
+            RuntimeEvent::AssistantMessage { message, .. } => {
+                if let Some(content) = message.content {
+                    if let Some(row) = self.active_assistant {
+                        if self.transcript[row].text.is_empty() {
+                            self.transcript[row].text = content;
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn apply_turn_outcome(&mut self, outcome: TurnOutcome) {
         self.active = false;
         self.active_cancel = None;
+        self.active_assistant = None;
         match outcome.status {
             TurnStatus::Ok => {}
             TurnStatus::Cancelled => self.transcript.push(TranscriptItem {
@@ -400,38 +447,173 @@ impl TuiApp {
     }
 
     fn append_assistant_delta(&mut self, text: &str) {
-        if let Some(item) = self
-            .transcript
-            .iter_mut()
-            .rev()
-            .find(|item| item.kind == TranscriptKind::Assistant)
-        {
-            item.text.push_str(text);
-            return;
-        }
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::Assistant,
-            text: text.to_string(),
+        let row = self.active_assistant.unwrap_or_else(|| {
+            let row = self.transcript.len();
+            self.transcript.push(TranscriptItem {
+                kind: TranscriptKind::Assistant,
+                text: String::new(),
+            });
+            self.active_assistant = Some(row);
+            row
         });
+        self.transcript[row].text.push_str(text);
+        self.follow_tail = true;
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputBuffer {
+    lines: Vec<String>,
+    row: usize,
+    col: usize,
+}
+
+impl Default for InputBuffer {
+    fn default() -> Self {
+        Self {
+            lines: vec![String::new()],
+            row: 0,
+            col: 0,
+        }
+    }
+}
+
+impl InputBuffer {
+    fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn insert_char(&mut self, c: char) {
+        let idx = char_to_byte(&self.lines[self.row], self.col);
+        self.lines[self.row].insert(idx, c);
+        self.col += 1;
+    }
+
+    fn insert_newline(&mut self) {
+        let idx = char_to_byte(&self.lines[self.row], self.col);
+        let tail = self.lines[self.row].split_off(idx);
+        self.lines.insert(self.row + 1, tail);
+        self.row += 1;
+        self.col = 0;
+    }
+
+    fn backspace(&mut self) {
+        if self.col > 0 {
+            let end = char_to_byte(&self.lines[self.row], self.col);
+            let start = char_to_byte(&self.lines[self.row], self.col - 1);
+            self.lines[self.row].replace_range(start..end, "");
+            self.col -= 1;
+        } else if self.row > 0 {
+            let current = self.lines.remove(self.row);
+            self.row -= 1;
+            self.col = self.lines[self.row].chars().count();
+            self.lines[self.row].push_str(&current);
+        }
+    }
+
+    fn consume_trailing_backslash(&mut self) -> bool {
+        if self.col == 0 {
+            return false;
+        }
+        let line = &self.lines[self.row];
+        let mut chars = line.chars();
+        if chars.nth(self.col - 1) != Some('\\') {
+            return false;
+        }
+        self.backspace();
+        true
+    }
+
+    fn move_left(&mut self) {
+        if self.col > 0 {
+            self.col -= 1;
+        } else if self.row > 0 {
+            self.row -= 1;
+            self.col = self.lines[self.row].chars().count();
+        }
+    }
+
+    fn move_right(&mut self) {
+        let line_len = self.lines[self.row].chars().count();
+        if self.col < line_len {
+            self.col += 1;
+        } else if self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.col = 0;
+        }
+    }
+
+    fn move_up(&mut self) {
+        if self.row > 0 {
+            self.row -= 1;
+            self.clamp_col();
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.clamp_col();
+        }
+    }
+
+    fn move_line_start(&mut self) {
+        self.col = 0;
+    }
+
+    fn move_line_end(&mut self) {
+        self.col = self.lines[self.row].chars().count();
+    }
+
+    fn clamp_col(&mut self) {
+        self.col = self.col.min(self.lines[self.row].chars().count());
+    }
+
+    fn cursor_position(&self, origin: Position, width: u16, height: u16) -> Position {
+        let inner_width = width.saturating_sub(2).max(1);
+        let visible_height = height.saturating_sub(2).max(1);
+        let row = self.row.min(visible_height.saturating_sub(1) as usize) as u16;
+        let col = self.col.min(inner_width.saturating_sub(1) as usize) as u16;
+        Position::new(
+            origin.x.saturating_add(1 + col),
+            origin.y.saturating_add(1 + row),
+        )
+    }
+}
+
+fn char_to_byte(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(idx, _)| idx)
+        .unwrap_or_else(|| s.len())
 }
 
 fn draw(frame: &mut Frame, app: &TuiApp) {
     let area = frame.area();
+    let input_height = (app.input.lines.len() as u16 + 2).clamp(3, 8);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .split(area);
 
     let transcript_lines = transcript_text(app);
-    let scroll = transcript_lines
+    let tail_scroll = transcript_lines
         .lines
         .len()
         .saturating_sub(chunks[0].height.saturating_sub(2) as usize) as u16;
+    let scroll = if app.follow_tail {
+        tail_scroll
+    } else {
+        app.transcript_scroll.min(tail_scroll)
+    };
     let transcript = Paragraph::new(transcript_lines)
         .block(Block::default().title("Heddle").borders(Borders::ALL))
         .scroll((scroll, 0))
@@ -443,9 +625,16 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
     } else {
         "Prompt"
     };
-    let input = Paragraph::new(app.input.as_str())
+    let input = Paragraph::new(app.input.text())
         .block(Block::default().title(input_title).borders(Borders::ALL));
     frame.render_widget(input, chunks[1]);
+    if !app.active {
+        frame.set_cursor_position(app.input.cursor_position(
+            Position::new(chunks[1].x, chunks[1].y),
+            chunks[1].width,
+            chunks[1].height,
+        ));
+    }
 
     let status = Paragraph::new(status_line(app));
     frame.render_widget(status, chunks[2]);
@@ -454,7 +643,7 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
 fn transcript_text(app: &TuiApp) -> Text<'_> {
     if app.transcript.is_empty() {
         return Text::from(vec![Line::from(Span::styled(
-            "Type a message and press Enter. Ctrl-C cancels an active turn; Esc exits.",
+            "Enter submits. Shift-Enter or \\ then Enter inserts a newline. Ctrl-C cancels; Esc exits.",
             Style::default().fg(Color::DarkGray),
         ))]);
     }
@@ -508,6 +697,8 @@ mod tests {
     use super::*;
     use crate::runtime::{RuntimeError, RuntimeUsage};
     use crate::types::{FunctionCall, ToolCall, ToolCallKind};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -527,6 +718,7 @@ mod tests {
             kind: TranscriptKind::Assistant,
             text: String::new(),
         });
+        app.active_assistant = Some(0);
 
         app.apply_runtime_event(RuntimeEvent::ContentDelta {
             text: "hello".to_string(),
@@ -537,6 +729,32 @@ mod tests {
 
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(app.transcript[0].text, "hello world");
+    }
+
+    #[test]
+    fn content_delta_uses_active_assistant_row_not_latest_assistant() {
+        let mut app = TuiApp::new();
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: "first".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::User,
+            text: "next".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: String::new(),
+        });
+        app.active_assistant = Some(2);
+
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "second".to_string(),
+        });
+
+        assert_eq!(app.transcript[0].text, "first");
+        assert_eq!(app.transcript[2].text, "second");
+        assert!(app.follow_tail);
     }
 
     #[test]
@@ -584,5 +802,82 @@ mod tests {
         assert_eq!(app.transcript[0].text, "tokens: 7 in / 11 out");
         assert_eq!(app.transcript[1].kind, TranscriptKind::Error);
         assert_eq!(app.transcript[1].text, "bad response");
+    }
+
+    #[test]
+    fn input_backslash_then_enter_inserts_newline() {
+        let mut input = InputBuffer::default();
+        for c in "hello\\".chars() {
+            input.insert_char(c);
+        }
+
+        assert!(input.consume_trailing_backslash());
+        input.insert_newline();
+        input.insert_char('w');
+
+        assert_eq!(input.text(), "hello\nw");
+        assert_eq!(input.row, 1);
+        assert_eq!(input.col, 1);
+    }
+
+    #[test]
+    fn input_supports_cursor_editing_across_lines() {
+        let mut input = InputBuffer::default();
+        for c in "abcd".chars() {
+            input.insert_char(c);
+        }
+        input.move_left();
+        input.move_left();
+        input.insert_newline();
+        input.insert_char('X');
+        input.backspace();
+        input.move_up();
+        input.move_line_end();
+        input.insert_char('!');
+
+        assert_eq!(input.text(), "ab!\ncd");
+    }
+
+    #[test]
+    fn empty_transcript_hint_mentions_enter_and_newline_options() {
+        let app = TuiApp::new();
+        let text = transcript_text(&app);
+        let rendered = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("Enter submits"));
+        assert!(rendered.contains("\\ then Enter"));
+        assert!(rendered.contains("Shift-Enter"));
+    }
+
+    #[test]
+    fn render_includes_multiline_input_and_status() {
+        let backend = TestBackend::new(60, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        for c in "first line".chars() {
+            app.input.insert_char(c);
+        }
+        app.input.insert_newline();
+        for c in "second line".chars() {
+            app.input.insert_char(c);
+        }
+
+        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(screen.contains("first line"));
+        assert!(screen.contains("second line"));
+        assert!(screen.contains("initializing runtime"));
     }
 }
