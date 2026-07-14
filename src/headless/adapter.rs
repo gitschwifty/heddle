@@ -318,6 +318,7 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
             TurnOptions {
                 id: id.clone(),
                 cancel,
+                permission_resolver: None,
             },
             |event| {
                 if let Some(mapped) = map_runtime_event(&event) {

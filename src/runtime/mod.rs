@@ -3,6 +3,9 @@
 //! This layer owns session turn lifecycle and emits semantic runtime events.
 //! UI and IPC adapters decide how those events are rendered or serialized.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -10,7 +13,9 @@ use futures::StreamExt;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::loop_::{run_agent_loop_streaming, AgentLoopOptions};
+use crate::agent::loop_::{
+    run_agent_loop_streaming, AgentLoopOptions, PermissionResolver, PermissionResponse,
+};
 use crate::agent::types::AgentEvent;
 use crate::ipc::errors::normalize_error;
 use crate::session::jsonl::append_message;
@@ -85,11 +90,34 @@ pub struct TurnOutcome {
     pub total_latency_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TurnOptions {
     pub id: String,
     pub cancel: CancellationToken,
+    pub permission_resolver: Option<RuntimePermissionResolver>,
 }
+
+#[derive(Debug, Clone)]
+pub struct RuntimePermissionRequest {
+    pub name: String,
+    pub call: ToolCall,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePermissionResponse {
+    Allow,
+    Deny,
+    Always,
+}
+
+pub type RuntimePermissionResolver = Arc<
+    dyn Fn(
+            RuntimePermissionRequest,
+        ) -> Pin<Box<dyn Future<Output = RuntimePermissionResponse> + Send>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnState {
@@ -219,6 +247,10 @@ impl HeddleRuntime {
 
         let loop_opts = AgentLoopOptions {
             permission_checker: self.session.permission_checker.clone(),
+            permission_resolver: options
+                .permission_resolver
+                .clone()
+                .map(agent_permission_resolver),
             hooks_runner: self.session.hooks_runner.clone(),
             signal: Some(options.cancel.clone()),
             ..AgentLoopOptions::default()
@@ -430,6 +462,19 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
         AgentEvent::ContextCompact => Some(RuntimeEvent::ContextCompacted),
         AgentEvent::ContextHandoff => Some(RuntimeEvent::ContextHandoff),
     }
+}
+
+fn agent_permission_resolver(resolver: RuntimePermissionResolver) -> PermissionResolver {
+    Arc::new(move |name, call, reason| {
+        let resolver = resolver.clone();
+        Box::pin(async move {
+            match resolver(RuntimePermissionRequest { name, call, reason }).await {
+                RuntimePermissionResponse::Allow => PermissionResponse::Allow,
+                RuntimePermissionResponse::Deny => PermissionResponse::Deny,
+                RuntimePermissionResponse::Always => PermissionResponse::Always,
+            }
+        })
+    })
 }
 
 fn runtime_error(message: &str, fallback_code: &str) -> RuntimeError {

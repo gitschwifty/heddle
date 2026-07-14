@@ -39,7 +39,11 @@ pub enum PermissionResponse {
 }
 
 pub type PermissionResolver = Arc<
-    dyn Fn(String, ToolCall) -> Pin<Box<dyn Future<Output = PermissionResponse> + Send>>
+    dyn Fn(
+            String,
+            ToolCall,
+            Option<String>,
+        ) -> Pin<Box<dyn Future<Output = PermissionResponse> + Send>>
         + Send
         + Sync,
 >;
@@ -146,7 +150,7 @@ async fn check_permission(
                 call: call.clone(),
                 reason: Some(reason.clone()),
             }];
-            let response = resolver(tool_name.clone(), call.clone()).await;
+            let response = resolver(tool_name.clone(), call.clone(), Some(reason.clone())).await;
             match response {
                 PermissionResponse::Always => {
                     checker.lock().allow_always(&tool_name);

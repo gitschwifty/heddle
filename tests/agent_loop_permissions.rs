@@ -138,11 +138,11 @@ fn checker_with_layers(
 }
 
 fn allow_resolver() -> PermissionResolver {
-    Arc::new(|_, _| Box::pin(async move { PermissionResponse::Allow }))
+    Arc::new(|_, _, _| Box::pin(async move { PermissionResponse::Allow }))
 }
 
 fn deny_resolver() -> PermissionResolver {
-    Arc::new(|_, _| Box::pin(async move { PermissionResponse::Deny }))
+    Arc::new(|_, _, _| Box::pin(async move { PermissionResponse::Deny }))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ async fn ask_resolver_deny_blocks_tool() {
 async fn ask_resolver_always_only_called_once() {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_for_resolver = calls.clone();
-    let resolver: PermissionResolver = Arc::new(move |_, _| {
+    let resolver: PermissionResolver = Arc::new(move |_, _, _| {
         let c = calls_for_resolver.clone();
         Box::pin(async move {
             c.fetch_add(1, Ordering::SeqCst);

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Stdout};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,13 +21,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::features::Mode;
 use crate::runtime::{
-    HeddleRuntime, RuntimeConfig, RuntimeEvent, RuntimeStatus, TurnOptions, TurnOutcome, TurnState,
-    TurnStatus,
+    HeddleRuntime, RuntimeConfig, RuntimeEvent, RuntimePermissionRequest,
+    RuntimePermissionResolver, RuntimePermissionResponse, RuntimeStatus, TurnOptions, TurnOutcome,
+    TurnState, TurnStatus,
 };
 use crate::session::setup::SessionOptions;
 
@@ -117,17 +119,58 @@ async fn runtime_worker(
                 message,
                 cancel,
             } => {
+                let permission_resolver =
+                    build_tui_permission_resolver(event_tx.clone(), cancel.clone());
                 let _ = event_tx.send(RuntimeUpdate::Status(runtime.status(true)));
                 let outcome = runtime
-                    .send(message, TurnOptions { id, cancel }, |event| {
-                        let _ = event_tx.send(RuntimeUpdate::Event(event));
-                    })
+                    .send(
+                        message,
+                        TurnOptions {
+                            id,
+                            cancel,
+                            permission_resolver: Some(permission_resolver),
+                        },
+                        |event| {
+                            let _ = event_tx.send(RuntimeUpdate::Event(event));
+                        },
+                    )
                     .await;
                 let _ = event_tx.send(RuntimeUpdate::Outcome(outcome));
                 let _ = event_tx.send(RuntimeUpdate::Status(runtime.status(false)));
             }
         }
     }
+}
+
+fn build_tui_permission_resolver(
+    event_tx: mpsc::UnboundedSender<RuntimeUpdate>,
+    cancel: CancellationToken,
+) -> RuntimePermissionResolver {
+    Arc::new(move |request| {
+        let event_tx = event_tx.clone();
+        let cancel = cancel.clone();
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return RuntimePermissionResponse::Deny;
+            }
+
+            let (respond_to, response_rx) = oneshot::channel();
+            if event_tx
+                .send(RuntimeUpdate::PermissionPrompt(PermissionPrompt {
+                    request,
+                    respond_to,
+                }))
+                .is_err()
+            {
+                return RuntimePermissionResponse::Deny;
+            }
+
+            tokio::select! {
+                _ = cancel.cancelled() => RuntimePermissionResponse::Deny,
+                response = response_rx => response.unwrap_or(RuntimePermissionResponse::Deny),
+            }
+        })
+    })
 }
 
 struct TerminalSession {
@@ -173,6 +216,21 @@ enum RuntimeUpdate {
     Event(RuntimeEvent),
     Outcome(TurnOutcome),
     Status(RuntimeStatus),
+    PermissionPrompt(PermissionPrompt),
+}
+
+#[derive(Debug)]
+struct PermissionPrompt {
+    request: RuntimePermissionRequest,
+    respond_to: oneshot::Sender<RuntimePermissionResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionPromptView {
+    name: String,
+    call_id: String,
+    arguments: String,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +260,8 @@ struct TuiApp {
     active: bool,
     should_quit: bool,
     active_cancel: Option<CancellationToken>,
+    permission_prompt: Option<PermissionPrompt>,
+    permission_prompt_view: Option<PermissionPromptView>,
 }
 
 impl TuiApp {
@@ -218,6 +278,28 @@ impl TuiApp {
         command_tx: &mpsc::Sender<RuntimeCommand>,
         turn_counter: &mut u64,
     ) -> Result<bool> {
+        if self.permission_prompt.is_some() {
+            match (key.code, key.modifiers) {
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                    if let Some(cancel) = &self.active_cancel {
+                        cancel.cancel();
+                    }
+                    self.answer_permission_prompt(RuntimePermissionResponse::Deny);
+                }
+                (KeyCode::Char('y'), _) | (KeyCode::Char('Y'), _) => {
+                    self.answer_permission_prompt(RuntimePermissionResponse::Allow);
+                }
+                (KeyCode::Char('n'), _) | (KeyCode::Char('N'), _) | (KeyCode::Esc, _) => {
+                    self.answer_permission_prompt(RuntimePermissionResponse::Deny);
+                }
+                (KeyCode::Char('a'), _) | (KeyCode::Char('A'), _) => {
+                    self.answer_permission_prompt(RuntimePermissionResponse::Always);
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 if let Some(cancel) = &self.active_cancel {
@@ -325,6 +407,7 @@ impl TuiApp {
                 }
                 self.status = Some(status);
             }
+            RuntimeUpdate::PermissionPrompt(prompt) => self.set_permission_prompt(prompt),
         }
     }
 
@@ -429,6 +512,8 @@ impl TuiApp {
         self.active = false;
         self.active_cancel = None;
         self.active_assistant = None;
+        self.permission_prompt = None;
+        self.permission_prompt_view = None;
         match outcome.status {
             TurnStatus::Ok => {}
             TurnStatus::Cancelled => self.transcript.push(TranscriptItem {
@@ -458,6 +543,30 @@ impl TuiApp {
         });
         self.transcript[row].text.push_str(text);
         self.follow_tail = true;
+    }
+
+    fn set_permission_prompt(&mut self, prompt: PermissionPrompt) {
+        self.permission_prompt_view = Some(PermissionPromptView::from_request(&prompt.request));
+        self.permission_prompt = Some(prompt);
+        self.follow_tail = true;
+    }
+
+    fn answer_permission_prompt(&mut self, response: RuntimePermissionResponse) {
+        if let Some(prompt) = self.permission_prompt.take() {
+            let _ = prompt.respond_to.send(response);
+        }
+        self.permission_prompt_view = None;
+    }
+}
+
+impl PermissionPromptView {
+    fn from_request(request: &RuntimePermissionRequest) -> Self {
+        Self {
+            name: request.name.clone(),
+            call_id: request.call.id.clone(),
+            arguments: summarize_arguments(&request.call.function.arguments, 240),
+            reason: request.reason.clone(),
+        }
     }
 }
 
@@ -594,7 +703,11 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
 
 fn draw(frame: &mut Frame, app: &TuiApp) {
     let area = frame.area();
-    let input_height = (app.input.lines.len() as u16 + 2).clamp(3, 8);
+    let input_height = if app.permission_prompt_view.is_some() {
+        8
+    } else {
+        (app.input.lines.len() as u16 + 2).clamp(3, 8)
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -620,15 +733,26 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
         .wrap(Wrap { trim: false });
     frame.render_widget(transcript, chunks[0]);
 
-    let input_title = if app.active {
-        "Prompt (turn active)"
+    if let Some(prompt) = &app.permission_prompt_view {
+        let input = Paragraph::new(permission_prompt_text(prompt))
+            .block(
+                Block::default()
+                    .title("Permission required")
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(input, chunks[1]);
     } else {
-        "Prompt"
-    };
-    let input = Paragraph::new(app.input.text())
-        .block(Block::default().title(input_title).borders(Borders::ALL));
-    frame.render_widget(input, chunks[1]);
-    if !app.active {
+        let input_title = if app.active {
+            "Prompt (turn active)"
+        } else {
+            "Prompt"
+        };
+        let input = Paragraph::new(app.input.text())
+            .block(Block::default().title(input_title).borders(Borders::ALL));
+        frame.render_widget(input, chunks[1]);
+    }
+    if !app.active && app.permission_prompt_view.is_none() {
         frame.set_cursor_position(app.input.cursor_position(
             Position::new(chunks[1].x, chunks[1].y),
             chunks[1].width,
@@ -638,6 +762,38 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
 
     let status = Paragraph::new(status_line(app));
     frame.render_widget(status, chunks[2]);
+}
+
+fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'_> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Tool: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(prompt.name.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("Call: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(prompt.call_id.as_str()),
+        ]),
+    ];
+
+    if let Some(reason) = &prompt.reason {
+        lines.push(Line::from(vec![
+            Span::styled("Reason: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(abbreviate(reason, 120)),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Args: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(prompt.arguments.as_str()),
+    ]));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![Span::styled(
+        "Y allow  N deny and continue  A always allow  Esc deny/clear",
+        Style::default().fg(Color::Yellow),
+    )]));
+
+    Text::from(lines)
 }
 
 fn transcript_text(app: &TuiApp) -> Text<'_> {
@@ -681,7 +837,13 @@ fn status_line(app: &TuiApp) -> String {
     let Some(status) = &app.status else {
         return "initializing runtime".to_string();
     };
-    let activity = if app.active { "active" } else { "idle" };
+    let activity = if app.permission_prompt_view.is_some() {
+        "permission"
+    } else if app.active {
+        "active"
+    } else {
+        "idle"
+    };
     let cost = status
         .cost_usd
         .map(|cost| format!(" | ${cost:.4}"))
@@ -690,6 +852,22 @@ fn status_line(app: &TuiApp) -> String {
         "{activity} | model: {} | messages: {} | tokens: {} in / {} out{cost}",
         status.model, status.messages_count, status.total_input_tokens, status.total_output_tokens,
     )
+}
+
+fn summarize_arguments(arguments: &str, max_chars: usize) -> String {
+    let compact = serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| arguments.to_string());
+    abbreviate(&compact, max_chars)
+}
+
+fn abbreviate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    format!("{}...", value.chars().take(keep).collect::<String>())
 }
 
 #[cfg(test)]
@@ -707,6 +885,17 @@ mod tests {
             function: FunctionCall {
                 name: name.to_string(),
                 arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    fn tool_call_with_args(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            kind: ToolCallKind::Function,
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
             },
         }
     }
@@ -879,5 +1068,62 @@ mod tests {
         assert!(screen.contains("first line"));
         assert!(screen.contains("second line"));
         assert!(screen.contains("initializing runtime"));
+    }
+
+    #[test]
+    fn permission_prompt_renders_tool_details_and_choices() {
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        app.permission_prompt_view = Some(PermissionPromptView {
+            name: "write_file".to_string(),
+            call_id: "call_7".to_string(),
+            arguments: r#"{"file_path":"src/main.rs","content":"updated"}"#.to_string(),
+            reason: Some("write_file requires approval".to_string()),
+        });
+
+        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(screen.contains("Permission required"));
+        assert!(screen.contains("write_file"));
+        assert!(screen.contains("call_7"));
+        assert!(screen.contains("write_file requires approval"));
+        assert!(screen.contains("Y allow"));
+        assert!(screen.contains("N deny and continue"));
+        assert!(screen.contains("A always allow"));
+    }
+
+    #[test]
+    fn permission_prompt_answer_sends_response_and_clears_prompt() {
+        let mut app = TuiApp::new();
+        let (respond_to, mut response_rx) = oneshot::channel();
+        app.set_permission_prompt(PermissionPrompt {
+            request: RuntimePermissionRequest {
+                name: "write_file".to_string(),
+                call: tool_call_with_args(
+                    "call_1",
+                    "write_file",
+                    r#"{"file_path":"foo.txt","content":"bar"}"#,
+                ),
+                reason: Some("write_file requires approval".to_string()),
+            },
+            respond_to,
+        });
+
+        app.answer_permission_prompt(RuntimePermissionResponse::Always);
+
+        assert!(app.permission_prompt.is_none());
+        assert!(app.permission_prompt_view.is_none());
+        assert_eq!(
+            response_rx.try_recv().expect("permission response"),
+            RuntimePermissionResponse::Always
+        );
     }
 }

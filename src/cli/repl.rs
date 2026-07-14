@@ -41,23 +41,25 @@ use crate::types::{Message, ToolCall, ToolMessage, UserMessage};
 use crate::usage::writer::{write_usage_record, UsageRecord};
 
 fn build_permission_resolver() -> PermissionResolver {
-    Arc::new(move |name: String, _call: ToolCall| {
-        Box::pin(async move {
-            // Read a single answer line from stdin.
-            print!("  Allow {name}? [y/n/always] ");
-            let _ = std::io::stdout().flush();
-            let mut buf = String::new();
-            if std::io::stdin().read_line(&mut buf).is_err() {
-                return PermissionResponse::Deny;
-            }
-            let trimmed = buf.trim().to_lowercase();
-            match trimmed.as_str() {
-                "y" | "yes" => PermissionResponse::Allow,
-                "always" | "a" => PermissionResponse::Always,
-                _ => PermissionResponse::Deny,
-            }
-        })
-    })
+    Arc::new(
+        move |name: String, _call: ToolCall, _reason: Option<String>| {
+            Box::pin(async move {
+                // Read a single answer line from stdin.
+                print!("  Allow {name}? [y/n/always] ");
+                let _ = std::io::stdout().flush();
+                let mut buf = String::new();
+                if std::io::stdin().read_line(&mut buf).is_err() {
+                    return PermissionResponse::Deny;
+                }
+                let trimmed = buf.trim().to_lowercase();
+                match trimmed.as_str() {
+                    "y" | "yes" => PermissionResponse::Allow,
+                    "always" | "a" => PermissionResponse::Always,
+                    _ => PermissionResponse::Deny,
+                }
+            })
+        },
+    )
 }
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {
