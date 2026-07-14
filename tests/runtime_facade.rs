@@ -59,7 +59,10 @@ async fn runtime_send_emits_events_and_returns_outcome() {
     assert!(events
         .iter()
         .any(|e| matches!(e, RuntimeEvent::UsageUpdated { usage } if usage.total_tokens == 18)));
-    assert_eq!(runtime.status(false).messages_count, 3);
+    let status = runtime.status(false);
+    assert_eq!(status.messages_count, 3);
+    assert_eq!(status.total_input_tokens, 11);
+    assert_eq!(status.total_output_tokens, 7);
 }
 
 #[tokio::test]

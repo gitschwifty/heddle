@@ -298,6 +298,7 @@ impl HeddleRuntime {
                     }
                 }
                 AgentEvent::Usage { usage } => {
+                    self.session.cost_tracker.lock().add_usage(&usage);
                     total_usage = Some(usage.into());
                 }
                 AgentEvent::LoopDetected { count } => {

@@ -6,11 +6,14 @@
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -86,19 +89,21 @@ async fn run_terminal(runtime: HeddleRuntime) -> Result<()> {
             app.apply_runtime_update(update);
         }
 
-        terminal.draw(|frame| draw(frame, &app))?;
+        terminal.draw(|frame| draw(frame, &mut app))?;
 
         if app.should_quit && !app.active {
             break;
         }
 
         if event::poll(Duration::from_millis(30))? {
-            let Event::Key(key) = event::read()? else {
-                continue;
-            };
-
-            if app.handle_key(key, &command_tx, &mut turn_counter).await? {
-                break;
+            match event::read()? {
+                Event::Key(key) => {
+                    if app.handle_key(key, &command_tx, &mut turn_counter).await? {
+                        break;
+                    }
+                }
+                Event::Mouse(mouse) => app.handle_mouse(mouse.kind),
+                _ => {}
             }
         }
     }
@@ -180,7 +185,7 @@ struct TerminalSession {
 impl TerminalSession {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -198,7 +203,11 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -240,6 +249,7 @@ enum TranscriptKind {
     Tool,
     Error,
     System,
+    Divider,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +264,10 @@ struct TuiApp {
     transcript: Vec<TranscriptItem>,
     tool_rows: HashMap<String, usize>,
     active_assistant: Option<usize>,
+    pending_work_row: Option<usize>,
+    turn_started_at: Option<Instant>,
     transcript_scroll: u16,
+    max_transcript_scroll: u16,
     follow_tail: bool,
     status: Option<RuntimeStatus>,
     active: bool,
@@ -262,12 +275,16 @@ struct TuiApp {
     active_cancel: Option<CancellationToken>,
     permission_prompt: Option<PermissionPrompt>,
     permission_prompt_view: Option<PermissionPromptView>,
+    cwd: String,
 }
 
 impl TuiApp {
     fn new() -> Self {
         Self {
             follow_tail: true,
+            cwd: std::env::current_dir()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| ".".to_string()),
             ..Self::default()
         }
     }
@@ -302,20 +319,34 @@ impl TuiApp {
 
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                return Ok(true);
+            }
+            (KeyCode::Esc, _) => {
                 if let Some(cancel) = &self.active_cancel {
                     cancel.cancel();
+                } else if !self.follow_tail {
+                    self.follow_tail = true;
+                    self.transcript_scroll = self.max_transcript_scroll;
                 } else {
                     return Ok(true);
                 }
             }
-            (KeyCode::Esc, _) => return Ok(true),
             (KeyCode::PageUp, _) => {
+                let current = if self.follow_tail {
+                    self.max_transcript_scroll
+                } else {
+                    self.transcript_scroll
+                };
                 self.follow_tail = false;
-                self.transcript_scroll = self.transcript_scroll.saturating_sub(5);
+                self.transcript_scroll = current.saturating_sub(5);
             }
             (KeyCode::PageDown, _) => {
                 self.follow_tail = false;
-                self.transcript_scroll = self.transcript_scroll.saturating_add(5);
+                self.transcript_scroll = self
+                    .transcript_scroll
+                    .saturating_add(5)
+                    .min(self.max_transcript_scroll);
+                self.follow_tail = self.transcript_scroll == self.max_transcript_scroll;
             }
             (KeyCode::End, KeyModifiers::CONTROL) => {
                 self.follow_tail = true;
@@ -354,6 +385,28 @@ impl TuiApp {
         Ok(false)
     }
 
+    fn handle_mouse(&mut self, kind: MouseEventKind) {
+        match kind {
+            MouseEventKind::ScrollUp => {
+                let current = if self.follow_tail {
+                    self.max_transcript_scroll
+                } else {
+                    self.transcript_scroll
+                };
+                self.follow_tail = false;
+                self.transcript_scroll = current.saturating_sub(3);
+            }
+            MouseEventKind::ScrollDown => {
+                self.transcript_scroll = self
+                    .transcript_scroll
+                    .saturating_add(3)
+                    .min(self.max_transcript_scroll);
+                self.follow_tail = self.transcript_scroll == self.max_transcript_scroll;
+            }
+            _ => {}
+        }
+    }
+
     async fn submit(
         &mut self,
         command_tx: &mpsc::Sender<RuntimeCommand>,
@@ -374,12 +427,13 @@ impl TuiApp {
             kind: TranscriptKind::User,
             text: message.clone(),
         });
-        let assistant_row = self.transcript.len();
+        let pending_row = self.transcript.len();
         self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::Assistant,
-            text: String::new(),
+            kind: TranscriptKind::System,
+            text: "working for 0s - Esc to interrupt".to_string(),
         });
-        self.active_assistant = Some(assistant_row);
+        self.pending_work_row = Some(pending_row);
+        self.turn_started_at = Some(Instant::now());
         self.follow_tail = true;
 
         *turn_counter += 1;
@@ -419,41 +473,46 @@ impl TuiApp {
                     self.active_cancel = None;
                 }
             }
-            RuntimeEvent::ContentDelta { text } => self.append_assistant_delta(&text),
+            RuntimeEvent::ContentDelta { text } => {
+                self.clear_pending_work();
+                self.append_assistant_delta(&text);
+            }
             RuntimeEvent::ToolStarted { name, call } => {
+                self.clear_pending_work();
                 let row = self.transcript.len();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::Tool,
-                    text: format!("{name} running"),
+                    text: format_tool_row(&name, "running", Some(&call.function.arguments), None),
                 });
                 self.tool_rows.insert(call.id, row);
             }
-            RuntimeEvent::ToolFinished { name, call, .. } => {
+            RuntimeEvent::ToolFinished { name, result, call } => {
+                self.clear_pending_work();
+                let text = format_tool_row(
+                    &name,
+                    "finished",
+                    Some(&call.function.arguments),
+                    Some(&result),
+                );
                 if let Some(row) = self.tool_rows.remove(&call.id) {
-                    self.transcript[row].text = format!("{name} finished");
+                    self.transcript[row].text = text;
                 } else {
                     self.transcript.push(TranscriptItem {
                         kind: TranscriptKind::Tool,
-                        text: format!("{name} finished"),
+                        text,
                     });
                 }
             }
-            RuntimeEvent::UsageUpdated { usage } => {
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::System,
-                    text: format!(
-                        "tokens: {} in / {} out",
-                        usage.prompt_tokens, usage.completion_tokens
-                    ),
-                });
-            }
+            RuntimeEvent::UsageUpdated { .. } => {}
             RuntimeEvent::Error { error } => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::Error,
                     text: error.message,
                 });
             }
             RuntimeEvent::PermissionRequested { name, reason, .. } => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::System,
                     text: format!(
@@ -465,12 +524,14 @@ impl TuiApp {
                 });
             }
             RuntimeEvent::PermissionDenied { name, reason, .. } => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::Error,
                     text: format!("permission denied: {name}: {reason}"),
                 });
             }
             RuntimeEvent::PlanCompleted { plan } => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::System,
                     text: format!("plan completed\n{plan}"),
@@ -479,18 +540,21 @@ impl TuiApp {
             RuntimeEvent::ContextPruned {
                 messages_pruned, ..
             } => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::System,
                     text: format!("context pruned: {messages_pruned} messages"),
                 });
             }
             RuntimeEvent::ContextCompacted => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::System,
                     text: "context compacted".to_string(),
                 });
             }
             RuntimeEvent::ContextHandoff => {
+                self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
                     kind: TranscriptKind::System,
                     text: "context handoff".to_string(),
@@ -498,23 +562,28 @@ impl TuiApp {
             }
             RuntimeEvent::AssistantMessage { message, .. } => {
                 if let Some(content) = message.content {
-                    if let Some(row) = self.active_assistant {
-                        if self.transcript[row].text.is_empty() {
-                            self.transcript[row].text = content;
-                        }
-                    }
+                    self.clear_pending_work();
+                    self.set_assistant_message(content);
                 }
             }
         }
     }
 
     fn apply_turn_outcome(&mut self, outcome: TurnOutcome) {
+        let worked_for = self
+            .turn_started_at
+            .take()
+            .map(|started| format_duration(started.elapsed()))
+            .unwrap_or_else(|| "0s".to_string());
+
         self.active = false;
         self.active_cancel = None;
         self.active_assistant = None;
+        self.clear_pending_work();
         self.permission_prompt = None;
         self.permission_prompt_view = None;
-        match outcome.status {
+        let status = outcome.status;
+        match &status {
             TurnStatus::Ok => {}
             TurnStatus::Cancelled => self.transcript.push(TranscriptItem {
                 kind: TranscriptKind::System,
@@ -529,6 +598,7 @@ impl TuiApp {
                 }
             }
         }
+        self.push_turn_footer(&status, &worked_for);
     }
 
     fn append_assistant_delta(&mut self, text: &str) {
@@ -542,10 +612,25 @@ impl TuiApp {
             row
         });
         self.transcript[row].text.push_str(text);
-        self.follow_tail = true;
+    }
+
+    fn set_assistant_message(&mut self, text: String) {
+        let row = self.active_assistant.unwrap_or_else(|| {
+            let row = self.transcript.len();
+            self.transcript.push(TranscriptItem {
+                kind: TranscriptKind::Assistant,
+                text: String::new(),
+            });
+            self.active_assistant = Some(row);
+            row
+        });
+        if self.transcript[row].text.is_empty() {
+            self.transcript[row].text = text;
+        }
     }
 
     fn set_permission_prompt(&mut self, prompt: PermissionPrompt) {
+        self.clear_pending_work();
         self.permission_prompt_view = Some(PermissionPromptView::from_request(&prompt.request));
         self.permission_prompt = Some(prompt);
         self.follow_tail = true;
@@ -556,6 +641,53 @@ impl TuiApp {
             let _ = prompt.respond_to.send(response);
         }
         self.permission_prompt_view = None;
+    }
+
+    fn clear_pending_work(&mut self) {
+        let Some(row) = self.pending_work_row.take() else {
+            return;
+        };
+        if row < self.transcript.len() && self.transcript[row].kind == TranscriptKind::System {
+            self.transcript.remove(row);
+            self.tool_rows.retain(|_, tool_row| {
+                if *tool_row > row {
+                    *tool_row -= 1;
+                }
+                true
+            });
+            if let Some(active_row) = self.active_assistant.as_mut() {
+                if *active_row > row {
+                    *active_row -= 1;
+                }
+            }
+        }
+    }
+
+    fn refresh_pending_work(&mut self) {
+        let Some(row) = self.pending_work_row else {
+            return;
+        };
+        let Some(started) = self.turn_started_at else {
+            return;
+        };
+        if row < self.transcript.len() {
+            self.transcript[row].text = format!(
+                "working for {} - Esc to interrupt",
+                format_duration(started.elapsed())
+            );
+        }
+    }
+
+    fn push_turn_footer(&mut self, status: &TurnStatus, worked_for: &str) {
+        let suffix = match status {
+            TurnStatus::Ok => "",
+            TurnStatus::Cancelled => " - cancelled",
+            TurnStatus::Error => " - error",
+        };
+        self.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Divider,
+            text: format!("Worked for {worked_for}{suffix}"),
+        });
     }
 }
 
@@ -683,14 +815,31 @@ impl InputBuffer {
     }
 
     fn cursor_position(&self, origin: Position, width: u16, height: u16) -> Position {
-        let inner_width = width.saturating_sub(2).max(1);
-        let visible_height = height.saturating_sub(2).max(1);
-        let row = self.row.min(visible_height.saturating_sub(1) as usize) as u16;
-        let col = self.col.min(inner_width.saturating_sub(1) as usize) as u16;
+        let inner_width = width.max(1) as usize;
+        let visible_height = height.max(1);
+        let row = self
+            .lines
+            .iter()
+            .take(self.row)
+            .map(|line| visual_line_count(line, inner_width) as usize)
+            .sum::<usize>()
+            + (self.col / inner_width);
+        let col = self.col % inner_width;
         Position::new(
-            origin.x.saturating_add(1 + col),
-            origin.y.saturating_add(1 + row),
+            origin.x.saturating_add(col as u16),
+            origin
+                .y
+                .saturating_add((row as u16).min(visible_height.saturating_sub(1))),
         )
+    }
+
+    fn visual_height(&self, width: u16) -> u16 {
+        let width = width.max(1) as usize;
+        self.lines
+            .iter()
+            .map(|line| visual_line_count(line, width))
+            .sum::<u16>()
+            .max(1)
     }
 }
 
@@ -701,12 +850,22 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
         .unwrap_or_else(|| s.len())
 }
 
-fn draw(frame: &mut Frame, app: &TuiApp) {
+fn visual_line_count(line: &str, width: usize) -> u16 {
+    let chars = line.chars().count();
+    ((chars / width) + 1).max(1) as u16
+}
+
+fn draw(frame: &mut Frame, app: &mut TuiApp) {
+    app.refresh_pending_work();
+
     let area = frame.area();
     let input_height = if app.permission_prompt_view.is_some() {
         8
     } else {
-        (app.input.lines.len() as u16 + 2).clamp(3, 8)
+        app.input
+            .visual_height(area.width.saturating_sub(2))
+            .saturating_add(2)
+            .clamp(3, 10)
     };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -717,18 +876,18 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
         ])
         .split(area);
 
-    let transcript_lines = transcript_text(app);
+    let transcript_lines = transcript_text(app, chunks[0].width);
     let tail_scroll = transcript_lines
         .lines
         .len()
-        .saturating_sub(chunks[0].height.saturating_sub(2) as usize) as u16;
+        .saturating_sub(chunks[0].height as usize) as u16;
+    app.max_transcript_scroll = tail_scroll;
     let scroll = if app.follow_tail {
         tail_scroll
     } else {
         app.transcript_scroll.min(tail_scroll)
     };
     let transcript = Paragraph::new(transcript_lines)
-        .block(Block::default().title("Heddle").borders(Borders::ALL))
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(transcript, chunks[0]);
@@ -743,20 +902,24 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
             .wrap(Wrap { trim: false });
         frame.render_widget(input, chunks[1]);
     } else {
-        let input_title = if app.active {
-            "Prompt (turn active)"
-        } else {
-            "Prompt"
-        };
-        let input = Paragraph::new(app.input.text())
-            .block(Block::default().title(input_title).borders(Borders::ALL));
+        let input = Paragraph::new(input_text(&app.input))
+            .style(
+                Style::default()
+                    .fg(if app.active {
+                        Color::DarkGray
+                    } else {
+                        Color::White
+                    })
+                    .bg(Color::Rgb(38, 38, 48)),
+            )
+            .wrap(Wrap { trim: false });
         frame.render_widget(input, chunks[1]);
     }
     if !app.active && app.permission_prompt_view.is_none() {
         frame.set_cursor_position(app.input.cursor_position(
-            Position::new(chunks[1].x, chunks[1].y),
-            chunks[1].width,
-            chunks[1].height,
+            Position::new(chunks[1].x.saturating_add(2), chunks[1].y.saturating_add(1)),
+            chunks[1].width.saturating_sub(2),
+            chunks[1].height.saturating_sub(2),
         ));
     }
 
@@ -764,15 +927,29 @@ fn draw(frame: &mut Frame, app: &TuiApp) {
     frame.render_widget(status, chunks[2]);
 }
 
-fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'_> {
+fn input_text(input: &InputBuffer) -> Text<'static> {
+    let mut lines = Vec::new();
+    lines.push(Line::raw(""));
+    for (idx, line) in input.lines.iter().enumerate() {
+        let prefix = if idx == 0 { "› " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::raw(line.clone()),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    Text::from(lines)
+}
+
+fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'static> {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Tool: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(prompt.name.as_str()),
+            Span::raw(prompt.name.clone()),
         ]),
         Line::from(vec![
             Span::styled("Call: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(prompt.call_id.as_str()),
+            Span::raw(prompt.call_id.clone()),
         ]),
     ];
 
@@ -785,7 +962,7 @@ fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'_> {
 
     lines.push(Line::from(vec![
         Span::styled("Args: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(prompt.arguments.as_str()),
+        Span::raw(prompt.arguments.clone()),
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![Span::styled(
@@ -796,61 +973,200 @@ fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'_> {
     Text::from(lines)
 }
 
-fn transcript_text(app: &TuiApp) -> Text<'_> {
+fn transcript_text(app: &TuiApp, width: u16) -> Text<'static> {
+    let mut lines = startup_text(app).lines;
     if app.transcript.is_empty() {
-        return Text::from(vec![Line::from(Span::styled(
-            "Enter submits. Shift-Enter or \\ then Enter inserts a newline. Ctrl-C cancels; Esc exits.",
-            Style::default().fg(Color::DarkGray),
-        ))]);
+        return Text::from(lines);
     }
 
-    let mut lines = Vec::new();
     for item in &app.transcript {
-        let (label, style) = match item.kind {
-            TranscriptKind::User => (
-                "you",
+        if matches!(item.kind, TranscriptKind::User) {
+            lines.push(Line::raw(""));
+            lines.extend(user_message_text(&item.text, width));
+            continue;
+        }
+
+        let (marker, style) = match item.kind {
+            TranscriptKind::Assistant => ("- ", Style::default().fg(Color::White)),
+            TranscriptKind::Tool => ("- ", Style::default().fg(Color::Yellow)),
+            TranscriptKind::Error => ("! ", Style::default().fg(Color::Red)),
+            TranscriptKind::System => (". ", Style::default().fg(Color::DarkGray)),
+            TranscriptKind::Divider => ("", Style::default().fg(Color::DarkGray)),
+            TranscriptKind::User => unreachable!("user transcript rows render as prompt blocks"),
+        };
+
+        if matches!(item.kind, TranscriptKind::Divider) {
+            lines.push(Line::from(Span::styled(
+                divider_line(&item.text, width),
+                style,
+            )));
+            continue;
+        }
+
+        lines.extend(transcript_item_lines(&item.text, marker, style, width));
+        lines.push(Line::raw(""));
+    }
+    Text::from(lines)
+}
+
+fn transcript_item_lines(
+    text: &str,
+    first_prefix: &str,
+    style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let width = width.max(4) as usize;
+    let indent = " ".repeat(first_prefix.chars().count());
+    let text_width = width.saturating_sub(first_prefix.chars().count()).max(1);
+    let display_text = text.trim_matches('\n');
+    let mut display_lines = wrap_message_lines(display_text, text_width);
+    if display_lines.is_empty() {
+        display_lines.push(String::new());
+    }
+
+    display_lines
+        .into_iter()
+        .enumerate()
+        .map(|(idx, line)| {
+            let prefix = if idx == 0 {
+                first_prefix.to_string()
+            } else {
+                indent.clone()
+            };
+            Line::from(vec![Span::styled(prefix, style), Span::raw(line)])
+        })
+        .collect()
+}
+
+fn user_message_text(message: &str, width: u16) -> Vec<Line<'static>> {
+    let width = width.max(4) as usize;
+    let render_width = width.saturating_sub(2).max(4);
+    let style = Style::default().fg(Color::White).bg(Color::Rgb(38, 38, 48));
+    let mut lines = vec![Line::from(Span::styled(blank_fill(render_width), style))];
+    for (idx, line) in wrap_message_lines(message, render_width.saturating_sub(2))
+        .into_iter()
+        .enumerate()
+    {
+        let prefix = if idx == 0 { "› " } else { "  " };
+        let content_width = render_width.saturating_sub(prefix.chars().count());
+        let content = abbreviate(&line, content_width);
+        let padding = content_width.saturating_sub(content.chars().count());
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{content}{}", blank_fill(padding)),
+            style,
+        )));
+    }
+    lines.push(Line::from(Span::styled(blank_fill(render_width), style)));
+    lines.push(Line::raw(""));
+    lines
+}
+
+fn blank_fill(width: usize) -> String {
+    "\u{00a0}".repeat(width)
+}
+
+fn wrap_message_lines(message: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for line in message.split('\n') {
+        let chars = line.chars().collect::<Vec<_>>();
+        if chars.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        for chunk in chars.chunks(width) {
+            lines.push(chunk.iter().collect());
+        }
+    }
+    lines
+}
+
+fn divider_line(label: &str, width: u16) -> String {
+    let width = width.max(12) as usize;
+    let label = if label.is_empty() {
+        String::new()
+    } else {
+        format!("- {label} ")
+    };
+    if label.chars().count() >= width {
+        return abbreviate(&label, width);
+    }
+    let remaining = width - label.chars().count();
+    format!("{label}{}", "-".repeat(remaining))
+}
+
+fn startup_text(app: &TuiApp) -> Text<'static> {
+    const CARD_WIDTH: usize = 46;
+    const CONTENT_WIDTH: usize = CARD_WIDTH - 4;
+    const INDENT: &str = "     ";
+
+    let model = app
+        .status
+        .as_ref()
+        .map(|status| status.model.as_str())
+        .unwrap_or("initializing");
+    let title = format!("Heddle v{}", env!("CARGO_PKG_VERSION"));
+    Text::from(vec![
+        Line::raw(""),
+        Line::raw(format!("{INDENT}+{}+", "-".repeat(CARD_WIDTH))),
+        Line::from(vec![
+            Span::raw(format!("{INDENT}|  ")),
+            Span::styled(
+                abbreviate(&title, CONTENT_WIDTH),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            TranscriptKind::Assistant => (
-                "assistant",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            TranscriptKind::Tool => ("tool", Style::default().fg(Color::Yellow)),
-            TranscriptKind::Error => ("error", Style::default().fg(Color::Red)),
-            TranscriptKind::System => ("status", Style::default().fg(Color::DarkGray)),
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("{label}> "), style),
-            Span::raw(item.text.as_str()),
-        ]));
-        lines.push(Line::raw(""));
-    }
-    Text::from(lines)
+            Span::raw(format!(
+                "{:<padding$}  |",
+                "",
+                padding = CONTENT_WIDTH.saturating_sub(title.chars().count())
+            )),
+        ]),
+        Line::raw(format!("{INDENT}|{}|", " ".repeat(CARD_WIDTH))),
+        Line::raw(format!(
+            "{INDENT}|  {:<label_width$}{:<value_width$}|",
+            "model:",
+            abbreviate(model, 33),
+            label_width = 11,
+            value_width = 33
+        )),
+        Line::raw(format!(
+            "{INDENT}|  {:<label_width$}{:<value_width$}|",
+            "directory:",
+            abbreviate(&app.cwd, 33),
+            label_width = 11,
+            value_width = 33
+        )),
+        Line::raw(format!("{INDENT}+{}+", "-".repeat(CARD_WIDTH))),
+    ])
 }
 
 fn status_line(app: &TuiApp) -> String {
     let Some(status) = &app.status else {
         return "initializing runtime".to_string();
     };
-    let activity = if app.permission_prompt_view.is_some() {
-        "permission"
-    } else if app.active {
-        "active"
-    } else {
-        "idle"
-    };
     let cost = status
         .cost_usd
         .map(|cost| format!(" | ${cost:.4}"))
         .unwrap_or_default();
+    let message_count = app
+        .transcript
+        .iter()
+        .filter(|item| matches!(item.kind, TranscriptKind::User | TranscriptKind::Assistant))
+        .count();
+    let tool_count = app
+        .transcript
+        .iter()
+        .filter(|item| matches!(item.kind, TranscriptKind::Tool))
+        .count();
     format!(
-        "{activity} | model: {} | messages: {} | tokens: {} in / {} out{cost}",
-        status.model, status.messages_count, status.total_input_tokens, status.total_output_tokens,
+        "model: {} | msgs: {} | tools: {} | tokens: {} in / {} out{cost}",
+        status.model,
+        message_count,
+        tool_count,
+        status.total_input_tokens,
+        status.total_output_tokens,
     )
 }
 
@@ -862,18 +1178,99 @@ fn summarize_arguments(arguments: &str, max_chars: usize) -> String {
     abbreviate(&compact, max_chars)
 }
 
+fn format_tool_row(
+    name: &str,
+    state: &str,
+    arguments: Option<&str>,
+    result: Option<&str>,
+) -> String {
+    let args_value =
+        arguments.and_then(|args| serde_json::from_str::<serde_json::Value>(args).ok());
+    let summary = match (name, args_value.as_ref()) {
+        ("read_file", Some(args)) => {
+            let path = json_str(args, &["file_path", "path"]).unwrap_or("?");
+            format!("Read {path}")
+        }
+        ("grep", Some(args)) => {
+            let pattern = json_str(args, &["pattern"]).unwrap_or("?");
+            let path = json_str(args, &["path"]).unwrap_or(".");
+            format!("Search {pattern:?} in {path}")
+        }
+        ("glob", Some(args)) => {
+            let pattern = json_str(args, &["pattern"]).unwrap_or("?");
+            let path = json_str(args, &["path"]).unwrap_or(".");
+            format!("Explore {pattern} in {path}")
+        }
+        ("bash", Some(args)) => {
+            let command = json_str(args, &["command"]).unwrap_or("?");
+            format!("Run {command}")
+        }
+        ("edit_file", Some(args)) => {
+            let path = json_str(args, &["file_path", "path"]).unwrap_or("?");
+            format!("Edit {path}")
+        }
+        ("write_file", Some(args)) => {
+            let path = json_str(args, &["file_path", "path"]).unwrap_or("?");
+            format!("Write {path}")
+        }
+        _ => {
+            let args = arguments
+                .map(|args| format!(" {}", summarize_arguments(args, 120)))
+                .unwrap_or_default();
+            format!("{name}{args}")
+        }
+    };
+
+    let result = match name {
+        "read_file" | "grep" | "glob" if !result.is_some_and(is_error_result) => String::new(),
+        _ => result
+            .map(|result| format!(" - {}", abbreviate(result.trim(), 160)))
+            .unwrap_or_default(),
+    };
+
+    format!("{summary} {state}{result}")
+}
+
+fn json_str<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| value.get(*key)?.as_str())
+}
+
+fn is_error_result(result: &str) -> bool {
+    result.trim_start().starts_with("Error:")
+}
+
 fn abbreviate(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
     }
-    let keep = max_chars.saturating_sub(1);
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let keep = max_chars.saturating_sub(3);
     format!("{}...", value.chars().take(keep).collect::<String>())
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    if minutes < 60 {
+        return format!("{minutes}m {seconds}s");
+    }
+
+    let hours = minutes / 60;
+    let minutes = minutes % 60;
+    format!("{hours}h {minutes}m")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{RuntimeError, RuntimeUsage};
+    use crate::runtime::{RuntimeError, RuntimeStatus, RuntimeUsage};
     use crate::types::{FunctionCall, ToolCall, ToolCallKind};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -963,11 +1360,11 @@ mod tests {
 
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(app.transcript[0].kind, TranscriptKind::Tool);
-        assert_eq!(app.transcript[0].text, "read_file finished");
+        assert!(app.transcript[0].text.starts_with("Read ? finished"));
     }
 
     #[test]
-    fn usage_and_errors_become_transcript_rows() {
+    fn usage_stays_out_of_transcript_and_errors_become_rows() {
         let mut app = TuiApp::new();
 
         app.apply_runtime_event(RuntimeEvent::UsageUpdated {
@@ -987,10 +1384,9 @@ mod tests {
             },
         });
 
-        assert_eq!(app.transcript.len(), 2);
-        assert_eq!(app.transcript[0].text, "tokens: 7 in / 11 out");
-        assert_eq!(app.transcript[1].kind, TranscriptKind::Error);
-        assert_eq!(app.transcript[1].text, "bad response");
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::Error);
+        assert_eq!(app.transcript[0].text, "bad response");
     }
 
     #[test]
@@ -1028,19 +1424,135 @@ mod tests {
     }
 
     #[test]
-    fn empty_transcript_hint_mentions_enter_and_newline_options() {
-        let app = TuiApp::new();
-        let text = transcript_text(&app);
-        let rendered = text
+    fn pending_work_row_refreshes_with_elapsed_hint() {
+        let mut app = TuiApp::new();
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::System,
+            text: "working for 0s - Esc to interrupt".to_string(),
+        });
+        app.pending_work_row = Some(0);
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(65));
+
+        app.refresh_pending_work();
+
+        assert_eq!(
+            app.transcript[0].text,
+            "working for 1m 5s - Esc to interrupt"
+        );
+    }
+
+    #[test]
+    fn turn_outcome_appends_worked_footer_and_divider() {
+        let mut app = TuiApp::new();
+        app.active = true;
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
+
+        app.apply_turn_outcome(TurnOutcome {
+            status: TurnStatus::Ok,
+            response: None,
+            tool_calls_made: Vec::new(),
+            usage: None,
+            iterations: 0,
+            error: None,
+            model_latency_ms: 0,
+            tool_latency_ms: 0,
+            total_latency_ms: 3000,
+        });
+
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::Divider);
+        assert!(app.transcript[0].text.starts_with("Worked for "));
+    }
+
+    #[test]
+    fn transcript_render_trims_leading_assistant_newline_and_indents_wraps() {
+        let mut app = TuiApp::new();
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: "\nabcdef ghijkl\n\n".to_string(),
+        });
+
+        let rendered = transcript_text(&app, 10)
+            .lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line == "- abcdef g"));
+        assert!(rendered.iter().any(|line| line == "  hijkl"));
+        assert!(!rendered.iter().any(|line| line == "- "));
+        assert!(!rendered.iter().any(|line| line == "  "));
+    }
+
+    #[test]
+    fn transcript_keeps_divider_close_to_next_user_block() {
+        let mut app = TuiApp::new();
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Divider,
+            text: "Worked for 1s".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::User,
+            text: "next prompt".to_string(),
+        });
+
+        let rendered = transcript_text(&app, 24)
+            .lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let divider = rendered
+            .iter()
+            .position(|line| line.starts_with("- Worked for 1s"))
+            .expect("divider line");
+
+        assert_eq!(rendered[divider + 1], "");
+        assert_eq!(rendered[divider + 2], blank_fill(22));
+        assert!(rendered[divider + 3].starts_with("› next prompt"));
+        assert_eq!(rendered[divider + 4], blank_fill(22));
+        assert_eq!(rendered[divider + 5], "");
+    }
+
+    #[test]
+    fn empty_transcript_intro_omits_status_line_shortcut_hints() {
+        let mut app = TuiApp::new();
+        app.status = Some(RuntimeStatus {
+            session_id: "session".to_string(),
+            model: "model".to_string(),
+            messages_count: 1,
+            active: false,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            cost_usd: None,
+        });
+
+        let intro = transcript_text(&app, 80);
+        let rendered = intro
             .lines
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-
-        assert!(rendered.contains("Enter submits"));
-        assert!(rendered.contains("\\ then Enter"));
-        assert!(rendered.contains("Shift-Enter"));
+        assert!(rendered.contains("Heddle"));
+        assert!(rendered.contains("model:"));
+        assert!(rendered.contains("directory:"));
+        let status = status_line(&app);
+        assert!(!status.contains("Enter submit"));
+        assert!(!status.contains("\\ then Enter newline"));
+        assert!(!status.contains("Esc exit"));
+        assert!(!status.starts_with("idle |"));
+        assert!(!status.starts_with("active |"));
+        assert!(!status.starts_with("permission |"));
     }
 
     #[test]
@@ -1056,7 +1568,7 @@ mod tests {
             app.input.insert_char(c);
         }
 
-        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let screen = terminal
             .backend()
             .buffer()
@@ -1082,7 +1594,7 @@ mod tests {
             reason: Some("write_file requires approval".to_string()),
         });
 
-        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let screen = terminal
             .backend()
             .buffer()
