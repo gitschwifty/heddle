@@ -375,10 +375,8 @@ impl TuiApp {
             (KeyCode::Enter, _) => {
                 self.submit(command_tx, turn_counter).await?;
             }
-            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                if !self.active {
-                    self.input.insert_char(c);
-                }
+            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if !self.active => {
+                self.input.insert_char(c);
             }
             _ => {}
         }
