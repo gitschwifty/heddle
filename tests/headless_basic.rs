@@ -80,7 +80,7 @@ fn status_returns_status_ok_with_correct_fields() {
     assert_eq!(msg["type"], "status_ok");
     assert_eq!(msg["id"], "s1");
     assert!(msg["model"].is_string());
-    assert!(msg["messages_count"].as_u64().unwrap_or(0) >= 1);
+    assert_eq!(msg["messages_count"].as_u64(), Some(0));
     assert!(msg["session_id"].is_string());
     assert!(msg["active"].is_boolean());
 }
