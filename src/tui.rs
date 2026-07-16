@@ -276,6 +276,38 @@ struct TranscriptItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct TranscriptTurn {
+    items: Vec<TurnTranscriptItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TurnTranscriptItem {
+    Row(TranscriptItem),
+    Tool(ToolTranscript),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolTranscript {
+    id: String,
+    name: String,
+    arguments: String,
+    result: Option<String>,
+    state: ToolState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolState {
+    Running,
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TranscriptLocation {
+    turn: usize,
+    item: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SlashCommand {
     Clear,
     Status,
@@ -359,10 +391,13 @@ impl ViewportState {
 #[derive(Debug, Default)]
 struct TuiApp {
     input: InputBuffer,
+    turns: Vec<TranscriptTurn>,
     transcript: Vec<TranscriptItem>,
-    tool_rows: HashMap<String, usize>,
+    tool_rows: HashMap<String, TranscriptLocation>,
     active_assistant: Option<usize>,
+    active_assistant_location: Option<TranscriptLocation>,
     pending_work_row: Option<usize>,
+    pending_work_location: Option<TranscriptLocation>,
     turn_started_at: Option<Instant>,
     viewport: ViewportState,
     status: Option<RuntimeStatus>,
@@ -498,16 +533,23 @@ impl TuiApp {
         }
 
         self.input.clear();
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::User,
-            text: message.clone(),
+        let turn = self.turns.len();
+        let pending_location = TranscriptLocation { turn, item: 1 };
+        self.turns.push(TranscriptTurn {
+            items: vec![
+                TurnTranscriptItem::Row(TranscriptItem {
+                    kind: TranscriptKind::User,
+                    text: message.clone(),
+                }),
+                TurnTranscriptItem::Row(TranscriptItem {
+                    kind: TranscriptKind::System,
+                    text: "working for 0s - Esc to interrupt".to_string(),
+                }),
+            ],
         });
-        let pending_row = self.transcript.len();
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::System,
-            text: "working for 0s - Esc to interrupt".to_string(),
-        });
-        self.pending_work_row = Some(pending_row);
+        self.pending_work_location = Some(pending_location);
+        self.refresh_transcript_cache();
+        self.pending_work_row = self.flat_index_for_location(pending_location);
         self.turn_started_at = Some(Instant::now());
         self.viewport.on_submit_prompt();
 
@@ -555,29 +597,31 @@ impl TuiApp {
             }
             RuntimeEvent::ToolStarted { name, call } => {
                 self.clear_pending_work();
-                let row = self.transcript.len();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::Tool,
-                    text: format_tool_row(&name, "running", Some(&call.function.arguments), None),
-                });
-                self.tool_rows.insert(call.id, row);
+                self.active_assistant = None;
+                self.active_assistant_location = None;
+                let location = self.push_tool(call.id.clone(), name, call.function.arguments);
+                self.tool_rows.insert(call.id, location);
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ToolFinished { name, result, call } => {
                 self.clear_pending_work();
-                let text = format_tool_row(
-                    &name,
-                    "finished",
-                    Some(&call.function.arguments),
-                    Some(&result),
-                );
-                if let Some(row) = self.tool_rows.remove(&call.id) {
-                    self.transcript[row].text = text;
+                self.active_assistant = None;
+                self.active_assistant_location = None;
+                if let Some(location) = self.tool_rows.remove(&call.id) {
+                    if let Some(TurnTranscriptItem::Tool(tool)) = self.turn_item_mut(location) {
+                        tool.name = name;
+                        tool.arguments = call.function.arguments;
+                        tool.result = Some(result);
+                        tool.state = ToolState::Finished;
+                        self.refresh_transcript_cache();
+                    }
                 } else {
-                    self.transcript.push(TranscriptItem {
-                        kind: TranscriptKind::Tool,
-                        text,
-                    });
+                    let location = self.push_tool(call.id, name, call.function.arguments);
+                    if let Some(TurnTranscriptItem::Tool(tool)) = self.turn_item_mut(location) {
+                        tool.result = Some(result);
+                        tool.state = ToolState::Finished;
+                        self.refresh_transcript_cache();
+                    }
                 }
                 self.viewport.on_new_output();
             }
@@ -665,6 +709,7 @@ impl TuiApp {
         self.active = false;
         self.active_cancel = None;
         self.active_assistant = None;
+        self.active_assistant_location = None;
         self.clear_pending_work();
         self.permission_prompt = None;
         self.permission_prompt_view = None;
@@ -690,31 +735,199 @@ impl TuiApp {
     }
 
     fn append_assistant_delta(&mut self, text: &str) {
-        let row = self.active_assistant.unwrap_or_else(|| {
-            let row = self.transcript.len();
-            self.transcript.push(TranscriptItem {
-                kind: TranscriptKind::Assistant,
-                text: String::new(),
+        if self.turns.is_empty() && !self.transcript.is_empty() {
+            let row = self.active_assistant.unwrap_or_else(|| {
+                let row = self.transcript.len();
+                self.transcript.push(TranscriptItem {
+                    kind: TranscriptKind::Assistant,
+                    text: String::new(),
+                });
+                self.active_assistant = Some(row);
+                row
             });
-            self.active_assistant = Some(row);
-            row
-        });
-        self.transcript[row].text.push_str(text);
+            self.transcript[row].text.push_str(text);
+            return;
+        }
+
+        if let Some(location) = self.active_assistant_location {
+            if let Some(TurnTranscriptItem::Row(item)) = self.turn_item_mut(location) {
+                item.text.push_str(text);
+                self.refresh_transcript_cache();
+                return;
+            }
+        }
+
+        if let Some(row) = self.active_assistant {
+            if let Some(item) = self.transcript.get_mut(row) {
+                item.text.push_str(text);
+                return;
+            }
+        }
+
+        let location = self.push_turn_row(TranscriptKind::Assistant, String::new());
+        self.active_assistant_location = Some(location);
+        self.active_assistant = self.flat_index_for_location(location);
+        if let Some(TurnTranscriptItem::Row(item)) = self.turn_item_mut(location) {
+            item.text.push_str(text);
+        }
+        self.refresh_transcript_cache();
+        self.active_assistant = self.flat_index_for_location(location);
     }
 
     fn set_assistant_message(&mut self, text: String) {
-        let row = self.active_assistant.unwrap_or_else(|| {
-            let row = self.transcript.len();
-            self.transcript.push(TranscriptItem {
-                kind: TranscriptKind::Assistant,
-                text: String::new(),
+        if self.turns.is_empty() && !self.transcript.is_empty() {
+            let row = self.active_assistant.unwrap_or_else(|| {
+                let row = self.transcript.len();
+                self.transcript.push(TranscriptItem {
+                    kind: TranscriptKind::Assistant,
+                    text: String::new(),
+                });
+                self.active_assistant = Some(row);
+                row
             });
-            self.active_assistant = Some(row);
-            row
-        });
-        if self.transcript[row].text.is_empty() {
-            self.transcript[row].text = text;
+            if self.transcript[row].text.is_empty() {
+                self.transcript[row].text = text;
+            }
+            return;
         }
+
+        if let Some(location) = self.active_assistant_location {
+            if let Some(TurnTranscriptItem::Row(item)) = self.turn_item_mut(location) {
+                if item.text.is_empty() {
+                    item.text = text;
+                    self.refresh_transcript_cache();
+                }
+                return;
+            }
+        }
+
+        if let Some(row) = self.active_assistant {
+            if let Some(item) = self.transcript.get_mut(row) {
+                if item.text.is_empty() {
+                    item.text = text;
+                }
+                return;
+            }
+        }
+
+        let location = self.push_turn_row(TranscriptKind::Assistant, text);
+        self.active_assistant_location = Some(location);
+        self.active_assistant = self.flat_index_for_location(location);
+        self.refresh_transcript_cache();
+        self.active_assistant = self.flat_index_for_location(location);
+    }
+
+    fn push_turn_row(&mut self, kind: TranscriptKind, text: String) -> TranscriptLocation {
+        let turn = self.current_turn_index();
+        let item = self.turns[turn].items.len();
+        self.turns[turn]
+            .items
+            .push(TurnTranscriptItem::Row(TranscriptItem { kind, text }));
+        let location = TranscriptLocation { turn, item };
+        self.refresh_transcript_cache();
+        location
+    }
+
+    fn push_tool(&mut self, id: String, name: String, arguments: String) -> TranscriptLocation {
+        let turn = self.current_turn_index();
+        let item = self.turns[turn].items.len();
+        self.turns[turn]
+            .items
+            .push(TurnTranscriptItem::Tool(ToolTranscript {
+                id,
+                name,
+                arguments,
+                result: None,
+                state: ToolState::Running,
+            }));
+        let location = TranscriptLocation { turn, item };
+        self.refresh_transcript_cache();
+        location
+    }
+
+    fn current_turn_index(&mut self) -> usize {
+        if self.turns.is_empty() {
+            self.turns.push(TranscriptTurn { items: Vec::new() });
+        }
+        self.turns.len() - 1
+    }
+
+    fn turn_item_mut(&mut self, location: TranscriptLocation) -> Option<&mut TurnTranscriptItem> {
+        self.turns
+            .get_mut(location.turn)?
+            .items
+            .get_mut(location.item)
+    }
+
+    fn refresh_transcript_cache(&mut self) {
+        self.transcript = flatten_transcript_turns(&self.turns);
+        self.pending_work_row = self
+            .pending_work_location
+            .and_then(|location| self.flat_index_for_location(location));
+        self.active_assistant = self
+            .active_assistant_location
+            .and_then(|location| self.flat_index_for_location(location));
+    }
+
+    fn flat_index_for_location(&self, target: TranscriptLocation) -> Option<usize> {
+        let mut row = 0;
+        for (turn_idx, turn) in self.turns.iter().enumerate() {
+            let mut item_idx = 0;
+            while item_idx < turn.items.len() {
+                match &turn.items[item_idx] {
+                    TurnTranscriptItem::Row(_) => {
+                        if target
+                            == (TranscriptLocation {
+                                turn: turn_idx,
+                                item: item_idx,
+                            })
+                        {
+                            return Some(row);
+                        }
+                        row += 1;
+                        item_idx += 1;
+                    }
+                    TurnTranscriptItem::Tool(tool) if is_exploration_tool(&tool.name) => {
+                        let group_start = item_idx;
+                        while item_idx < turn.items.len() {
+                            match &turn.items[item_idx] {
+                                TurnTranscriptItem::Tool(tool)
+                                    if is_exploration_tool(&tool.name) =>
+                                {
+                                    if target
+                                        == (TranscriptLocation {
+                                            turn: turn_idx,
+                                            item: item_idx,
+                                        })
+                                    {
+                                        return Some(row);
+                                    }
+                                    item_idx += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        if item_idx == group_start {
+                            item_idx += 1;
+                        }
+                        row += 1;
+                    }
+                    TurnTranscriptItem::Tool(_) => {
+                        if target
+                            == (TranscriptLocation {
+                                turn: turn_idx,
+                                item: item_idx,
+                            })
+                        {
+                            return Some(row);
+                        }
+                        row += 1;
+                        item_idx += 1;
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn set_permission_prompt(&mut self, prompt: PermissionPrompt) {
@@ -732,17 +945,36 @@ impl TuiApp {
     }
 
     fn clear_pending_work(&mut self) {
+        if let Some(location) = self.pending_work_location.take() {
+            if let Some(turn) = self.turns.get_mut(location.turn) {
+                if location.item < turn.items.len() {
+                    turn.items.remove(location.item);
+                    self.tool_rows.retain(|_, tool_location| {
+                        if tool_location.turn == location.turn && tool_location.item > location.item
+                        {
+                            tool_location.item -= 1;
+                        }
+                        true
+                    });
+                    if let Some(active_location) = self.active_assistant_location.as_mut() {
+                        if active_location.turn == location.turn
+                            && active_location.item > location.item
+                        {
+                            active_location.item -= 1;
+                        }
+                    }
+                }
+            }
+            self.refresh_transcript_cache();
+            self.pending_work_row = None;
+            return;
+        }
+
         let Some(row) = self.pending_work_row.take() else {
             return;
         };
         if row < self.transcript.len() && self.transcript[row].kind == TranscriptKind::System {
             self.transcript.remove(row);
-            self.tool_rows.retain(|_, tool_row| {
-                if *tool_row > row {
-                    *tool_row -= 1;
-                }
-                true
-            });
             if let Some(active_row) = self.active_assistant.as_mut() {
                 if *active_row > row {
                     *active_row -= 1;
@@ -752,6 +984,20 @@ impl TuiApp {
     }
 
     fn refresh_pending_work(&mut self) {
+        if let Some(location) = self.pending_work_location {
+            let Some(started) = self.turn_started_at else {
+                return;
+            };
+            if let Some(TurnTranscriptItem::Row(item)) = self.turn_item_mut(location) {
+                item.text = format!(
+                    "working for {} - Esc to interrupt",
+                    format_duration(started.elapsed())
+                );
+                self.refresh_transcript_cache();
+            }
+            return;
+        }
+
         let Some(row) = self.pending_work_row else {
             return;
         };
@@ -772,10 +1018,10 @@ impl TuiApp {
             TurnStatus::Cancelled => " - cancelled",
             TurnStatus::Error => " - error",
         };
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::Divider,
-            text: format!("Worked for {worked_for}{suffix}"),
-        });
+        self.push_turn_row(
+            TranscriptKind::Divider,
+            format!("Worked for {worked_for}{suffix}"),
+        );
     }
 
     async fn apply_slash_command(
@@ -801,19 +1047,25 @@ impl TuiApp {
     }
 
     fn clear_transcript_view(&mut self) {
+        self.turns.clear();
         self.transcript.clear();
         self.tool_rows.clear();
         self.active_assistant = None;
+        self.active_assistant_location = None;
         self.pending_work_row = None;
+        self.pending_work_location = None;
         self.turn_started_at = None;
         self.viewport = ViewportState::default();
     }
 
     fn push_system_row(&mut self, text: String) {
-        self.transcript.push(TranscriptItem {
-            kind: TranscriptKind::System,
-            text,
+        self.turns.push(TranscriptTurn {
+            items: vec![TurnTranscriptItem::Row(TranscriptItem {
+                kind: TranscriptKind::System,
+                text,
+            })],
         });
+        self.refresh_transcript_cache();
     }
 }
 
@@ -1441,6 +1693,91 @@ fn visible_tool_count(app: &TuiApp) -> usize {
         .count()
 }
 
+fn flatten_transcript_turns(turns: &[TranscriptTurn]) -> Vec<TranscriptItem> {
+    let mut rows = Vec::new();
+    for turn in turns {
+        let mut idx = 0;
+        while idx < turn.items.len() {
+            match &turn.items[idx] {
+                TurnTranscriptItem::Row(item) => {
+                    rows.push(item.clone());
+                    idx += 1;
+                }
+                TurnTranscriptItem::Tool(tool) if is_exploration_tool(&tool.name) => {
+                    let mut group = Vec::new();
+                    while idx < turn.items.len() {
+                        match &turn.items[idx] {
+                            TurnTranscriptItem::Tool(tool) if is_exploration_tool(&tool.name) => {
+                                group.push(exploration_tool_line(tool));
+                                idx += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    rows.push(TranscriptItem {
+                        kind: TranscriptKind::Tool,
+                        text: format!("Explored\n{}", group.join("\n")),
+                    });
+                }
+                TurnTranscriptItem::Tool(tool) => {
+                    rows.push(TranscriptItem {
+                        kind: TranscriptKind::Tool,
+                        text: action_tool_row(tool),
+                    });
+                    idx += 1;
+                }
+            }
+        }
+    }
+    rows
+}
+
+fn is_exploration_tool(name: &str) -> bool {
+    matches!(name, "read_file" | "grep" | "glob")
+}
+
+fn exploration_tool_line(tool: &ToolTranscript) -> String {
+    let args_value = serde_json::from_str::<serde_json::Value>(&tool.arguments).ok();
+    let summary = match (tool.name.as_str(), args_value.as_ref()) {
+        ("read_file", Some(args)) => {
+            let path = json_str(args, &["file_path", "path"]).unwrap_or("?");
+            format!("Read {path}")
+        }
+        ("grep", Some(args)) => {
+            let pattern = json_str(args, &["pattern"]).unwrap_or("?");
+            let path = json_str(args, &["path"]).unwrap_or(".");
+            format!("Search {pattern:?} in {path}")
+        }
+        ("glob", Some(args)) => {
+            let pattern = json_str(args, &["pattern"]).unwrap_or("?");
+            let path = json_str(args, &["path"]).unwrap_or(".");
+            format!("Explore {pattern} in {path}")
+        }
+        _ => format!("{} {}", tool.name, summarize_arguments(&tool.arguments, 80)),
+    };
+
+    match (&tool.state, tool.result.as_deref()) {
+        (ToolState::Running, _) => format!("{summary} running"),
+        (ToolState::Finished, Some(result)) if is_error_result(result) => {
+            format!("{summary} error: {}", abbreviate(result.trim(), 120))
+        }
+        (ToolState::Finished, _) => summary,
+    }
+}
+
+fn action_tool_row(tool: &ToolTranscript) -> String {
+    let state = match tool.state {
+        ToolState::Running => "running",
+        ToolState::Finished => "finished",
+    };
+    format_tool_row(
+        &tool.name,
+        state,
+        Some(&tool.arguments),
+        tool.result.as_deref(),
+    )
+}
+
 fn format_cost(cost: f64) -> String {
     if cost == 0.0 {
         return " | $0.0000".to_string();
@@ -1617,6 +1954,26 @@ mod tests {
             .collect::<String>()
     }
 
+    fn insert_prompt(app: &mut TuiApp, prompt: &str) {
+        for c in prompt.chars() {
+            app.input.insert_char(c);
+        }
+    }
+
+    fn ok_outcome() -> TurnOutcome {
+        TurnOutcome {
+            status: TurnStatus::Ok,
+            response: None,
+            tool_calls_made: Vec::new(),
+            usage: None,
+            iterations: 0,
+            error: None,
+            model_latency_ms: 0,
+            tool_latency_ms: 0,
+            total_latency_ms: 0,
+        }
+    }
+
     #[test]
     fn viewport_follows_tail_when_content_or_viewport_changes() {
         let mut viewport = ViewportState::default();
@@ -1754,7 +2111,138 @@ mod tests {
 
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(app.transcript[0].kind, TranscriptKind::Tool);
-        assert!(app.transcript[0].text.starts_with("Read ? finished"));
+        assert_eq!(app.transcript[0].text, "Explored\nRead ?");
+    }
+
+    #[tokio::test]
+    async fn transcript_groups_exploration_tools_inside_their_turns() {
+        let backend = TestBackend::new(96, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let (command_tx, mut command_rx) = mpsc::channel(2);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+
+        insert_prompt(&mut app, "first prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("first submit");
+        let _ = command_rx.try_recv().expect("first command");
+        let read = tool_call_with_args("read-1", "read_file", r#"{"file_path":"src/tui.rs"}"#);
+        let grep = tool_call_with_args(
+            "grep-1",
+            "grep",
+            r#"{"pattern":"RuntimeEvent","path":"src"}"#,
+        );
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "read_file".to_string(),
+            call: read.clone(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "read_file".to_string(),
+            result: "contents".to_string(),
+            call: read,
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "grep".to_string(),
+            call: grep.clone(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "grep".to_string(),
+            result: "matches".to_string(),
+            call: grep,
+        });
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "first answer".to_string(),
+        });
+        app.apply_turn_outcome(ok_outcome());
+
+        insert_prompt(&mut app, "second prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("second submit");
+        let _ = command_rx.try_recv().expect("second command");
+        let glob = tool_call_with_args("glob-1", "glob", r#"{"pattern":"*.rs","path":"src"}"#);
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "glob".to_string(),
+            call: glob.clone(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "glob".to_string(),
+            result: "src/tui.rs".to_string(),
+            call: glob,
+        });
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "second answer".to_string(),
+        });
+
+        assert_eq!(app.transcript[0].kind, TranscriptKind::User);
+        assert_eq!(app.transcript[1].kind, TranscriptKind::Tool);
+        assert!(app.transcript[1].text.contains("Explored\nRead src/tui.rs"));
+        assert!(app.transcript[1]
+            .text
+            .contains("Search \"RuntimeEvent\" in src"));
+        assert_eq!(app.transcript[2].text, "first answer");
+        assert_eq!(app.transcript[4].kind, TranscriptKind::User);
+        assert_eq!(app.transcript[5].text, "Explored\nExplore *.rs in src");
+        assert_eq!(app.transcript[6].text, "second answer");
+
+        let screen = draw_screen(&mut terminal, &mut app);
+        assert!(screen.contains("Explored"));
+        assert!(screen.contains("Read src/tui.rs"));
+        assert!(screen.contains("Search \"RuntimeEvent\" in src"));
+        assert!(screen.contains("second answer"));
+    }
+
+    #[test]
+    fn transcript_keeps_interleaved_tools_and_assistant_content_ordered() {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        let read = tool_call_with_args("read-1", "read_file", r#"{"file_path":"src/tui.rs"}"#);
+        let bash = tool_call_with_args("bash-1", "bash", r#"{"command":"cargo test tui::tests"}"#);
+
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "read_file".to_string(),
+            call: read.clone(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "read_file".to_string(),
+            result: "contents".to_string(),
+            call: read,
+        });
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "after read".to_string(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "bash".to_string(),
+            call: bash.clone(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "bash".to_string(),
+            result: "tests passed".to_string(),
+            call: bash,
+        });
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "after bash".to_string(),
+        });
+
+        assert_eq!(app.transcript.len(), 4);
+        assert_eq!(app.transcript[0].text, "Explored\nRead src/tui.rs");
+        assert_eq!(app.transcript[1].text, "after read");
+        assert_eq!(app.transcript[2].kind, TranscriptKind::Tool);
+        assert!(app.transcript[2]
+            .text
+            .contains("Run cargo test tui::tests finished - tests passed"));
+        assert_eq!(app.transcript[3].text, "after bash");
+
+        let screen = draw_screen(&mut terminal, &mut app);
+        let read_pos = screen.find("Read src/tui.rs").expect("read row");
+        let first_answer_pos = screen.find("after read").expect("first answer");
+        let bash_pos = screen.find("Run cargo test tui::tests").expect("bash row");
+        let second_answer_pos = screen.find("after bash").expect("second answer");
+        assert!(read_pos < first_answer_pos);
+        assert!(first_answer_pos < bash_pos);
+        assert!(bash_pos < second_answer_pos);
     }
 
     #[test]
