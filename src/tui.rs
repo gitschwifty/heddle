@@ -1606,15 +1606,57 @@ mod tests {
         }
     }
 
-    fn draw_screen(terminal: &mut Terminal<TestBackend>, app: &mut TuiApp) -> String {
+    #[derive(Debug, Clone)]
+    struct RenderedScreen {
+        width: u16,
+        height: u16,
+        lines: Vec<String>,
+        content: String,
+    }
+
+    impl RenderedScreen {
+        fn contains(&self, needle: &str) -> bool {
+            self.content.contains(needle)
+        }
+
+        fn last_line(&self) -> &str {
+            self.lines.last().map(String::as_str).unwrap_or("")
+        }
+    }
+
+    fn render_app(width: u16, height: u16, app: &mut TuiApp) -> RenderedScreen {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        draw_screen(&mut terminal, app)
+    }
+
+    fn draw_screen(terminal: &mut Terminal<TestBackend>, app: &mut TuiApp) -> RenderedScreen {
         terminal.draw(|frame| draw(frame, app)).expect("draw");
-        terminal
-            .backend()
-            .buffer()
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        let width = area.width as usize;
+        let lines = buffer
             .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
+            .chunks(width.max(1))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let content = lines.join("\n");
+        RenderedScreen {
+            width: area.width,
+            height: area.height,
+            lines,
+            content,
+        }
+    }
+
+    fn insert_input(input: &mut InputBuffer, text: &str) {
+        for c in text.chars() {
+            if c == '\n' {
+                input.insert_newline();
+            } else {
+                input.insert_char(c);
+            }
+        }
     }
 
     #[test]
@@ -2153,6 +2195,197 @@ mod tests {
         assert_eq!(status.chars().count(), 24);
         assert!(status.ends_with("..."));
         assert_eq!(status, status_line(&app, 24));
+    }
+
+    #[test]
+    fn render_narrow_terminals_keep_prompt_and_status_readable() {
+        for (width, height) in [(60, 16), (80, 24)] {
+            let mut app = TuiApp::new();
+            app.status = Some(RuntimeStatus {
+                session_id: "session".to_string(),
+                model: "provider/super-long-model-name-for-narrow-terminal".to_string(),
+                messages_count: 128,
+                active: false,
+                total_input_tokens: 123_456,
+                total_output_tokens: 7_890,
+                cost_usd: Some(12.3456),
+            });
+            insert_input(&mut app.input, "short prompt");
+            app.transcript.push(TranscriptItem {
+                kind: TranscriptKind::Assistant,
+                text: "visible assistant row".to_string(),
+            });
+
+            let screen = render_app(width, height, &mut app);
+
+            assert_eq!(screen.width, width);
+            assert_eq!(screen.height, height);
+            assert_eq!(screen.lines.len(), height as usize);
+            assert!(screen
+                .lines
+                .iter()
+                .all(|line| line.chars().count() == width as usize));
+            assert!(screen.contains("short prompt"));
+            assert!(screen.contains("visible assistant row"));
+            assert!(screen.last_line().starts_with("idle |"));
+            assert_eq!(screen.last_line().chars().count(), width as usize);
+        }
+    }
+
+    #[test]
+    fn render_short_terminal_has_defined_clipped_layout_without_panicking() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(false, 1, 2, 3, None));
+        insert_input(&mut app.input, "tiny");
+
+        // Current behavior for below-comfort terminals is a clipped normal layout.
+        // Keep this explicit until the app grows a dedicated minimum-size message.
+        let screen = render_app(24, 4, &mut app);
+
+        assert_eq!(screen.lines.len(), 4);
+        assert!(screen.lines.iter().all(|line| line.chars().count() == 24));
+        assert!(screen.contains("tiny"));
+        assert!(screen.last_line().starts_with("idle |"));
+    }
+
+    #[test]
+    fn render_long_assistant_tool_and_user_text_wraps_or_truncates() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(false, 4, 1000, 200, None));
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::User,
+            text:
+                "user first line\nuser second line with enough text to wrap in the transcript band"
+                    .to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: "assistant-".repeat(32),
+        });
+        let call = tool_call_with_args(
+            "call-long",
+            "custom_tool",
+            &format!(
+                r#"{{"payload":"{}arg-tail-marker"}}"#,
+                "argument-".repeat(40)
+            ),
+        );
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "custom_tool".to_string(),
+            result: format!("{}result-tail-marker", "result-".repeat(60)),
+            call,
+        });
+
+        let screen = render_app(72, 24, &mut app);
+
+        assert!(screen.contains("user first line"));
+        assert!(screen.contains("user second line"));
+        assert!(screen.contains("assistant-assistant"));
+        assert!(screen.contains("custom_tool"));
+        assert!(screen.contains("..."));
+        assert!(!screen.contains("arg-tail-marker"));
+        assert!(!screen.contains("result-tail-marker"));
+        assert!(screen.last_line().starts_with("idle |"));
+    }
+
+    #[tokio::test]
+    async fn active_turn_prompt_ignores_input_and_renders_status_without_cursor_panic() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(true, 3, 10, 20, None));
+        app.active = true;
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(2));
+        insert_input(&mut app.input, "unchanged draft");
+        let mut turn_counter = 0;
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &command_tx,
+            &mut turn_counter,
+        )
+        .await
+        .expect("active key");
+        app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &command_tx,
+            &mut turn_counter,
+        )
+        .await
+        .expect("active enter");
+
+        let screen = render_app(60, 14, &mut app);
+
+        assert_eq!(app.input.text(), "unchanged draft");
+        assert_eq!(turn_counter, 0);
+        assert!(command_rx.try_recv().is_err());
+        assert!(screen.contains("unchanged draft"));
+        assert!(screen.last_line().starts_with("active "));
+    }
+
+    #[tokio::test]
+    async fn ctrl_end_returns_manual_scroll_to_latest_output() {
+        let (command_tx, _) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+        let mut turn_counter = 0;
+
+        let bottom = render_app(80, 24, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        let tail_scroll = app.viewport.scroll_top;
+        app.handle_key(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            &command_tx,
+            &mut turn_counter,
+        )
+        .await
+        .expect("page up");
+        let manual = render_app(80, 24, &mut app);
+        assert!(!app.viewport.follow_tail);
+        assert!(app.viewport.scroll_top < tail_scroll);
+        assert!(!manual.contains("transcript row 089"));
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
+            &command_tx,
+            &mut turn_counter,
+        )
+        .await
+        .expect("ctrl end");
+        let returned = render_app(80, 24, &mut app);
+
+        assert!(app.viewport.follow_tail);
+        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
+        assert!(returned.contains("transcript row 089"));
+    }
+
+    #[test]
+    fn render_error_status_rows_and_empty_transcript_hint() {
+        let mut empty = TuiApp::new();
+        empty.status = Some(runtime_status(false, 0, 0, 0, None));
+
+        let intro = render_app(60, 16, &mut empty);
+
+        assert!(intro.contains("Heddle"));
+        assert!(intro.contains("model:"));
+        assert!(intro.last_line().starts_with("idle |"));
+
+        let mut failed = TuiApp::new();
+        failed.status = Some(runtime_status(false, 2, 10, 20, None));
+        failed.last_turn_status = Some(TurnStatus::Error);
+        failed.apply_runtime_event(RuntimeEvent::Error {
+            error: RuntimeError {
+                code: "provider_error".to_string(),
+                message: "provider said no".to_string(),
+                retryable: false,
+                provider: None,
+                details: None,
+            },
+        });
+
+        let error_screen = render_app(60, 16, &mut failed);
+
+        assert!(error_screen.contains("! provider said no"));
+        assert!(error_screen.last_line().starts_with("failed |"));
     }
 
     #[test]
