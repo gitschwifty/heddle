@@ -258,6 +258,15 @@ struct TranscriptItem {
     text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SlashCommand {
+    Clear,
+    Status,
+    Help,
+    Quit,
+    Unknown(String),
+}
+
 #[derive(Debug, Default)]
 struct TuiApp {
     input: InputBuffer,
@@ -415,8 +424,9 @@ impl TuiApp {
             return Ok(());
         }
 
-        if matches!(message.as_str(), "/quit" | "/exit") {
-            self.should_quit = true;
+        if message.starts_with('/') {
+            self.input.clear();
+            self.apply_slash_command(parse_tui_slash_command(&message));
             return Ok(());
         }
 
@@ -687,6 +697,82 @@ impl TuiApp {
             text: format!("Worked for {worked_for}{suffix}"),
         });
     }
+
+    fn apply_slash_command(&mut self, command: SlashCommand) {
+        match command {
+            SlashCommand::Clear => self.clear_transcript_view(),
+            SlashCommand::Status => self.push_system_row(tui_status_text(self.status.as_ref())),
+            SlashCommand::Help => self.push_system_row(tui_help_text()),
+            SlashCommand::Quit => self.should_quit = true,
+            SlashCommand::Unknown(command) => self.push_system_row(format!(
+                "unknown command: {command}. Type /help for available TUI commands."
+            )),
+        }
+        self.follow_tail = true;
+    }
+
+    fn clear_transcript_view(&mut self) {
+        self.transcript.clear();
+        self.tool_rows.clear();
+        self.active_assistant = None;
+        self.pending_work_row = None;
+        self.turn_started_at = None;
+        self.transcript_scroll = 0;
+        self.max_transcript_scroll = 0;
+        self.follow_tail = true;
+    }
+
+    fn push_system_row(&mut self, text: String) {
+        self.transcript.push(TranscriptItem {
+            kind: TranscriptKind::System,
+            text,
+        });
+    }
+}
+
+fn parse_tui_slash_command(input: &str) -> SlashCommand {
+    let token = input.split_whitespace().next().unwrap_or(input.trim());
+    match token {
+        "/clear" => SlashCommand::Clear,
+        "/status" => SlashCommand::Status,
+        "/help" => SlashCommand::Help,
+        "/quit" | "/exit" => SlashCommand::Quit,
+        other => SlashCommand::Unknown(other.to_string()),
+    }
+}
+
+fn tui_help_text() -> String {
+    [
+        "TUI commands:",
+        "/help - show TUI commands and keybindings",
+        "/status - show session, model, message, token, and cost status",
+        "/clear - clear the local transcript view",
+        "/quit, /exit - exit the TUI",
+        "",
+        "Keybindings:",
+        "Enter submit | Shift-Enter newline | Esc interrupt/exit | Ctrl-C exit",
+        "PageUp/PageDown scroll | Ctrl-End follow tail",
+    ]
+    .join("\n")
+}
+
+fn tui_status_text(status: Option<&RuntimeStatus>) -> String {
+    let Some(status) = status else {
+        return "runtime status unavailable: initializing".to_string();
+    };
+    let cost = status
+        .cost_usd
+        .map(|cost| format!("${cost:.4}"))
+        .unwrap_or_else(|| "n/a".to_string());
+    format!(
+        "session: {}\nmodel: {}\nmessages: {}\ntokens: {} in / {} out\ncost: {}",
+        status.session_id,
+        status.model,
+        status.messages_count,
+        status.total_input_tokens,
+        status.total_output_tokens,
+        cost
+    )
 }
 
 impl PermissionPromptView {
@@ -1551,6 +1637,154 @@ mod tests {
         assert!(!status.starts_with("idle |"));
         assert!(!status.starts_with("active |"));
         assert!(!status.starts_with("permission |"));
+    }
+
+    #[test]
+    fn slash_command_parser_recognizes_tui_local_commands() {
+        assert_eq!(parse_tui_slash_command("/clear"), SlashCommand::Clear);
+        assert_eq!(parse_tui_slash_command(" /status "), SlashCommand::Status);
+        assert_eq!(parse_tui_slash_command("/help"), SlashCommand::Help);
+        assert_eq!(parse_tui_slash_command("/quit"), SlashCommand::Quit);
+        assert_eq!(parse_tui_slash_command("/exit"), SlashCommand::Quit);
+    }
+
+    #[tokio::test]
+    async fn slash_commands_do_not_route_to_runtime_channel() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+        for c in "/help".chars() {
+            app.input.insert_char(c);
+        }
+
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("submit");
+
+        assert!(command_rx.try_recv().is_err());
+        assert_eq!(turn_counter, 0);
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::System);
+        assert!(app.transcript[0].text.contains("/clear"));
+    }
+
+    #[tokio::test]
+    async fn non_slash_submit_routes_to_runtime_channel() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+        for c in "hello model".chars() {
+            app.input.insert_char(c);
+        }
+
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("submit");
+
+        let RuntimeCommand::Send { id, message, .. } =
+            command_rx.try_recv().expect("runtime command");
+        assert_eq!(id, "tui-turn-1");
+        assert_eq!(message, "hello model");
+        assert_eq!(turn_counter, 1);
+        assert!(app.active);
+    }
+
+    #[tokio::test]
+    async fn unknown_slash_command_adds_visible_system_row_without_runtime_send() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+        for c in "/bogus".chars() {
+            app.input.insert_char(c);
+        }
+
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("submit");
+
+        assert!(command_rx.try_recv().is_err());
+        assert_eq!(turn_counter, 0);
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::System);
+        assert!(app.transcript[0].text.contains("unknown command: /bogus"));
+    }
+
+    #[tokio::test]
+    async fn clear_slash_command_clears_only_local_transcript_view() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        app.status = Some(RuntimeStatus {
+            session_id: "session-1".to_string(),
+            model: "model-a".to_string(),
+            messages_count: 3,
+            active: false,
+            total_input_tokens: 13,
+            total_output_tokens: 21,
+            cost_usd: Some(0.125),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: "old visible row".to_string(),
+        });
+        for c in "/clear".chars() {
+            app.input.insert_char(c);
+        }
+        let mut turn_counter = 0;
+
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("submit");
+
+        assert!(command_rx.try_recv().is_err());
+        assert!(app.transcript.is_empty());
+        assert!(app.status.is_some());
+        assert_eq!(turn_counter, 0);
+    }
+
+    #[test]
+    fn status_slash_command_adds_runtime_status_row() {
+        let mut app = TuiApp::new();
+        app.status = Some(RuntimeStatus {
+            session_id: "session-1".to_string(),
+            model: "model-a".to_string(),
+            messages_count: 3,
+            active: false,
+            total_input_tokens: 13,
+            total_output_tokens: 21,
+            cost_usd: Some(0.125),
+        });
+
+        app.apply_slash_command(SlashCommand::Status);
+
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::System);
+        assert!(app.transcript[0].text.contains("session: session-1"));
+        assert!(app.transcript[0].text.contains("model: model-a"));
+        assert!(app.transcript[0].text.contains("messages: 3"));
+        assert!(app.transcript[0].text.contains("tokens: 13 in / 21 out"));
+        assert!(app.transcript[0].text.contains("cost: $0.1250"));
+    }
+
+    #[test]
+    fn help_slash_command_renders_supported_commands() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        app.apply_slash_command(SlashCommand::Help);
+
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(screen.contains("/help"));
+        assert!(screen.contains("/status"));
+        assert!(screen.contains("/clear"));
+        assert!(screen.contains("Ctrl-C"));
     }
 
     #[test]
