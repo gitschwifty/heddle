@@ -158,6 +158,7 @@ async fn yields_error_event_when_provider_fails() {
 #[tokio::test]
 async fn yields_error_when_response_has_empty_choices() {
     let empty = ChatCompletionResponse {
+        model: None,
         id: "test".to_string(),
         choices: vec![],
         usage: Some(heddle::types::Usage {

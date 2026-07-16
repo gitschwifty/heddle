@@ -75,6 +75,16 @@ async fn get_all_models_returns_full_list() {
 }
 
 #[tokio::test]
+async fn search_models_filters_by_id_or_name() {
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let models = pricing.search_models("opus", 20).await.unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "anthropic/claude-3-opus");
+}
+
+#[tokio::test]
 async fn lazy_loading_no_fetch_until_first_access() {
     let server = MockServer::start().await;
     mount_models(&server).await;

@@ -112,6 +112,8 @@ pub struct ToolFunction {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionResponse {
     pub id: String,
+    #[serde(default)]
+    pub model: Option<String>,
     pub choices: Vec<Choice>,
     #[serde(default)]
     pub usage: Option<Usage>,
@@ -164,6 +166,8 @@ pub struct CompletionTokenDetails {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamChunk {
     pub id: String,
+    #[serde(default)]
+    pub model: Option<String>,
     pub choices: Vec<StreamChoice>,
     #[serde(default)]
     pub usage: Option<Usage>,

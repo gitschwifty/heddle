@@ -136,6 +136,7 @@ fn user(c: &str) -> Vec<Message> {
 
 fn empty_text_response() -> ChatCompletionResponse {
     ChatCompletionResponse {
+        model: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![Choice {
             index: 0,
@@ -218,6 +219,27 @@ async fn text_only_streaming_yields_deltas_then_assistant_message() {
     if let AgentEvent::AssistantMessage { message, .. } = assistants[0] {
         assert_eq!(message.content.as_deref(), Some("Hello world"));
     }
+}
+
+#[tokio::test]
+async fn streaming_chunk_yields_routed_model_event() {
+    let mut chunk = text_chunk("hello");
+    chunk.model = Some("openai/gpt-4o-mini".to_string());
+    let provider = StreamScript::new(vec![vec![chunk, finish_chunk("stop")]]);
+    let mut messages = user("hi");
+    let stream = run_agent_loop_streaming(
+        provider,
+        ToolRegistry::new(),
+        &mut messages,
+        AgentLoopOptions::default(),
+    );
+
+    let events = collect(stream).await;
+
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::RoutedModel { model } if model == "openai/gpt-4o-mini"
+    )));
 }
 
 #[tokio::test]

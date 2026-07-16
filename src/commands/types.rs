@@ -12,6 +12,7 @@ use crate::agents::types::AgentDefinition;
 use crate::config::discovery::DiscoveryResult;
 use crate::config::loader::HeddleConfig;
 use crate::context::paste_cache::PasteCache;
+use crate::cost::pricing::ModelPricing;
 use crate::cost::tracker::CostTracker;
 use crate::provider::types::Provider;
 use crate::tools::registry::ToolRegistry;
@@ -22,6 +23,7 @@ pub struct CommandContext<'a> {
     pub messages: &'a mut Vec<Message>,
     pub registry: &'a ToolRegistry,
     pub cost_tracker: Arc<Mutex<CostTracker>>,
+    pub model_pricing: ModelPricing,
     pub session_file: PathBuf,
     pub session_id: String,
     pub provider: Arc<dyn Provider>,

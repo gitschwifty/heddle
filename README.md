@@ -126,8 +126,9 @@ Start the interactive CLI with `cargo run --release --bin heddle` (or `./target/
 | `/exit`, `/quit` | Exit heddle |
 | `/cost` | Show token usage and cost |
 | `/status` | Show session status |
-| `/context` | Show context size estimate |
-| `/model [name]` | Switch model or show current |
+| `/context` | Show context size estimate and known model limit |
+| `/models [query]` | List matching OpenRouter models with price/context metadata |
+| `/model [name]` | Switch model or show current model details |
 | `/tools` | List available tools |
 | `/history [--limit N] [--search term]` | Show message history |
 | `/compact` | Force context compaction |
@@ -135,6 +136,13 @@ Start the interactive CLI with `cargo run --release --bin heddle` (or `./target/
 | `/name <name>` | Name the current session |
 | `/fork` | Fork the current session |
 | `/restore <file> [version]` | Restore a file from backup |
+
+Model metadata comes from OpenRouter's `/models` registry and is fetched lazily
+the first time `/models`, `/model`, or `/context` needs it. If the registry is
+unavailable, `/model <id>` warns and falls back to the existing switch behavior
+so aliases, provider-native ids, and routed models can still be used. When
+OpenRouter reports a different served model, the REPL prints it as
+`[model: provider/model-id]`.
 
 ### Shell Commands
 

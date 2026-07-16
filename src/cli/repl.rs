@@ -327,6 +327,7 @@ pub async fn start_cli() -> Result<()> {
                     messages: &mut ctx.messages,
                     registry: &ctx.registry,
                     cost_tracker: ctx.cost_tracker.clone(),
+                    model_pricing: ctx.model_pricing.clone(),
                     session_file: ctx.session_file.clone(),
                     session_id: ctx.session_id.clone(),
                     provider: active_provider.clone(),
@@ -523,6 +524,11 @@ pub async fn start_cli() -> Result<()> {
                         tracker.total_input_tokens(),
                         tracker.total_output_tokens()
                     );
+                }
+                AgentEvent::RoutedModel { model } => {
+                    if model != ctx.config.model {
+                        println!("  [model: {model}]");
+                    }
                 }
                 AgentEvent::LoopDetected { count } => {
                     eprintln!(

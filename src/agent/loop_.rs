@@ -219,6 +219,9 @@ pub fn run_agent_loop<'a>(
             };
             if aborted(&options.signal) { return; }
 
+            if let Some(model) = response.model.clone() {
+                yield AgentEvent::RoutedModel { model };
+            }
             let response_usage = response.usage.clone();
             let choice = match response.choices.into_iter().next() {
                 Some(c) => c,
@@ -405,6 +408,7 @@ pub fn run_agent_loop_streaming<'a>(
             let mut assembled: HashMap<u32, (String, String, String)> = HashMap::new(); // index → (id, name, args)
             let mut stream_usage = None;
             let mut finish_reasons: Vec<String> = Vec::new();
+            let mut last_routed_model: Option<String> = None;
 
             loop {
                 let chunk_res = match &options.signal {
@@ -427,6 +431,12 @@ pub fn run_agent_loop_streaming<'a>(
                         return;
                     }
                 };
+                if let Some(model) = chunk.model.clone() {
+                    if last_routed_model.as_deref() != Some(model.as_str()) {
+                        last_routed_model = Some(model.clone());
+                        yield AgentEvent::RoutedModel { model };
+                    }
+                }
                 let choice = match chunk.choices.into_iter().next() {
                     Some(c) => c,
                     None => continue,

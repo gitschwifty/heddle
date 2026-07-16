@@ -23,6 +23,9 @@ pub enum AgentEvent {
     Usage {
         usage: Usage,
     },
+    RoutedModel {
+        model: String,
+    },
     LoopDetected {
         count: u32,
     },

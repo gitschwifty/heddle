@@ -102,6 +102,7 @@ where
 fn event_kind(e: &AgentEvent) -> &'static str {
     match e {
         AgentEvent::Usage { .. } => "usage",
+        AgentEvent::RoutedModel { .. } => "routed_model",
         AgentEvent::AssistantMessage { .. } => "assistant_message",
         AgentEvent::ToolStart { .. } => "tool_start",
         AgentEvent::ToolEnd { .. } => "tool_end",
@@ -145,6 +146,27 @@ async fn text_only_response_terminates_immediately() {
     } else {
         panic!("expected assistant_message");
     }
+}
+
+#[tokio::test]
+async fn non_streaming_response_yields_routed_model_event() {
+    let mut response = text_response("hi");
+    response.model = Some("anthropic/claude-3-sonnet".to_string());
+    let provider = CapturingMock::new(vec![response]);
+    let mut messages = user("hello");
+    let stream = run_agent_loop(
+        provider,
+        ToolRegistry::new(),
+        &mut messages,
+        AgentLoopOptions::default(),
+    );
+
+    let events = collect_events(stream).await;
+
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::RoutedModel { model } if model == "anthropic/claude-3-sonnet"
+    )));
 }
 
 #[tokio::test]
@@ -329,6 +351,7 @@ async fn usage_event_yields_token_counts() {
 #[tokio::test]
 async fn no_usage_event_when_response_usage_absent() {
     let no_usage = ChatCompletionResponse {
+        model: None,
         id: "x".to_string(),
         choices: vec![heddle::types::Choice {
             index: 0,
@@ -380,6 +403,7 @@ async fn two_llm_calls_produce_two_usage_events() {
 #[tokio::test]
 async fn usage_includes_cost_when_present() {
     let with_cost = ChatCompletionResponse {
+        model: None,
         id: "x".to_string(),
         choices: vec![heddle::types::Choice {
             index: 0,

@@ -10,6 +10,7 @@ use crate::checkpoints::io::load_checkpoints;
 use crate::checkpoints::restore::{restore_code_through, RestoreOutcome};
 use crate::config::paths::get_project_dir;
 use crate::context::compaction::{compact_context, CompactionConfig};
+use crate::cost::pricing::ModelPricingInfo;
 use crate::file_history::restore::{list_backups, restore_backup};
 use crate::history::reader::{load_history, LoadHistoryOptions};
 use crate::plans::storage::{list_plans, load_plan};
@@ -35,6 +36,40 @@ where
         description: description.to_string(),
         execute: Arc::new(exec),
     }
+}
+
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{}k", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_price_per_million(price_per_token: f64) -> String {
+    let per_million = price_per_token * 1_000_000.0;
+    if per_million == 0.0 {
+        "$0/M".to_string()
+    } else if per_million < 0.01 {
+        format!("${per_million:.4}/M")
+    } else {
+        format!("${per_million:.2}/M")
+    }
+}
+
+fn format_model_summary(model: &ModelPricingInfo) -> String {
+    format!(
+        "{} ({}) | in {} out {} | ctx {} | max out {} | {}",
+        model.id,
+        model.name,
+        format_price_per_million(model.prompt_price),
+        format_price_per_million(model.completion_price),
+        format_token_count(model.context_length),
+        format_token_count(model.max_completion_tokens),
+        model.modality
+    )
 }
 
 pub fn create_builtin_commands() -> Vec<SlashCommand> {
@@ -111,6 +146,56 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
                 let est = total.div_ceil(4);
                 println!("  Messages:         {}", ctx.messages.len());
                 println!("  Estimated tokens: ~{est}");
+                if let Some(limit) = ctx.config.max_tokens {
+                    println!(
+                        "  Model limit:      {} (config override)",
+                        format_token_count(limit)
+                    );
+                } else if let Ok(Some(model)) =
+                    ctx.model_pricing.lookup_model(&ctx.config.model).await
+                {
+                    println!(
+                        "  Model limit:      {} ({})",
+                        format_token_count(model.context_length),
+                        model.id
+                    );
+                } else {
+                    println!("  Model limit:      unknown");
+                }
+                None
+            })
+        },
+    ));
+
+    out.push(cmd(
+        "models",
+        "List OpenRouter models (usage: /models [query])",
+        |args, ctx| {
+            Box::pin(async move {
+                let query = args.trim();
+                match ctx.model_pricing.search_models(query, 20).await {
+                    Ok(models) if models.is_empty() => {
+                        if query.is_empty() {
+                            println!("  No OpenRouter models found.");
+                        } else {
+                            println!("  No OpenRouter models matched: {query}");
+                        }
+                    }
+                    Ok(models) => {
+                        let suffix = if query.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" matching \"{query}\"")
+                        };
+                        println!("  OpenRouter models{suffix}:");
+                        for model in models {
+                            println!("    {}", format_model_summary(&model));
+                        }
+                    }
+                    Err(e) => {
+                        println!("  Warning: could not fetch OpenRouter model registry: {e}");
+                    }
+                }
                 None
             })
         },
@@ -118,13 +203,31 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
 
     out.push(cmd(
         "model",
-        "Switch model (e.g., /model openrouter/free)",
+        "Show or switch model (usage: /model [model-id])",
         |args, ctx| {
             Box::pin(async move {
                 let trimmed = args.trim();
                 if trimmed.is_empty() {
                     println!("  Current model: {}", ctx.config.model);
+                    match ctx.model_pricing.lookup_model(&ctx.config.model).await {
+                        Ok(Some(model)) => println!("  {}", format_model_summary(&model)),
+                        Ok(None) => println!("  Warning: current model was not found in the OpenRouter registry."),
+                        Err(e) => println!("  Warning: could not fetch OpenRouter model registry: {e}"),
+                    }
                     return None;
+                }
+                match ctx.model_pricing.lookup_model(trimmed).await {
+                    Ok(Some(model)) => {
+                        println!("  {}", format_model_summary(&model));
+                    }
+                    Ok(None) => {
+                        println!("  Warning: {trimmed} was not found in the OpenRouter registry.");
+                        println!("  Switching anyway; OpenRouter may still accept aliases, provider-native ids, or routed models.");
+                    }
+                    Err(e) => {
+                        println!("  Warning: could not fetch OpenRouter model registry: {e}");
+                        println!("  Switching anyway without registry validation.");
+                    }
                 }
                 println!("  Model switched to: {trimmed}");
                 Some(trimmed.to_string())

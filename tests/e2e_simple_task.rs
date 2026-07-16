@@ -70,6 +70,7 @@ async fn collect(
 fn event_kind(e: &AgentEvent) -> &'static str {
     match e {
         AgentEvent::Usage { .. } => "usage",
+        AgentEvent::RoutedModel { .. } => "routed_model",
         AgentEvent::AssistantMessage { .. } => "assistant_message",
         AgentEvent::ToolStart { .. } => "tool_start",
         AgentEvent::ToolEnd { .. } => "tool_end",

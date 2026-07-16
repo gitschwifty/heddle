@@ -1,6 +1,7 @@
 use heddle::commands::loader::load_custom_commands;
 use heddle::commands::types::CommandContext;
 use heddle::config::loader::HeddleConfig;
+use heddle::cost::pricing::ModelPricing;
 use heddle::cost::tracker::CostTracker;
 use heddle::provider::types::{ChunkStream, Provider};
 use heddle::tools::registry::ToolRegistry;
@@ -114,6 +115,7 @@ async fn execute_injects_content_as_user_message() {
         messages: &mut messages,
         registry: &registry,
         cost_tracker: Arc::new(Mutex::new(CostTracker::default())),
+        model_pricing: ModelPricing::new("test-key", None),
         session_file: sb.project.join("session.jsonl"),
         session_id: "test-session".to_string(),
         provider: Arc::new(NoopProvider),
@@ -151,6 +153,7 @@ async fn execute_appends_args_to_content() {
         messages: &mut messages,
         registry: &registry,
         cost_tracker: Arc::new(Mutex::new(CostTracker::default())),
+        model_pricing: ModelPricing::new("test-key", None),
         session_file: sb.project.join("session.jsonl"),
         session_id: "test".to_string(),
         provider: Arc::new(NoopProvider),
@@ -195,6 +198,7 @@ async fn local_commands_override_global_commands() {
         messages: &mut messages,
         registry: &registry,
         cost_tracker: Arc::new(Mutex::new(CostTracker::default())),
+        model_pricing: ModelPricing::new("test-key", None),
         session_file: sb.project.join("session.jsonl"),
         session_id: "t".to_string(),
         provider: Arc::new(NoopProvider),

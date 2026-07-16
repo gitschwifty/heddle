@@ -76,21 +76,42 @@ impl ModelPricing {
     }
 
     pub async fn get_model(&self, model_id: &str) -> Option<ModelPricingInfo> {
-        self.ensure_loaded().await.ok()?;
+        self.lookup_model(model_id).await.ok().flatten()
+    }
+
+    pub async fn lookup_model(&self, model_id: &str) -> Result<Option<ModelPricingInfo>> {
+        self.ensure_loaded().await?;
         let guard = self.inner.lock().await;
-        guard.models.as_ref()?.get(model_id).cloned()
+        Ok(guard.models.as_ref().and_then(|m| m.get(model_id)).cloned())
     }
 
     pub async fn get_all_models(&self) -> Vec<ModelPricingInfo> {
-        if self.ensure_loaded().await.is_err() {
-            return Vec::new();
-        }
+        self.list_models().await.unwrap_or_default()
+    }
+
+    pub async fn list_models(&self) -> Result<Vec<ModelPricingInfo>> {
+        self.ensure_loaded().await?;
         let guard = self.inner.lock().await;
-        guard
+        Ok(guard
             .models
             .as_ref()
             .map(|m| m.values().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default())
+    }
+
+    pub async fn search_models(&self, query: &str, limit: usize) -> Result<Vec<ModelPricingInfo>> {
+        let query = query.trim().to_lowercase();
+        let mut models = self.list_models().await?;
+        if !query.is_empty() {
+            models.retain(|m| {
+                m.id.to_lowercase().contains(&query) || m.name.to_lowercase().contains(&query)
+            });
+        }
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        if limit > 0 {
+            models.truncate(limit);
+        }
+        Ok(models)
     }
 
     pub async fn estimate_cost(

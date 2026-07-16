@@ -27,9 +27,8 @@ model = "openrouter/free"      # Primary model (or HEDDLE_MODEL)
 weak_model = "..."             # Cheap model for compaction/summaries (or HEDDLE_WEAK_MODEL)
 editor_model = "..."           # Model for edit operations
 
-# Heddle fetches OpenRouter `/models` pricing metadata for cost estimates, but
-# `/model <id>` currently switches immediately without validating availability
-# or showing the selected model's current price/context window.
+# Heddle fetches OpenRouter `/models` metadata lazily for cost estimates,
+# `/models [query]`, `/model [id]`, and `/context` model-limit reporting.
 
 # ── API Parameters ──────────────────────────────────
 max_tokens = 128000            # Max context window (or HEDDLE_MAX_TOKENS)
@@ -90,6 +89,22 @@ matchers = { tool = "bash" }
 | `HEDDLE_HOME` | Global config directory |
 
 Env vars always win over file config.
+
+## Model Registry UX
+
+In the interactive CLI, `/models [query]` lists matching OpenRouter model ids
+with input/output price per million tokens, context length, max output, and
+modality. `/model` with no arguments shows the active model plus known registry
+metadata. `/model <id>` looks up the requested id before switching; known models
+show price/context details, unknown models warn, and registry fetch failures
+warn without blocking the switch.
+
+The registry fetch is lazy and cached for the session. `max_tokens` remains an
+explicit override; when it is unset, `/context` reports the OpenRouter registry
+context length when available. Routed ids such as `openrouter/free`,
+`openrouter/auto`, or fallback `models` arrays may be served by a different
+underlying model; when OpenRouter includes that model id in a response, Heddle
+prints it in the REPL as `[model: provider/model-id]`.
 
 ## JSON Schema / Taplo Autocomplete
 

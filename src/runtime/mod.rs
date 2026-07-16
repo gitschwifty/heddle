@@ -439,6 +439,7 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
         AgentEvent::Usage { usage } => Some(RuntimeEvent::UsageUpdated {
             usage: usage.clone().into(),
         }),
+        AgentEvent::RoutedModel { .. } => None,
         AgentEvent::LoopDetected { count } => Some(RuntimeEvent::Error {
             error: RuntimeError {
                 code: "loop_detected".into(),

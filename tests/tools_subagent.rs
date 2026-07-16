@@ -270,6 +270,7 @@ async fn filters_tools_when_tools_param_provided() {
 #[tokio::test]
 async fn returns_error_string_when_loop_has_no_content() {
     let empty = ChatCompletionResponse {
+        model: None,
         id: "x".to_string(),
         choices: vec![Choice {
             index: 0,

@@ -2,6 +2,7 @@ use heddle::agents::types::AgentDefinition;
 use heddle::commands::builtins::create_builtin_commands;
 use heddle::commands::types::{CommandContext, SlashCommand};
 use heddle::config::loader::HeddleConfig;
+use heddle::cost::pricing::ModelPricing;
 use heddle::cost::tracker::CostTracker;
 use heddle::provider::types::{ChunkStream, Provider};
 use heddle::tools::registry::ToolRegistry;
@@ -14,6 +15,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
 use common::Sandbox;
@@ -69,6 +72,7 @@ struct CtxState {
     messages: Vec<Message>,
     registry: ToolRegistry,
     cost_tracker: Arc<Mutex<CostTracker>>,
+    model_pricing: ModelPricing,
     session_file: PathBuf,
     agent_definitions: HashMap<String, AgentDefinition>,
 }
@@ -82,9 +86,14 @@ impl CtxState {
             })],
             registry: ToolRegistry::new(),
             cost_tracker: Arc::new(Mutex::new(CostTracker::default())),
+            model_pricing: ModelPricing::new("test-key", None),
             session_file,
             agent_definitions: HashMap::new(),
         }
+    }
+    fn with_model_pricing(mut self, model_pricing: ModelPricing) -> Self {
+        self.model_pricing = model_pricing;
+        self
     }
     fn ctx(&mut self) -> CommandContext<'_> {
         CommandContext {
@@ -92,6 +101,7 @@ impl CtxState {
             messages: &mut self.messages,
             registry: &self.registry,
             cost_tracker: self.cost_tracker.clone(),
+            model_pricing: self.model_pricing.clone(),
             session_file: self.session_file.clone(),
             session_id: "test-session".to_string(),
             provider: Arc::new(NoopProvider),
@@ -105,6 +115,39 @@ impl CtxState {
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
+
+fn mock_models_response() -> serde_json::Value {
+    json!({
+        "data": [
+            {
+                "id": "anthropic/claude-3-sonnet",
+                "name": "Claude 3 Sonnet",
+                "pricing": { "prompt": "0.000003", "completion": "0.000015" },
+                "context_length": 200000,
+                "top_provider": { "max_completion_tokens": 4096 },
+                "architecture": { "modality": "text->text" },
+                "supported_parameters": ["temperature", "top_p"]
+            },
+            {
+                "id": "openrouter/free",
+                "name": "OpenRouter Free",
+                "pricing": { "prompt": "0", "completion": "0" },
+                "context_length": 8192,
+                "top_provider": { "max_completion_tokens": 1024 },
+                "architecture": { "modality": "text->text" },
+                "supported_parameters": []
+            }
+        ]
+    })
+}
+
+async fn mount_models(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_models_response()))
+        .mount(server)
+        .await;
+}
 
 #[tokio::test]
 async fn help_command_returns_none_without_panic() {
@@ -209,6 +252,58 @@ async fn model_with_args_returns_new_model_name() {
 }
 
 #[tokio::test]
+async fn model_with_known_id_loads_registry_before_switching() {
+    let sb = Sandbox::new("blt-model-known");
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let mut st = CtxState::new(sb.project.join("s.jsonl")).with_model_pricing(pricing.clone());
+    let cmds = create_builtin_commands();
+    let model = find(&cmds, "model");
+
+    let r = (model.execute)("anthropic/claude-3-sonnet", &mut st.ctx()).await;
+
+    assert_eq!(r.as_deref(), Some("anthropic/claude-3-sonnet"));
+    assert!(pricing.is_loaded().await);
+}
+
+#[tokio::test]
+async fn model_with_unknown_id_warns_but_keeps_fallback_switch_behavior() {
+    let sb = Sandbox::new("blt-model-unknown");
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let mut st = CtxState::new(sb.project.join("s.jsonl")).with_model_pricing(pricing.clone());
+    let cmds = create_builtin_commands();
+    let model = find(&cmds, "model");
+
+    let r = (model.execute)("provider/native-alias", &mut st.ctx()).await;
+
+    assert_eq!(r.as_deref(), Some("provider/native-alias"));
+    assert!(pricing.is_loaded().await);
+}
+
+#[tokio::test]
+async fn model_registry_fetch_failure_is_non_fatal_for_switching() {
+    let sb = Sandbox::new("blt-model-fetch-failure");
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let mut st = CtxState::new(sb.project.join("s.jsonl")).with_model_pricing(pricing.clone());
+    let cmds = create_builtin_commands();
+    let model = find(&cmds, "model");
+
+    let r = (model.execute)("openrouter/free", &mut st.ctx()).await;
+
+    assert_eq!(r.as_deref(), Some("openrouter/free"));
+    assert!(!pricing.is_loaded().await);
+}
+
+#[tokio::test]
 async fn model_with_no_args_returns_none() {
     let sb = Sandbox::new("blt-model-noop");
     let mut st = CtxState::new(sb.project.join("s.jsonl"));
@@ -217,6 +312,59 @@ async fn model_with_no_args_returns_none() {
     let model = find(&cmds, "model");
     let r = (model.execute)("", &mut st.ctx()).await;
     assert!(r.is_none());
+}
+
+#[tokio::test]
+async fn model_with_no_args_loads_current_model_details_when_available() {
+    let sb = Sandbox::new("blt-model-current-details");
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let mut st = CtxState::new(sb.project.join("s.jsonl")).with_model_pricing(pricing.clone());
+    st.config.model = "anthropic/claude-3-sonnet".into();
+    let cmds = create_builtin_commands();
+    let model = find(&cmds, "model");
+
+    let r = (model.execute)("", &mut st.ctx()).await;
+
+    assert!(r.is_none());
+    assert!(pricing.is_loaded().await);
+}
+
+#[tokio::test]
+async fn models_command_lists_matching_registry_entries() {
+    let sb = Sandbox::new("blt-models-list");
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let mut st = CtxState::new(sb.project.join("s.jsonl")).with_model_pricing(pricing.clone());
+    let cmds = create_builtin_commands();
+    let models = find(&cmds, "models");
+
+    let r = (models.execute)("sonnet", &mut st.ctx()).await;
+
+    assert!(r.is_none());
+    assert!(pricing.is_loaded().await);
+}
+
+#[tokio::test]
+async fn models_command_registry_failure_is_non_fatal() {
+    let sb = Sandbox::new("blt-models-failure");
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let pricing = ModelPricing::new("test-key", Some(&server.uri()));
+    let mut st = CtxState::new(sb.project.join("s.jsonl")).with_model_pricing(pricing.clone());
+    let cmds = create_builtin_commands();
+    let models = find(&cmds, "models");
+
+    let r = (models.execute)("sonnet", &mut st.ctx()).await;
+
+    assert!(r.is_none());
+    assert!(!pricing.is_loaded().await);
 }
 
 #[tokio::test]
@@ -246,9 +394,9 @@ async fn builtins_contains_expected_command_names() {
     let cmds = create_builtin_commands();
     let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
     for required in &[
-        "help", "clear", "exit", "quit", "cost", "status", "context", "model", "tools", "history",
-        "compact", "sessions", "fork", "tasks", "agents", "plan", "stats", "paste", "agent",
-        "restore", "name", "rewind",
+        "help", "clear", "exit", "quit", "cost", "status", "context", "models", "model", "tools",
+        "history", "compact", "sessions", "fork", "tasks", "agents", "plan", "stats", "paste",
+        "agent", "restore", "name", "rewind",
     ] {
         assert!(names.contains(required), "missing builtin: {required}");
     }
