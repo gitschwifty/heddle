@@ -208,7 +208,12 @@ impl HeddleRuntime {
         RuntimeStatus {
             session_id: self.session.session_id.clone(),
             model: self.session.config.model.clone(),
-            messages_count: self.session.messages.len() as u64,
+            messages_count: self
+                .session
+                .messages
+                .iter()
+                .filter(|message| matches!(message, Message::User(_) | Message::Assistant(_)))
+                .count() as u64,
             active,
             total_input_tokens: tracker.total_input_tokens(),
             total_output_tokens: tracker.total_output_tokens(),

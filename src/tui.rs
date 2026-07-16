@@ -340,6 +340,7 @@ struct TuiApp {
     turn_started_at: Option<Instant>,
     viewport: ViewportState,
     status: Option<RuntimeStatus>,
+    last_turn_status: Option<TurnStatus>,
     active: bool,
     should_quit: bool,
     active_cancel: Option<CancellationToken>,
@@ -640,6 +641,7 @@ impl TuiApp {
         self.permission_prompt = None;
         self.permission_prompt_view = None;
         let status = outcome.status;
+        self.last_turn_status = Some(status.clone());
         match &status {
             TurnStatus::Ok => {}
             TurnStatus::Cancelled => self.transcript.push(TranscriptItem {
@@ -1003,7 +1005,7 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
         ));
     }
 
-    let status = Paragraph::new(status_line(app));
+    let status = Paragraph::new(status_line(app, chunks[2].width));
     frame.render_widget(status, chunks[2]);
 }
 
@@ -1254,32 +1256,88 @@ fn startup_text(app: &TuiApp) -> Text<'static> {
     ])
 }
 
-fn status_line(app: &TuiApp) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusState {
+    Idle,
+    Active,
+    Permission,
+    Cancelling,
+    Failed,
+}
+
+fn status_line(app: &TuiApp, width: u16) -> String {
+    abbreviate(&full_status_line(app), width as usize)
+}
+
+fn full_status_line(app: &TuiApp) -> String {
     let Some(status) = &app.status else {
         return "initializing runtime".to_string();
     };
-    let cost = status
-        .cost_usd
-        .map(|cost| format!(" | ${cost:.4}"))
-        .unwrap_or_default();
-    let message_count = app
-        .transcript
-        .iter()
-        .filter(|item| matches!(item.kind, TranscriptKind::User | TranscriptKind::Assistant))
-        .count();
-    let tool_count = app
-        .transcript
-        .iter()
-        .filter(|item| matches!(item.kind, TranscriptKind::Tool))
-        .count();
+
+    let state = status_state(app);
+    let state = match state {
+        StatusState::Idle => "idle".to_string(),
+        StatusState::Active => elapsed_state("active", app.turn_started_at),
+        StatusState::Permission => elapsed_state("permission", app.turn_started_at),
+        StatusState::Cancelling => elapsed_state("cancelling", app.turn_started_at),
+        StatusState::Failed => "failed".to_string(),
+    };
+    let cost = status.cost_usd.map(format_cost).unwrap_or_default();
+    let tool_count = visible_tool_count(app);
     format!(
-        "model: {} | msgs: {} | tools: {} | tokens: {} in / {} out{cost}",
+        "{} | model: {} | msgs: {} | tools: {} | tokens: {}/{}{}",
+        state,
         status.model,
-        message_count,
+        status.messages_count,
         tool_count,
         status.total_input_tokens,
         status.total_output_tokens,
+        cost,
     )
+}
+
+fn status_state(app: &TuiApp) -> StatusState {
+    if app
+        .active_cancel
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return StatusState::Cancelling;
+    }
+    if app.permission_prompt_view.is_some() {
+        return StatusState::Permission;
+    }
+    if app.active {
+        return StatusState::Active;
+    }
+    if matches!(app.last_turn_status, Some(TurnStatus::Error)) {
+        return StatusState::Failed;
+    }
+    StatusState::Idle
+}
+
+fn elapsed_state(label: &str, started_at: Option<Instant>) -> String {
+    let elapsed = started_at
+        .map(|started| format_duration(started.elapsed()))
+        .unwrap_or_else(|| "0s".to_string());
+    format!("{label} {elapsed}")
+}
+
+fn visible_tool_count(app: &TuiApp) -> usize {
+    app.transcript
+        .iter()
+        .filter(|item| matches!(item.kind, TranscriptKind::Tool))
+        .count()
+}
+
+fn format_cost(cost: f64) -> String {
+    if cost == 0.0 {
+        return " | $0.0000".to_string();
+    }
+    if cost.abs() < 0.0001 {
+        return format!(" | ${cost:.6}");
+    }
+    format!(" | ${cost:.4}")
 }
 
 fn summarize_arguments(arguments: &str, max_chars: usize) -> String {
@@ -1387,6 +1445,24 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
+
+    fn runtime_status(
+        active: bool,
+        messages_count: u64,
+        total_input_tokens: u64,
+        total_output_tokens: u64,
+        cost_usd: Option<f64>,
+    ) -> RuntimeStatus {
+        RuntimeStatus {
+            session_id: "session".to_string(),
+            model: "anthropic/claude-sonnet-4".to_string(),
+            messages_count,
+            active,
+            total_input_tokens,
+            total_output_tokens,
+            cost_usd,
+        }
+    }
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
@@ -1839,15 +1915,7 @@ mod tests {
     #[test]
     fn empty_transcript_intro_omits_status_line_shortcut_hints() {
         let mut app = TuiApp::new();
-        app.status = Some(RuntimeStatus {
-            session_id: "session".to_string(),
-            model: "model".to_string(),
-            messages_count: 1,
-            active: false,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            cost_usd: None,
-        });
+        app.status = Some(runtime_status(false, 1, 0, 0, None));
 
         let intro = transcript_text(&app, 80);
         let rendered = intro
@@ -1859,13 +1927,121 @@ mod tests {
         assert!(rendered.contains("Heddle"));
         assert!(rendered.contains("model:"));
         assert!(rendered.contains("directory:"));
-        let status = status_line(&app);
+        let status = status_line(&app, 80);
         assert!(!status.contains("Enter submit"));
         assert!(!status.contains("\\ then Enter newline"));
         assert!(!status.contains("Esc exit"));
-        assert!(!status.starts_with("idle |"));
-        assert!(!status.starts_with("active |"));
-        assert!(!status.starts_with("permission |"));
+        assert!(status.starts_with("idle |"));
+    }
+
+    #[test]
+    fn status_line_idle_uses_runtime_message_count_and_visible_tool_rows() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(false, 2, 0, 0, None));
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::User,
+            text: "prompt".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: "answer".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::System,
+            text: "working".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Divider,
+            text: "Worked for 1s".to_string(),
+        });
+        app.transcript.push(TranscriptItem {
+            kind: TranscriptKind::Tool,
+            text: "Read file finished".to_string(),
+        });
+
+        let status = status_line(&app, 120);
+
+        assert!(status.starts_with("idle |"));
+        assert!(status.contains("msgs: 2"));
+        assert!(status.contains("tools: 1"));
+        assert!(!status.contains("msgs: 4"));
+    }
+
+    #[test]
+    fn status_line_active_shows_turn_elapsed_time() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(true, 1, 0, 0, None));
+        app.active = true;
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(65));
+
+        let status = status_line(&app, 120);
+
+        assert!(status.starts_with("active 1m 5s |"));
+    }
+
+    #[test]
+    fn status_line_permission_state_takes_precedence_over_active() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(true, 1, 0, 0, None));
+        app.active = true;
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(2));
+        app.permission_prompt_view = Some(PermissionPromptView {
+            name: "bash".to_string(),
+            call_id: "call_1".to_string(),
+            arguments: "{}".to_string(),
+            reason: None,
+        });
+
+        let status = status_line(&app, 120);
+
+        assert!(status.starts_with("permission 2s |"));
+    }
+
+    #[test]
+    fn status_line_cancelling_state_takes_precedence_over_permission() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(true, 1, 0, 0, None));
+        app.active = true;
+        app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        app.active_cancel = Some(cancel);
+        app.permission_prompt_view = Some(PermissionPromptView {
+            name: "bash".to_string(),
+            call_id: "call_1".to_string(),
+            arguments: "{}".to_string(),
+            reason: None,
+        });
+
+        let status = status_line(&app, 120);
+
+        assert!(status.starts_with("cancelling 3s |"));
+    }
+
+    #[test]
+    fn status_line_post_usage_shows_tokens_cost_and_failed_state() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(false, 4, 1234, 56, Some(0.00125)));
+        app.last_turn_status = Some(TurnStatus::Error);
+
+        let status = status_line(&app, 120);
+
+        assert!(status.starts_with("failed |"));
+        assert!(status.contains("msgs: 4"));
+        assert!(status.contains("tokens: 1234/56"));
+        assert!(status.contains("$0.0013"));
+    }
+
+    #[test]
+    fn status_line_truncates_deterministically_to_terminal_width() {
+        let mut app = TuiApp::new();
+        app.status = Some(runtime_status(false, 42, 123456, 7890, Some(0.1234)));
+
+        let status = status_line(&app, 24);
+
+        assert_eq!(status.chars().count(), 24);
+        assert!(status.ends_with("..."));
+        assert_eq!(status, status_line(&app, 24));
     }
 
     #[test]

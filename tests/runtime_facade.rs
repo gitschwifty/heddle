@@ -9,6 +9,7 @@ use heddle::runtime::{
     HeddleRuntime, RuntimeEvent, RuntimePermissionResponse, TurnOptions, TurnStatus,
 };
 use heddle::session::setup::{create_session, SessionOptions};
+use heddle::types::{AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -60,9 +61,41 @@ async fn runtime_send_emits_events_and_returns_outcome() {
         .iter()
         .any(|e| matches!(e, RuntimeEvent::UsageUpdated { usage } if usage.total_tokens == 18)));
     let status = runtime.status(false);
-    assert_eq!(status.messages_count, 3);
+    assert_eq!(status.messages_count, 2);
     assert_eq!(status.total_input_tokens, 11);
     assert_eq!(status.total_output_tokens, 7);
+}
+
+#[tokio::test]
+async fn runtime_status_counts_user_and_assistant_messages_only() {
+    let _sb = Sandbox::new("runtime-status-message-count");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+
+    let mut session = create_session(SessionOptions {
+        mode: Some(Mode::Headless),
+        ..SessionOptions::default()
+    })
+    .await
+    .expect("create_session");
+    session.messages.push(Message::System(SystemMessage {
+        content: "system".to_string(),
+    }));
+    session.messages.push(Message::User(UserMessage {
+        content: "prompt".to_string(),
+    }));
+    session.messages.push(Message::Assistant(AssistantMessage {
+        content: Some("answer".to_string()),
+        tool_calls: None,
+    }));
+    session.messages.push(Message::Tool(ToolMessage {
+        tool_call_id: "call_1".to_string(),
+        content: "tool output".to_string(),
+    }));
+
+    let runtime = HeddleRuntime::from_session(session);
+    let status = runtime.status(false);
+
+    assert_eq!(status.messages_count, 2);
 }
 
 #[tokio::test]
