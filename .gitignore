@@ -18,3 +18,4 @@ coverage
 
 # Eval harness staging (promotes to ~/repos/heddle-evals later)
 /evals-staging
+/evals
