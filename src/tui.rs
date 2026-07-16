@@ -1956,6 +1956,10 @@ mod tests {
             self.content.contains(needle)
         }
 
+        fn find(&self, needle: &str) -> Option<usize> {
+            self.content.find(needle)
+        }
+
         fn last_line(&self) -> &str {
             self.lines.last().map(String::as_str).unwrap_or("")
         }
@@ -2740,16 +2744,20 @@ mod tests {
     fn render_long_assistant_tool_and_user_text_wraps_or_truncates() {
         let mut app = TuiApp::new();
         app.status = Some(runtime_status(false, 4, 1000, 200, None));
-        app.transcript.push(TranscriptItem {
-            kind: TranscriptKind::User,
-            text:
-                "user first line\nuser second line with enough text to wrap in the transcript band"
-                    .to_string(),
+        app.turns.push(TranscriptTurn {
+            items: vec![
+                TurnTranscriptItem::Row(TranscriptItem {
+                    kind: TranscriptKind::User,
+                    text: "user first line\nuser second line with enough text to wrap in the transcript band"
+                        .to_string(),
+                }),
+                TurnTranscriptItem::Row(TranscriptItem {
+                    kind: TranscriptKind::Assistant,
+                    text: "assistant-".repeat(32),
+                }),
+            ],
         });
-        app.transcript.push(TranscriptItem {
-            kind: TranscriptKind::Assistant,
-            text: "assistant-".repeat(32),
-        });
+        app.refresh_transcript_cache();
         let call = tool_call_with_args(
             "call-long",
             "custom_tool",
@@ -2764,7 +2772,8 @@ mod tests {
             call,
         });
 
-        let screen = render_app(72, 24, &mut app);
+        app.viewport.follow_tail = false;
+        let screen = render_app(72, 40, &mut app);
 
         assert!(screen.contains("user first line"));
         assert!(screen.contains("user second line"));
