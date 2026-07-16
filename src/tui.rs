@@ -419,15 +419,16 @@ impl TuiApp {
                     self.input.backspace();
                 }
             }
-            (KeyCode::Enter, KeyModifiers::SHIFT) => {
+            // Crossterm only reports Shift-Enter when the terminal sends a distinct
+            // key event. Ghostty/tmux combinations may collapse it to Enter, so the
+            // portable multiline path remains backslash followed by Enter.
+            (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::SHIFT) => {
                 if !self.active {
                     self.input.insert_newline();
                 }
             }
-            (KeyCode::Enter, _) if self.input.consume_trailing_backslash() => {
-                if !self.active {
-                    self.input.insert_newline();
-                }
+            (KeyCode::Enter, _) if !self.active && self.input.consume_trailing_backslash() => {
+                self.input.insert_newline();
             }
             (KeyCode::Enter, _) => {
                 self.submit(command_tx, turn_counter).await?;
@@ -871,9 +872,8 @@ impl InputBuffer {
         self.col = self.col.min(self.lines[self.row].chars().count());
     }
 
-    fn cursor_position(&self, origin: Position, width: u16, height: u16) -> Position {
+    fn visual_cursor(&self, width: u16) -> (usize, usize) {
         let inner_width = width.max(1) as usize;
-        let visible_height = height.max(1);
         let row = self
             .lines
             .iter()
@@ -882,11 +882,30 @@ impl InputBuffer {
             .sum::<usize>()
             + (self.col / inner_width);
         let col = self.col % inner_width;
+        (row, col)
+    }
+
+    fn input_scroll(&self, width: u16, height: u16) -> usize {
+        let visible_height = height.max(1) as usize;
+        let (row, _) = self.visual_cursor(width);
+        row.saturating_sub(visible_height.saturating_sub(1))
+    }
+
+    fn cursor_position(
+        &self,
+        origin: Position,
+        width: u16,
+        height: u16,
+        scroll: usize,
+    ) -> Position {
+        let visible_height = height.max(1);
+        let (row, col) = self.visual_cursor(width);
+        let visible_row = row.saturating_sub(scroll);
         Position::new(
             origin.x.saturating_add(col as u16),
             origin
                 .y
-                .saturating_add((row as u16).min(visible_height.saturating_sub(1))),
+                .saturating_add((visible_row as u16).min(visible_height.saturating_sub(1))),
         )
     }
 
@@ -953,7 +972,12 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
             .wrap(Wrap { trim: false });
         frame.render_widget(input, chunks[1]);
     } else {
-        let input = Paragraph::new(input_text(&app.input))
+        let input_content_width = chunks[1].width.saturating_sub(2);
+        let input_content_height = chunks[1].height.saturating_sub(2);
+        let input_scroll = app
+            .input
+            .input_scroll(input_content_width, input_content_height);
+        let input = Paragraph::new(input_text(&app.input, input_content_width, input_scroll))
             .style(
                 Style::default()
                     .fg(if app.active {
@@ -962,15 +986,20 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
                         Color::White
                     })
                     .bg(Color::Rgb(38, 38, 48)),
-            )
-            .wrap(Wrap { trim: false });
+            );
         frame.render_widget(input, chunks[1]);
     }
     if !app.active && app.permission_prompt_view.is_none() {
+        let input_content_width = chunks[1].width.saturating_sub(2);
+        let input_content_height = chunks[1].height.saturating_sub(2);
+        let input_scroll = app
+            .input
+            .input_scroll(input_content_width, input_content_height);
         frame.set_cursor_position(app.input.cursor_position(
             Position::new(chunks[1].x.saturating_add(2), chunks[1].y.saturating_add(1)),
-            chunks[1].width.saturating_sub(2),
-            chunks[1].height.saturating_sub(2),
+            input_content_width,
+            input_content_height,
+            input_scroll,
         ));
     }
 
@@ -978,18 +1007,50 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
     frame.render_widget(status, chunks[2]);
 }
 
-fn input_text(input: &InputBuffer) -> Text<'static> {
+fn input_text(input: &InputBuffer, width: u16, scroll: usize) -> Text<'static> {
+    let width = width.max(1) as usize;
     let mut lines = Vec::new();
     lines.push(Line::raw(""));
-    for (idx, line) in input.lines.iter().enumerate() {
-        let prefix = if idx == 0 { "› " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(Color::Cyan)),
-            Span::raw(line.clone()),
-        ]));
+
+    let mut visual_row = 0_usize;
+    for (idx, logical_line) in input.lines.iter().enumerate() {
+        for (chunk_idx, chunk) in visual_chunks(logical_line, width).into_iter().enumerate() {
+            let prefix = if idx == 0 && chunk_idx == 0 {
+                "› "
+            } else {
+                "  "
+            };
+            if visual_row >= scroll {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                    Span::raw(chunk),
+                ]));
+            }
+            visual_row += 1;
+        }
     }
     lines.push(Line::raw(""));
     Text::from(lines)
+}
+
+fn visual_chunks(line: &str, width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for c in line.chars() {
+        current.push(c);
+        if current.chars().count() == width {
+            chunks.push(current);
+            current = String::new();
+        }
+    }
+
+    if !current.is_empty() || chunks.is_empty() {
+        chunks.push(current);
+    } else {
+        chunks.push(String::new());
+    }
+
+    chunks
 }
 
 fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'static> {
@@ -1567,6 +1628,112 @@ mod tests {
         input.insert_char('!');
 
         assert_eq!(input.text(), "ab!\ncd");
+    }
+
+    #[test]
+    fn input_cursor_position_wraps_at_exact_content_width() {
+        let mut input = InputBuffer::default();
+        for c in "abc".chars() {
+            input.insert_char(c);
+        }
+
+        assert_eq!(
+            input.cursor_position(Position::new(2, 1), 3, 4, 0),
+            Position::new(2, 2)
+        );
+
+        input.move_left();
+        assert_eq!(
+            input.cursor_position(Position::new(2, 1), 3, 4, 0),
+            Position::new(4, 1)
+        );
+    }
+
+    #[test]
+    fn input_cursor_position_accounts_for_wrapped_and_explicit_lines() {
+        let mut input = InputBuffer::default();
+        for c in "abcd".chars() {
+            input.insert_char(c);
+        }
+        input.insert_newline();
+        for c in "xy".chars() {
+            input.insert_char(c);
+        }
+
+        assert_eq!(
+            input.cursor_position(Position::new(10, 5), 3, 6, 0),
+            Position::new(12, 7)
+        );
+
+        input.move_up();
+        assert_eq!(
+            input.cursor_position(Position::new(10, 5), 3, 6, 0),
+            Position::new(12, 5)
+        );
+    }
+
+    #[test]
+    fn input_cursor_position_updates_after_delete_before_wrap_boundary() {
+        let mut input = InputBuffer::default();
+        for c in "abcd".chars() {
+            input.insert_char(c);
+        }
+        input.move_left();
+        input.move_left();
+        input.backspace();
+
+        assert_eq!(input.text(), "acd");
+        assert_eq!(
+            input.cursor_position(Position::new(0, 0), 3, 3, 0),
+            Position::new(1, 0)
+        );
+    }
+
+    #[test]
+    fn input_text_renders_wrapped_prompt_band_with_prefix_gutter() {
+        let mut input = InputBuffer::default();
+        for c in "abcd".chars() {
+            input.insert_char(c);
+        }
+        input.insert_newline();
+        for c in "xy".chars() {
+            input.insert_char(c);
+        }
+
+        let rendered = input_text(&input, 3, 0)
+            .lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered, vec!["", "› abc", "  d", "  xy", ""]);
+    }
+
+    #[test]
+    fn render_prompt_band_scrolls_to_cursor_when_height_is_capped() {
+        let backend = TestBackend::new(40, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        app.input.lines = (0..12).map(|idx| format!("prompt-line-{idx:02}")).collect();
+        app.input.row = 11;
+        app.input.col = app.input.lines[11].chars().count();
+
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(screen.contains("prompt-line-11"));
+        assert!(!screen.contains("prompt-line-00"));
     }
 
     #[test]
