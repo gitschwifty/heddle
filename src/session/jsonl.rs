@@ -12,6 +12,8 @@ use serde_json::Value;
 
 use crate::types::Message;
 
+pub const CONTEXT_RESET_MARKER_TYPE: &str = "context_reset";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     #[serde(rename = "type")]
@@ -62,13 +64,23 @@ pub fn load_session(path: &Path) -> Vec<Message> {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    content
+    let mut messages = Vec::new();
+    for value in content
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v.get("role").is_some())
-        .filter_map(|v| serde_json::from_value::<Message>(v).ok())
-        .collect()
+    {
+        if value.get("type").and_then(Value::as_str) == Some(CONTEXT_RESET_MARKER_TYPE) {
+            messages.clear();
+            continue;
+        }
+        if value.get("role").is_some() {
+            if let Ok(message) = serde_json::from_value::<Message>(value) {
+                messages.push(message);
+            }
+        }
+    }
+    messages
 }
 
 pub fn load_session_meta(path: &Path) -> Option<SessionMeta> {

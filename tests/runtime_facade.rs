@@ -8,6 +8,7 @@ use heddle::permissions::checker::PermissionChecker;
 use heddle::runtime::{
     HeddleRuntime, RuntimeEvent, RuntimePermissionResponse, TurnOptions, TurnStatus,
 };
+use heddle::session::jsonl::{load_session, CONTEXT_RESET_MARKER_TYPE};
 use heddle::session::setup::{create_session, SessionOptions};
 use heddle::types::{AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage};
 use parking_lot::Mutex;
@@ -96,6 +97,53 @@ async fn runtime_status_counts_user_and_assistant_messages_only() {
     let status = runtime.status(false);
 
     assert_eq!(status.messages_count, 2);
+}
+
+#[tokio::test]
+async fn runtime_clear_context_keeps_session_id_and_rebuilds_system_prompt() {
+    let _sb = Sandbox::new("runtime-clear-context");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+
+    let session = create_session(SessionOptions {
+        mode: Some(Mode::Headless),
+        system_prompt: Some("custom base prompt".to_string()),
+        ..SessionOptions::default()
+    })
+    .await
+    .expect("create_session");
+    let session_id = session.session_id.clone();
+    let session_file = session.session_file.clone();
+    let original_system = session.messages[0].content_str().unwrap().to_string();
+
+    let mut runtime = HeddleRuntime::from_session(session);
+    runtime
+        .session_mut()
+        .messages
+        .push(Message::User(UserMessage {
+            content: "old prompt".to_string(),
+        }));
+    runtime
+        .session_mut()
+        .messages
+        .push(Message::Assistant(AssistantMessage {
+            content: Some("old answer".to_string()),
+            tool_calls: None,
+        }));
+
+    runtime.clear_context().expect("clear context");
+
+    assert_eq!(runtime.session().session_id, session_id);
+    assert_eq!(runtime.status(false).messages_count, 0);
+    assert_eq!(runtime.session().messages.len(), 1);
+    let reset_system = runtime.session().messages[0].content_str().unwrap();
+    assert!(reset_system.contains("custom base prompt"));
+    assert_eq!(reset_system, original_system);
+
+    let raw = std::fs::read_to_string(&session_file).expect("session jsonl");
+    assert!(raw.contains(&format!(r#""type":"{CONTEXT_RESET_MARKER_TYPE}""#)));
+    let loaded = load_session(&session_file);
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].content_str(), Some(reset_system));
 }
 
 #[tokio::test]

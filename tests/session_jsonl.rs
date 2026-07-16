@@ -1,6 +1,6 @@
 use heddle::session::jsonl::{
     append_context_marker, append_message, load_session, load_session_meta, write_session_meta,
-    SessionMeta,
+    SessionMeta, CONTEXT_RESET_MARKER_TYPE,
 };
 use heddle::types::{
     AssistantMessage, FunctionCall, Message, ToolCall, ToolCallKind, ToolMessage, UserMessage,
@@ -379,6 +379,43 @@ fn load_session_skips_context_markers() {
     .unwrap();
     let messages = load_session(&path);
     assert_eq!(messages.len(), 2);
+}
+
+#[test]
+fn load_session_resumes_after_last_context_reset_marker() {
+    let dir = tmp();
+    let path = dir.path().join("with-reset.jsonl");
+    append_message(
+        &path,
+        &Message::System(heddle::types::SystemMessage {
+            content: "old system".into(),
+        }),
+    )
+    .unwrap();
+    append_message(
+        &path,
+        &Message::User(UserMessage {
+            content: "old prompt".into(),
+        }),
+    )
+    .unwrap();
+    append_context_marker(
+        &path,
+        &json!({"type": CONTEXT_RESET_MARKER_TYPE, "timestamp": "2026-07-16T00:00:00Z"}),
+    )
+    .unwrap();
+    append_message(
+        &path,
+        &Message::System(heddle::types::SystemMessage {
+            content: "new system".into(),
+        }),
+    )
+    .unwrap();
+
+    let messages = load_session(&path);
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content_str(), Some("new system"));
 }
 
 // ── round-trip ──

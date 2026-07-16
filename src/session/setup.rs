@@ -92,6 +92,7 @@ pub struct SessionContext {
     pub metrics_collector: Option<Arc<Mutex<MetricsCollector>>>,
     pub paste_cache: Option<Arc<Mutex<PasteCache>>>,
     pub session_start_time: chrono::DateTime<Utc>,
+    pub base_system_prompt: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -127,6 +128,51 @@ fn default_tools(config: &HeddleConfig) -> Vec<Arc<dyn HeddleTool>> {
             allow_private_addresses: config.web_fetch_allow_private_addresses,
         }),
     ]
+}
+
+fn build_system_message(
+    features: &FeatureFlags,
+    session_id: &str,
+    base_prompt: &str,
+) -> Result<Message> {
+    let agents_ctx = load_agents_context(None);
+    let memory_ctx = load_memory_context(None);
+
+    let mut tasks_ctx = String::new();
+    if features.tasks {
+        let tasks = load_tasks(None);
+        if !tasks.is_empty() {
+            tasks_ctx = format!(
+                "## Current Tasks\n\n{}",
+                format_tasks_summary(&tasks, session_id)
+            );
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = agents_ctx {
+        parts.push(s);
+    }
+    if let Some(s) = memory_ctx {
+        parts.push(s);
+    }
+    if !tasks_ctx.is_empty() {
+        parts.push(tasks_ctx);
+    }
+    parts.push(runtime_context(&std::env::current_dir()?));
+    parts.push(base_prompt.to_string());
+
+    Ok(Message::System(SystemMessage {
+        content: parts.join("\n\n"),
+    }))
+}
+
+pub fn fresh_system_message(session: &SessionContext) -> Result<Message> {
+    build_system_message(
+        &session.features,
+        &session.session_id,
+        &session.base_system_prompt,
+    )
 }
 
 pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
@@ -179,6 +225,13 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         }
     }
 
+    let base_system_prompt: String = agent_def
+        .as_ref()
+        .map(|d| d.system_prompt.clone())
+        .or_else(|| options.system_prompt.clone())
+        .or_else(|| config.system_prompt.clone())
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+
     let providers = create_providers(&config)?;
     let provider = providers.main.clone();
 
@@ -229,39 +282,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         };
         write_session_meta(&session_file, &meta)?;
 
-        let agents_ctx = load_agents_context(None);
-        let memory_ctx = load_memory_context(None);
-        let base_prompt: String = agent_def
-            .as_ref()
-            .map(|d| d.system_prompt.clone())
-            .or_else(|| options.system_prompt.clone())
-            .or_else(|| config.system_prompt.clone())
-            .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
-
-        let mut tasks_ctx = String::new();
-        if features.tasks {
-            let tasks = load_tasks(None);
-            if !tasks.is_empty() {
-                tasks_ctx = format!("## Current Tasks\n\n{}", format_tasks_summary(&tasks, &sid));
-            }
-        }
-
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(s) = agents_ctx {
-            parts.push(s);
-        }
-        if let Some(s) = memory_ctx {
-            parts.push(s);
-        }
-        if !tasks_ctx.is_empty() {
-            parts.push(tasks_ctx);
-        }
-        parts.push(runtime_context(&std::env::current_dir()?));
-        parts.push(base_prompt);
-        let system_content = parts.join("\n\n");
-        let system_msg = Message::System(SystemMessage {
-            content: system_content,
-        });
+        let system_msg = build_system_message(&features, &sid, &base_system_prompt)?;
         append_message(&session_file, &system_msg)?;
         (sid, session_file, vec![system_msg])
     };
@@ -370,6 +391,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         metrics_collector,
         paste_cache,
         session_start_time: Utc::now(),
+        base_system_prompt,
     })
 }
 

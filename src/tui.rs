@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::features::Mode;
 use crate::runtime::{
-    HeddleRuntime, RuntimeConfig, RuntimeEvent, RuntimePermissionRequest,
+    HeddleRuntime, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimePermissionRequest,
     RuntimePermissionResolver, RuntimePermissionResponse, RuntimeStatus, TurnOptions, TurnOutcome,
     TurnState, TurnStatus,
 };
@@ -143,6 +143,22 @@ async fn runtime_worker(
                 let _ = event_tx.send(RuntimeUpdate::Outcome(outcome));
                 let _ = event_tx.send(RuntimeUpdate::Status(runtime.status(false)));
             }
+            RuntimeCommand::ClearContext => match runtime.clear_context() {
+                Ok(()) => {
+                    let _ = event_tx.send(RuntimeUpdate::Status(runtime.status(false)));
+                }
+                Err(error) => {
+                    let _ = event_tx.send(RuntimeUpdate::Event(RuntimeEvent::Error {
+                        error: RuntimeError {
+                            code: "clear_context_failed".to_string(),
+                            message: error.to_string(),
+                            retryable: false,
+                            provider: None,
+                            details: None,
+                        },
+                    }));
+                }
+            },
         }
     }
 }
@@ -218,6 +234,7 @@ enum RuntimeCommand {
         message: String,
         cancel: CancellationToken,
     },
+    ClearContext,
 }
 
 #[derive(Debug)]
@@ -475,7 +492,8 @@ impl TuiApp {
 
         if message.starts_with('/') {
             self.input.clear();
-            self.apply_slash_command(parse_tui_slash_command(&message));
+            self.apply_slash_command(parse_tui_slash_command(&message), command_tx)
+                .await?;
             return Ok(());
         }
 
@@ -760,9 +778,17 @@ impl TuiApp {
         });
     }
 
-    fn apply_slash_command(&mut self, command: SlashCommand) {
+    async fn apply_slash_command(
+        &mut self,
+        command: SlashCommand,
+        command_tx: &mpsc::Sender<RuntimeCommand>,
+    ) -> Result<()> {
         match command {
-            SlashCommand::Clear => self.clear_transcript_view(),
+            SlashCommand::Clear => {
+                self.clear_transcript_view();
+                self.push_system_row("Context cleared.".to_string());
+                command_tx.send(RuntimeCommand::ClearContext).await?;
+            }
             SlashCommand::Status => self.push_system_row(tui_status_text(self.status.as_ref())),
             SlashCommand::Help => self.push_system_row(tui_help_text()),
             SlashCommand::Quit => self.should_quit = true,
@@ -771,6 +797,7 @@ impl TuiApp {
             )),
         }
         self.viewport.jump_to_bottom();
+        Ok(())
     }
 
     fn clear_transcript_view(&mut self) {
@@ -806,7 +833,7 @@ fn tui_help_text() -> String {
         "TUI commands:",
         "/help - show TUI commands and keybindings",
         "/status - show session, model, message, token, and cost status",
-        "/clear - clear the local transcript view",
+        "/clear - clear conversation context and transcript view",
         "/quit, /exit - exit the TUI",
         "",
         "Keybindings:",
@@ -2287,8 +2314,10 @@ mod tests {
             .await
             .expect("submit");
 
-        let RuntimeCommand::Send { id, message, .. } =
-            command_rx.try_recv().expect("runtime command");
+        let command = command_rx.try_recv().expect("runtime command");
+        let RuntimeCommand::Send { id, message, .. } = command else {
+            panic!("expected send command");
+        };
         assert_eq!(id, "tui-turn-1");
         assert_eq!(message, "hello model");
         assert_eq!(turn_counter, 1);
@@ -2316,7 +2345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_slash_command_clears_only_local_transcript_view() {
+    async fn clear_slash_command_resets_view_and_requests_runtime_context_clear() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
         let mut app = TuiApp::new();
         app.status = Some(RuntimeStatus {
@@ -2341,14 +2370,20 @@ mod tests {
             .await
             .expect("submit");
 
-        assert!(command_rx.try_recv().is_err());
-        assert!(app.transcript.is_empty());
+        assert!(matches!(
+            command_rx.try_recv().expect("clear context command"),
+            RuntimeCommand::ClearContext
+        ));
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::System);
+        assert!(app.transcript[0].text.contains("Context cleared"));
         assert!(app.status.is_some());
         assert_eq!(turn_counter, 0);
     }
 
-    #[test]
-    fn status_slash_command_adds_runtime_status_row() {
+    #[tokio::test]
+    async fn status_slash_command_adds_runtime_status_row() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
         let mut app = TuiApp::new();
         app.status = Some(RuntimeStatus {
             session_id: "session-1".to_string(),
@@ -2360,8 +2395,11 @@ mod tests {
             cost_usd: Some(0.125),
         });
 
-        app.apply_slash_command(SlashCommand::Status);
+        app.apply_slash_command(SlashCommand::Status, &command_tx)
+            .await
+            .expect("status command");
 
+        assert!(command_rx.try_recv().is_err());
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(app.transcript[0].kind, TranscriptKind::System);
         assert!(app.transcript[0].text.contains("session: session-1"));
@@ -2371,12 +2409,16 @@ mod tests {
         assert!(app.transcript[0].text.contains("cost: $0.1250"));
     }
 
-    #[test]
-    fn help_slash_command_renders_supported_commands() {
+    #[tokio::test]
+    async fn help_slash_command_renders_supported_commands() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = TuiApp::new();
-        app.apply_slash_command(SlashCommand::Help);
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        app.apply_slash_command(SlashCommand::Help, &command_tx)
+            .await
+            .expect("help command");
+        assert!(command_rx.try_recv().is_err());
 
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let screen = terminal

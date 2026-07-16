@@ -18,8 +18,8 @@ use crate::agent::loop_::{
 };
 use crate::agent::types::AgentEvent;
 use crate::ipc::errors::normalize_error;
-use crate::session::jsonl::append_message;
-use crate::session::setup::{create_session, SessionContext, SessionOptions};
+use crate::session::jsonl::{append_context_marker, append_message, CONTEXT_RESET_MARKER_TYPE};
+use crate::session::setup::{create_session, fresh_system_message, SessionContext, SessionOptions};
 use crate::types::{AssistantMessage, Message, ToolCall, Usage, UserMessage};
 
 #[derive(Debug, Clone)]
@@ -219,6 +219,18 @@ impl HeddleRuntime {
             total_output_tokens: tracker.total_output_tokens(),
             cost_usd: tracker.total_cost(),
         }
+    }
+
+    pub fn clear_context(&mut self) -> Result<()> {
+        let marker = serde_json::json!({
+            "type": CONTEXT_RESET_MARKER_TYPE,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        append_context_marker(&self.session.session_file, &marker)?;
+        let system_msg = fresh_system_message(&self.session)?;
+        append_message(&self.session.session_file, &system_msg)?;
+        self.session.messages = vec![system_msg];
+        Ok(())
     }
 
     pub async fn send<F>(
