@@ -258,6 +258,78 @@ struct TranscriptItem {
     text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ViewportState {
+    scroll_top: usize,
+    content_height: usize,
+    viewport_height: usize,
+    follow_tail: bool,
+}
+
+impl Default for ViewportState {
+    fn default() -> Self {
+        Self {
+            scroll_top: 0,
+            content_height: 0,
+            viewport_height: 0,
+            follow_tail: true,
+        }
+    }
+}
+
+impl ViewportState {
+    fn max_scroll(&self) -> usize {
+        self.content_height.saturating_sub(self.viewport_height)
+    }
+
+    fn set_content_height(&mut self, height: usize) {
+        self.content_height = height;
+        self.clamp_scroll();
+    }
+
+    fn set_viewport_height(&mut self, height: usize) {
+        self.viewport_height = height;
+        self.clamp_scroll();
+    }
+
+    fn scroll_up(&mut self, lines: usize) {
+        let current = if self.follow_tail {
+            self.max_scroll()
+        } else {
+            self.scroll_top
+        };
+        self.follow_tail = false;
+        self.scroll_top = current.saturating_sub(lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        self.scroll_top = self.scroll_top.saturating_add(lines).min(self.max_scroll());
+        self.follow_tail = self.scroll_top == self.max_scroll();
+    }
+
+    fn jump_to_bottom(&mut self) {
+        self.follow_tail = true;
+        self.scroll_top = self.max_scroll();
+    }
+
+    fn on_new_output(&mut self) {
+        self.clamp_scroll();
+    }
+
+    fn on_submit_prompt(&mut self) {
+        self.jump_to_bottom();
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max_scroll = self.max_scroll();
+        if self.follow_tail {
+            self.scroll_top = max_scroll;
+        } else {
+            self.scroll_top = self.scroll_top.min(max_scroll);
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct TuiApp {
     input: InputBuffer,
@@ -266,9 +338,7 @@ struct TuiApp {
     active_assistant: Option<usize>,
     pending_work_row: Option<usize>,
     turn_started_at: Option<Instant>,
-    transcript_scroll: u16,
-    max_transcript_scroll: u16,
-    follow_tail: bool,
+    viewport: ViewportState,
     status: Option<RuntimeStatus>,
     active: bool,
     should_quit: bool,
@@ -281,7 +351,6 @@ struct TuiApp {
 impl TuiApp {
     fn new() -> Self {
         Self {
-            follow_tail: true,
             cwd: std::env::current_dir()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|_| ".".to_string()),
@@ -324,32 +393,20 @@ impl TuiApp {
             (KeyCode::Esc, _) => {
                 if let Some(cancel) = &self.active_cancel {
                     cancel.cancel();
-                } else if !self.follow_tail {
-                    self.follow_tail = true;
-                    self.transcript_scroll = self.max_transcript_scroll;
+                } else if !self.viewport.follow_tail {
+                    self.viewport.jump_to_bottom();
                 } else {
                     return Ok(true);
                 }
             }
             (KeyCode::PageUp, _) => {
-                let current = if self.follow_tail {
-                    self.max_transcript_scroll
-                } else {
-                    self.transcript_scroll
-                };
-                self.follow_tail = false;
-                self.transcript_scroll = current.saturating_sub(5);
+                self.viewport.scroll_up(5);
             }
             (KeyCode::PageDown, _) => {
-                self.follow_tail = false;
-                self.transcript_scroll = self
-                    .transcript_scroll
-                    .saturating_add(5)
-                    .min(self.max_transcript_scroll);
-                self.follow_tail = self.transcript_scroll == self.max_transcript_scroll;
+                self.viewport.scroll_down(5);
             }
             (KeyCode::End, KeyModifiers::CONTROL) => {
-                self.follow_tail = true;
+                self.viewport.jump_to_bottom();
             }
             (KeyCode::Up, _) if !self.active => self.input.move_up(),
             (KeyCode::Down, _) if !self.active => self.input.move_down(),
@@ -386,20 +443,10 @@ impl TuiApp {
     fn handle_mouse(&mut self, kind: MouseEventKind) {
         match kind {
             MouseEventKind::ScrollUp => {
-                let current = if self.follow_tail {
-                    self.max_transcript_scroll
-                } else {
-                    self.transcript_scroll
-                };
-                self.follow_tail = false;
-                self.transcript_scroll = current.saturating_sub(3);
+                self.viewport.scroll_up(3);
             }
             MouseEventKind::ScrollDown => {
-                self.transcript_scroll = self
-                    .transcript_scroll
-                    .saturating_add(3)
-                    .min(self.max_transcript_scroll);
-                self.follow_tail = self.transcript_scroll == self.max_transcript_scroll;
+                self.viewport.scroll_down(3);
             }
             _ => {}
         }
@@ -432,7 +479,7 @@ impl TuiApp {
         });
         self.pending_work_row = Some(pending_row);
         self.turn_started_at = Some(Instant::now());
-        self.follow_tail = true;
+        self.viewport.on_submit_prompt();
 
         *turn_counter += 1;
         let cancel = CancellationToken::new();
@@ -474,6 +521,7 @@ impl TuiApp {
             RuntimeEvent::ContentDelta { text } => {
                 self.clear_pending_work();
                 self.append_assistant_delta(&text);
+                self.viewport.on_new_output();
             }
             RuntimeEvent::ToolStarted { name, call } => {
                 self.clear_pending_work();
@@ -483,6 +531,7 @@ impl TuiApp {
                     text: format_tool_row(&name, "running", Some(&call.function.arguments), None),
                 });
                 self.tool_rows.insert(call.id, row);
+                self.viewport.on_new_output();
             }
             RuntimeEvent::ToolFinished { name, result, call } => {
                 self.clear_pending_work();
@@ -500,6 +549,7 @@ impl TuiApp {
                         text,
                     });
                 }
+                self.viewport.on_new_output();
             }
             RuntimeEvent::UsageUpdated { .. } => {}
             RuntimeEvent::Error { error } => {
@@ -508,6 +558,7 @@ impl TuiApp {
                     kind: TranscriptKind::Error,
                     text: error.message,
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::PermissionRequested { name, reason, .. } => {
                 self.clear_pending_work();
@@ -520,6 +571,7 @@ impl TuiApp {
                     .trim()
                     .to_string(),
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::PermissionDenied { name, reason, .. } => {
                 self.clear_pending_work();
@@ -527,6 +579,7 @@ impl TuiApp {
                     kind: TranscriptKind::Error,
                     text: format!("permission denied: {name}: {reason}"),
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::PlanCompleted { plan } => {
                 self.clear_pending_work();
@@ -534,6 +587,7 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: format!("plan completed\n{plan}"),
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::ContextPruned {
                 messages_pruned, ..
@@ -543,6 +597,7 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: format!("context pruned: {messages_pruned} messages"),
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::ContextCompacted => {
                 self.clear_pending_work();
@@ -550,6 +605,7 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: "context compacted".to_string(),
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::ContextHandoff => {
                 self.clear_pending_work();
@@ -557,11 +613,13 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: "context handoff".to_string(),
                 });
+                self.viewport.on_new_output();
             }
             RuntimeEvent::AssistantMessage { message, .. } => {
                 if let Some(content) = message.content {
                     self.clear_pending_work();
                     self.set_assistant_message(content);
+                    self.viewport.on_new_output();
                 }
             }
         }
@@ -597,6 +655,7 @@ impl TuiApp {
             }
         }
         self.push_turn_footer(&status, &worked_for);
+        self.viewport.on_new_output();
     }
 
     fn append_assistant_delta(&mut self, text: &str) {
@@ -631,7 +690,7 @@ impl TuiApp {
         self.clear_pending_work();
         self.permission_prompt_view = Some(PermissionPromptView::from_request(&prompt.request));
         self.permission_prompt = Some(prompt);
-        self.follow_tail = true;
+        self.viewport.jump_to_bottom();
     }
 
     fn answer_permission_prompt(&mut self, response: RuntimePermissionResponse) {
@@ -875,16 +934,10 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
         .split(area);
 
     let transcript_lines = transcript_text(app, chunks[0].width);
-    let tail_scroll = transcript_lines
-        .lines
-        .len()
-        .saturating_sub(chunks[0].height as usize) as u16;
-    app.max_transcript_scroll = tail_scroll;
-    let scroll = if app.follow_tail {
-        tail_scroll
-    } else {
-        app.transcript_scroll.min(tail_scroll)
-    };
+    app.viewport
+        .set_content_height(transcript_lines.lines.len());
+    app.viewport.set_viewport_height(chunks[0].height as usize);
+    let scroll = app.viewport.scroll_top.min(u16::MAX as usize) as u16;
     let transcript = Paragraph::new(transcript_lines)
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
@@ -1271,6 +1324,7 @@ mod tests {
     use crate::runtime::{RuntimeError, RuntimeStatus, RuntimeUsage};
     use crate::types::{FunctionCall, ToolCall, ToolCallKind};
     use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
     use ratatui::Terminal;
 
     fn tool_call(id: &str, name: &str) -> ToolCall {
@@ -1293,6 +1347,100 @@ mod tests {
                 arguments: arguments.to_string(),
             },
         }
+    }
+
+    fn add_long_transcript(app: &mut TuiApp, rows: usize) {
+        for idx in 0..rows {
+            app.transcript.push(TranscriptItem {
+                kind: TranscriptKind::Assistant,
+                text: format!("transcript row {idx:03}"),
+            });
+        }
+    }
+
+    fn draw_screen(terminal: &mut Terminal<TestBackend>, app: &mut TuiApp) -> String {
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn viewport_follows_tail_when_content_or_viewport_changes() {
+        let mut viewport = ViewportState::default();
+
+        viewport.set_viewport_height(10);
+        viewport.set_content_height(100);
+        assert_eq!(viewport.scroll_top, 90);
+        assert!(viewport.follow_tail);
+
+        viewport.set_viewport_height(20);
+        assert_eq!(viewport.scroll_top, 80);
+
+        viewport.set_content_height(12);
+        assert_eq!(viewport.scroll_top, 0);
+        assert!(viewport.follow_tail);
+    }
+
+    #[test]
+    fn viewport_manual_scroll_survives_output_and_clamps_on_resize() {
+        let mut viewport = ViewportState::default();
+        viewport.set_viewport_height(10);
+        viewport.set_content_height(100);
+
+        viewport.scroll_up(30);
+        assert_eq!(viewport.scroll_top, 60);
+        assert!(!viewport.follow_tail);
+
+        viewport.set_content_height(120);
+        viewport.on_new_output();
+        assert_eq!(viewport.scroll_top, 60);
+        assert!(!viewport.follow_tail);
+
+        viewport.set_viewport_height(80);
+        assert_eq!(viewport.scroll_top, 40);
+        assert!(!viewport.follow_tail);
+
+        viewport.jump_to_bottom();
+        assert_eq!(viewport.scroll_top, 40);
+        assert!(viewport.follow_tail);
+    }
+
+    #[test]
+    fn viewport_scroll_down_reaches_live_tail() {
+        let mut viewport = ViewportState::default();
+        viewport.set_viewport_height(10);
+        viewport.set_content_height(100);
+        viewport.scroll_up(50);
+
+        viewport.scroll_down(10);
+        assert_eq!(viewport.scroll_top, 50);
+        assert!(!viewport.follow_tail);
+
+        viewport.scroll_down(100);
+        assert_eq!(viewport.scroll_top, 90);
+        assert!(viewport.follow_tail);
+
+        viewport.set_content_height(120);
+        assert_eq!(viewport.scroll_top, 110);
+        assert!(viewport.follow_tail);
+    }
+
+    #[test]
+    fn viewport_submit_prompt_returns_to_tail() {
+        let mut viewport = ViewportState::default();
+        viewport.set_viewport_height(10);
+        viewport.set_content_height(100);
+        viewport.scroll_up(40);
+        assert!(!viewport.follow_tail);
+
+        viewport.on_submit_prompt();
+        assert_eq!(viewport.scroll_top, 90);
+        assert!(viewport.follow_tail);
     }
 
     #[test]
@@ -1338,7 +1486,7 @@ mod tests {
 
         assert_eq!(app.transcript[0].text, "first");
         assert_eq!(app.transcript[2].text, "second");
-        assert!(app.follow_tail);
+        assert!(app.viewport.follow_tail);
     }
 
     #[test]
@@ -1551,6 +1699,123 @@ mod tests {
         assert!(!status.starts_with("idle |"));
         assert!(!status.starts_with("active |"));
         assert!(!status.starts_with("permission |"));
+    }
+
+    #[test]
+    fn render_manual_scroll_is_not_yanked_by_active_output() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let bottom = draw_screen(&mut terminal, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        let tail_scroll = app.viewport.scroll_top;
+
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        let manual_scroll = app.viewport.scroll_top;
+        assert!(manual_scroll < tail_scroll);
+        assert!(!app.viewport.follow_tail);
+
+        app.active = true;
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "streamed tail marker".to_string(),
+        });
+        let scrolled = draw_screen(&mut terminal, &mut app);
+
+        assert_eq!(app.viewport.scroll_top, manual_scroll);
+        assert!(!app.viewport.follow_tail);
+        assert!(!scrolled.contains("streamed tail marker"));
+    }
+
+    #[test]
+    fn render_input_growth_preserves_manual_scroll_and_bottom_remains_reachable() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let _ = draw_screen(&mut terminal, &mut app);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        let manual_scroll = app.viewport.scroll_top;
+        let old_viewport_height = app.viewport.viewport_height;
+
+        for _ in 0..5 {
+            app.input.insert_newline();
+        }
+        let grown = draw_screen(&mut terminal, &mut app);
+
+        assert!(app.viewport.viewport_height < old_viewport_height);
+        assert_eq!(app.viewport.scroll_top, manual_scroll);
+        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
+        assert!(!app.viewport.follow_tail);
+        assert!(!grown.contains("transcript row 089"));
+
+        app.viewport.jump_to_bottom();
+        let bottom = draw_screen(&mut terminal, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        assert!(app.viewport.follow_tail);
+    }
+
+    #[test]
+    fn render_resize_clamps_manual_scroll_and_can_jump_to_bottom() {
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let _ = draw_screen(&mut terminal, &mut app);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        let manual_scroll = app.viewport.scroll_top;
+
+        terminal.backend_mut().resize(80, 14);
+        terminal
+            .resize(Rect::new(0, 0, 80, 14))
+            .expect("terminal resize");
+        let _ = draw_screen(&mut terminal, &mut app);
+        assert_eq!(app.viewport.scroll_top, manual_scroll);
+        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
+        assert!(!app.viewport.follow_tail);
+
+        terminal.backend_mut().resize(80, 60);
+        terminal
+            .resize(Rect::new(0, 0, 80, 60))
+            .expect("terminal resize");
+        let _ = draw_screen(&mut terminal, &mut app);
+        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
+        assert!(!app.viewport.follow_tail);
+
+        app.viewport.jump_to_bottom();
+        let bottom = draw_screen(&mut terminal, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
+    }
+
+    #[test]
+    fn mouse_scroll_down_from_manual_scroll_returns_to_tail() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let _ = draw_screen(&mut terminal, &mut app);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        assert!(!app.viewport.follow_tail);
+
+        for _ in 0..20 {
+            app.handle_mouse(MouseEventKind::ScrollDown);
+        }
+        let bottom = draw_screen(&mut terminal, &mut app);
+
+        assert!(app.viewport.follow_tail);
+        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
+        assert!(bottom.contains("transcript row 089"));
     }
 
     #[test]
