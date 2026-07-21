@@ -593,7 +593,6 @@ impl TuiApp {
             RuntimeEvent::ContentDelta { text } => {
                 self.clear_pending_work();
                 self.append_assistant_delta(&text);
-                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ToolStarted { name, call } => {
@@ -636,42 +635,36 @@ impl TuiApp {
             }
             RuntimeEvent::Error { error } => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::Error,
-                    text: error.message,
-                });
+                self.push_transcript_row(TranscriptKind::Error, error.message);
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::PermissionRequested { name, reason, .. } => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::System,
-                    text: format!(
+                self.push_transcript_row(
+                    TranscriptKind::System,
+                    format!(
                         "permission requested: {name} {}",
                         reason.unwrap_or_default()
                     )
                     .trim()
                     .to_string(),
-                });
+                );
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::PermissionDenied { name, reason, .. } => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::Error,
-                    text: format!("permission denied: {name}: {reason}"),
-                });
+                self.push_transcript_row(
+                    TranscriptKind::Error,
+                    format!("permission denied: {name}: {reason}"),
+                );
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::PlanCompleted { plan } => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::System,
-                    text: format!("plan completed\n{plan}"),
-                });
+                self.push_transcript_row(TranscriptKind::System, format!("plan completed\n{plan}"));
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
@@ -679,28 +672,22 @@ impl TuiApp {
                 messages_pruned, ..
             } => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::System,
-                    text: format!("context pruned: {messages_pruned} messages"),
-                });
+                self.push_transcript_row(
+                    TranscriptKind::System,
+                    format!("context pruned: {messages_pruned} messages"),
+                );
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ContextCompacted => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::System,
-                    text: "context compacted".to_string(),
-                });
+                self.push_transcript_row(TranscriptKind::System, "context compacted".to_string());
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ContextHandoff => {
                 self.clear_pending_work();
-                self.transcript.push(TranscriptItem {
-                    kind: TranscriptKind::System,
-                    text: "context handoff".to_string(),
-                });
+                self.push_transcript_row(TranscriptKind::System, "context handoff".to_string());
                 self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
@@ -708,7 +695,6 @@ impl TuiApp {
                 if let Some(content) = message.content {
                     self.clear_pending_work();
                     self.set_assistant_message(content);
-                    self.restore_pending_work_if_active();
                     self.viewport.on_new_output();
                 }
             }
@@ -733,16 +719,14 @@ impl TuiApp {
         self.last_turn_status = Some(status.clone());
         match &status {
             TurnStatus::Ok => {}
-            TurnStatus::Cancelled => self.transcript.push(TranscriptItem {
-                kind: TranscriptKind::System,
-                text: "turn cancelled".to_string(),
-            }),
+            TurnStatus::Cancelled => {
+                self.push_transcript_row(TranscriptKind::System, "turn cancelled".to_string())
+            }
             TurnStatus::Error => {
                 if let Some(error) = outcome.error {
-                    self.transcript.push(TranscriptItem {
-                        kind: TranscriptKind::Error,
-                        text: error.message,
-                    });
+                    if !self.current_turn_has_error(&error.message) {
+                        self.push_transcript_row(TranscriptKind::Error, error.message);
+                    }
                 }
             }
         }
@@ -856,6 +840,29 @@ impl TuiApp {
         let location = TranscriptLocation { turn, item };
         self.refresh_transcript_cache();
         location
+    }
+
+    fn push_transcript_row(&mut self, kind: TranscriptKind, text: String) {
+        if self.turns.is_empty() && !self.transcript.is_empty() {
+            self.transcript.push(TranscriptItem { kind, text });
+            return;
+        }
+
+        self.push_turn_row(kind, text);
+    }
+
+    fn current_turn_has_error(&self, message: &str) -> bool {
+        self.turns.last().is_some_and(|turn| {
+            turn.items.iter().any(|item| {
+                matches!(
+                    item,
+                    TurnTranscriptItem::Row(TranscriptItem {
+                        kind: TranscriptKind::Error,
+                        text
+                    }) if text == message
+                )
+            })
+        })
     }
 
     fn push_tool(&mut self, id: String, name: String, arguments: String) -> TranscriptLocation {
@@ -2033,6 +2040,26 @@ mod tests {
         }
     }
 
+    fn error_outcome(message: &str) -> TurnOutcome {
+        TurnOutcome {
+            status: TurnStatus::Error,
+            response: None,
+            tool_calls_made: Vec::new(),
+            usage: None,
+            iterations: 0,
+            error: Some(RuntimeError {
+                code: "provider_error".to_string(),
+                message: message.to_string(),
+                retryable: false,
+                provider: None,
+                details: None,
+            }),
+            model_latency_ms: 0,
+            tool_latency_ms: 0,
+            total_latency_ms: 0,
+        }
+    }
+
     #[test]
     fn viewport_follows_tail_when_content_or_viewport_changes() {
         let mut viewport = ViewportState::default();
@@ -2271,6 +2298,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_error_stays_in_active_turn_until_error_outcome() {
+        let (command_tx, mut command_rx) = mpsc::channel(2);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+
+        insert_prompt(&mut app, "first prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("first submit");
+        let _ = command_rx.try_recv().expect("first command");
+
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "partial answer".to_string(),
+        });
+        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(app.transcript[1].kind, TranscriptKind::Assistant);
+        assert_eq!(app.transcript[1].text, "partial answer");
+
+        app.apply_runtime_event(RuntimeEvent::Error {
+            error: RuntimeError {
+                code: "provider_error".to_string(),
+                message: "stream body broke".to_string(),
+                retryable: false,
+                provider: Some("openrouter".to_string()),
+                details: None,
+            },
+        });
+
+        assert_eq!(app.transcript[0].kind, TranscriptKind::User);
+        assert_eq!(app.transcript[1].kind, TranscriptKind::Assistant);
+        assert_eq!(app.transcript[1].text, "partial answer");
+        assert_eq!(app.transcript[2].kind, TranscriptKind::Error);
+        assert_eq!(app.transcript[2].text, "stream body broke");
+        assert_eq!(app.transcript[3].kind, TranscriptKind::System);
+        assert!(app.transcript[3].text.starts_with("Working..."));
+        assert!(app.active);
+
+        insert_prompt(&mut app, "second prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("active submit ignored");
+        assert_eq!(turn_counter, 1);
+        assert!(command_rx.try_recv().is_err());
+
+        app.apply_turn_outcome(error_outcome("stream body broke"));
+
+        assert_eq!(app.transcript.len(), 4);
+        assert_eq!(app.transcript[2].kind, TranscriptKind::Error);
+        assert_eq!(app.transcript[2].text, "stream body broke");
+        assert_eq!(app.transcript[3].kind, TranscriptKind::Divider);
+        assert!(app.transcript[3].text.ends_with(" - error"));
+        assert!(!app.active);
+
+        app.input.clear();
+        insert_prompt(&mut app, "next prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("second submit");
+        let _ = command_rx.try_recv().expect("second command");
+
+        assert_eq!(app.transcript[4].kind, TranscriptKind::User);
+        assert_eq!(app.transcript[4].text, "next prompt");
+    }
+
+    #[tokio::test]
     async fn transcript_groups_exploration_tools_inside_their_turns() {
         let backend = TestBackend::new(96, 28);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -2410,6 +2502,12 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 11,
                 total_tokens: 18,
+                cost_micros: None,
+                cost_currency: None,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                generation_id: None,
             },
         });
         app.apply_runtime_event(RuntimeEvent::Error {
