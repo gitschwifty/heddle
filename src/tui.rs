@@ -2886,123 +2886,6 @@ mod tests {
     }
 
     #[test]
-    fn render_manual_scroll_is_not_yanked_by_active_output() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = TuiApp::new();
-        add_long_transcript(&mut app, 90);
-
-        let bottom = draw_screen(&mut terminal, &mut app);
-        assert!(bottom.contains("transcript row 089"));
-        let tail_scroll = app.viewport.scroll_top;
-
-        app.handle_mouse(MouseEventKind::ScrollUp);
-        let _ = draw_screen(&mut terminal, &mut app);
-        let manual_scroll = app.viewport.scroll_top;
-        assert!(manual_scroll < tail_scroll);
-        assert!(!app.viewport.follow_tail);
-
-        app.active = true;
-        app.apply_runtime_event(RuntimeEvent::ContentDelta {
-            text: "streamed tail marker".to_string(),
-        });
-        let scrolled = draw_screen(&mut terminal, &mut app);
-
-        assert_eq!(app.viewport.scroll_top, manual_scroll);
-        assert!(!app.viewport.follow_tail);
-        assert!(!scrolled.contains("streamed tail marker"));
-    }
-
-    #[test]
-    fn render_input_growth_preserves_manual_scroll_and_bottom_remains_reachable() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = TuiApp::new();
-        add_long_transcript(&mut app, 90);
-
-        let _ = draw_screen(&mut terminal, &mut app);
-        app.handle_mouse(MouseEventKind::ScrollUp);
-        let _ = draw_screen(&mut terminal, &mut app);
-        let manual_scroll = app.viewport.scroll_top;
-        let old_viewport_height = app.viewport.viewport_height;
-
-        for _ in 0..5 {
-            app.input.insert_newline();
-        }
-        let grown = draw_screen(&mut terminal, &mut app);
-
-        assert!(app.viewport.viewport_height < old_viewport_height);
-        assert_eq!(app.viewport.scroll_top, manual_scroll);
-        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
-        assert!(!app.viewport.follow_tail);
-        assert!(!grown.contains("transcript row 089"));
-
-        app.viewport.jump_to_bottom();
-        let bottom = draw_screen(&mut terminal, &mut app);
-        assert!(bottom.contains("transcript row 089"));
-        assert!(app.viewport.follow_tail);
-    }
-
-    #[test]
-    fn render_resize_clamps_manual_scroll_and_can_jump_to_bottom() {
-        let backend = TestBackend::new(80, 30);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = TuiApp::new();
-        add_long_transcript(&mut app, 90);
-
-        let _ = draw_screen(&mut terminal, &mut app);
-        app.handle_mouse(MouseEventKind::ScrollUp);
-        app.handle_mouse(MouseEventKind::ScrollUp);
-        let _ = draw_screen(&mut terminal, &mut app);
-        let manual_scroll = app.viewport.scroll_top;
-
-        terminal.backend_mut().resize(80, 14);
-        terminal
-            .resize(Rect::new(0, 0, 80, 14))
-            .expect("terminal resize");
-        let _ = draw_screen(&mut terminal, &mut app);
-        assert_eq!(app.viewport.scroll_top, manual_scroll);
-        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
-        assert!(!app.viewport.follow_tail);
-
-        terminal.backend_mut().resize(80, 60);
-        terminal
-            .resize(Rect::new(0, 0, 80, 60))
-            .expect("terminal resize");
-        let _ = draw_screen(&mut terminal, &mut app);
-        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
-        assert!(!app.viewport.follow_tail);
-
-        app.viewport.jump_to_bottom();
-        let bottom = draw_screen(&mut terminal, &mut app);
-        assert!(bottom.contains("transcript row 089"));
-        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
-    }
-
-    #[test]
-    fn mouse_scroll_down_from_manual_scroll_returns_to_tail() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = TuiApp::new();
-        add_long_transcript(&mut app, 90);
-
-        let _ = draw_screen(&mut terminal, &mut app);
-        app.handle_mouse(MouseEventKind::ScrollUp);
-        app.handle_mouse(MouseEventKind::ScrollUp);
-        let _ = draw_screen(&mut terminal, &mut app);
-        assert!(!app.viewport.follow_tail);
-
-        for _ in 0..20 {
-            app.handle_mouse(MouseEventKind::ScrollDown);
-        }
-        let bottom = draw_screen(&mut terminal, &mut app);
-
-        assert!(app.viewport.follow_tail);
-        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
-        assert!(bottom.contains("transcript row 089"));
-    }
-
-    #[test]
     fn slash_command_parser_recognizes_tui_local_commands() {
         assert_eq!(parse_tui_slash_command("/clear"), SlashCommand::Clear);
         assert_eq!(parse_tui_slash_command(" /status "), SlashCommand::Status);
@@ -3163,6 +3046,123 @@ mod tests {
         assert!(screen.contains("/status"));
         assert!(screen.contains("/clear"));
         assert!(screen.contains("Ctrl-C"));
+    }
+
+    #[test]
+    fn render_manual_scroll_is_not_yanked_by_active_output() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let bottom = draw_screen(&mut terminal, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        let tail_scroll = app.viewport.scroll_top;
+
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        let manual_scroll = app.viewport.scroll_top;
+        assert!(manual_scroll < tail_scroll);
+        assert!(!app.viewport.follow_tail);
+
+        app.active = true;
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "streamed tail marker".to_string(),
+        });
+        let scrolled = draw_screen(&mut terminal, &mut app);
+
+        assert_eq!(app.viewport.scroll_top, manual_scroll);
+        assert!(!app.viewport.follow_tail);
+        assert!(!scrolled.contains("streamed tail marker"));
+    }
+
+    #[test]
+    fn render_input_growth_preserves_manual_scroll_and_bottom_remains_reachable() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let _ = draw_screen(&mut terminal, &mut app);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        let manual_scroll = app.viewport.scroll_top;
+        let old_viewport_height = app.viewport.viewport_height;
+
+        for _ in 0..5 {
+            app.input.insert_newline();
+        }
+        let grown = draw_screen(&mut terminal, &mut app);
+
+        assert!(app.viewport.viewport_height < old_viewport_height);
+        assert_eq!(app.viewport.scroll_top, manual_scroll);
+        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
+        assert!(!app.viewport.follow_tail);
+        assert!(!grown.contains("transcript row 089"));
+
+        app.viewport.jump_to_bottom();
+        let bottom = draw_screen(&mut terminal, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        assert!(app.viewport.follow_tail);
+    }
+
+    #[test]
+    fn render_resize_clamps_manual_scroll_and_can_jump_to_bottom() {
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let _ = draw_screen(&mut terminal, &mut app);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        let manual_scroll = app.viewport.scroll_top;
+
+        terminal.backend_mut().resize(80, 14);
+        terminal
+            .resize(Rect::new(0, 0, 80, 14))
+            .expect("terminal resize");
+        let _ = draw_screen(&mut terminal, &mut app);
+        assert_eq!(app.viewport.scroll_top, manual_scroll);
+        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
+        assert!(!app.viewport.follow_tail);
+
+        terminal.backend_mut().resize(80, 60);
+        terminal
+            .resize(Rect::new(0, 0, 80, 60))
+            .expect("terminal resize");
+        let _ = draw_screen(&mut terminal, &mut app);
+        assert!(app.viewport.scroll_top <= app.viewport.max_scroll());
+        assert!(!app.viewport.follow_tail);
+
+        app.viewport.jump_to_bottom();
+        let bottom = draw_screen(&mut terminal, &mut app);
+        assert!(bottom.contains("transcript row 089"));
+        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
+    }
+
+    #[test]
+    fn mouse_scroll_down_from_manual_scroll_returns_to_tail() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = TuiApp::new();
+        add_long_transcript(&mut app, 90);
+
+        let _ = draw_screen(&mut terminal, &mut app);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        let _ = draw_screen(&mut terminal, &mut app);
+        assert!(!app.viewport.follow_tail);
+
+        for _ in 0..20 {
+            app.handle_mouse(MouseEventKind::ScrollDown);
+        }
+        let bottom = draw_screen(&mut terminal, &mut app);
+
+        assert!(app.viewport.follow_tail);
+        assert_eq!(app.viewport.scroll_top, app.viewport.max_scroll());
+        assert!(bottom.contains("transcript row 089"));
     }
 
     #[test]
