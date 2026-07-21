@@ -647,6 +647,7 @@ fn make_provider(model: &str, api_key: String, max_tokens_per_response: u32) -> 
         model: model.to_string(),
         base_url: None,
         request_params: Some(serde_json::Value::Object(params)),
+        app_attribution: None,
         retry: None,
     })
 }
@@ -1359,7 +1360,6 @@ async fn cmd_run(
         if !r.scores.outcome.passed {
             smoke_failed = true;
         }
-        write_result(&results_dir, &r)?;
         cumulative_usd += r.scores.cost.usd;
         if cumulative_usd > budget_stop_usd {
             budget_stopped = true;
@@ -1373,20 +1373,40 @@ async fn cmd_run(
         }
     }
 
-    if budget_stopped {
-        eprintln!();
-        eprintln!(
-            "Budget stop hit before {} pending matrix run(s).",
-            matrix_pairs.len() * runs as usize
-        );
-        eprintln!();
-    } else if smoke_failed && !matrix_pairs.is_empty() {
+    if smoke_failed && !matrix_pairs.is_empty() {
         eprintln!();
         eprintln!(
             "❌ smoke failed — aborting before {} matrix run(s) to save budget.",
             matrix_pairs.len()
         );
         eprintln!("Investigate the smoke failures above before re-running the matrix.");
+        eprintln!();
+
+        let summary = if runs > 1 {
+            format_aggregated_summary(&results, runs)
+        } else {
+            format_summary(&results)
+        };
+        let failures = format_failure_details(&results);
+        print!("{summary}");
+        print!("{failures}");
+        println!(
+            "Smoke failed before matrix execution; not writing results under {}",
+            results_dir.display()
+        );
+        return Ok(());
+    }
+
+    for r in &results {
+        write_result(&results_dir, r)?;
+    }
+
+    if budget_stopped {
+        eprintln!();
+        eprintln!(
+            "Budget stop hit before {} pending matrix run(s).",
+            matrix_pairs.len() * runs as usize
+        );
         eprintln!();
     } else {
         // Pass 2: matrix, repeated `runs` times to average out variance.
