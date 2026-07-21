@@ -22,7 +22,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -543,7 +543,7 @@ impl TuiApp {
                 }),
                 TurnTranscriptItem::Row(TranscriptItem {
                     kind: TranscriptKind::System,
-                    text: "working for 0s - Esc to interrupt".to_string(),
+                    text: "Working... 0s - Esc to interrupt".to_string(),
                 }),
             ],
         });
@@ -593,6 +593,7 @@ impl TuiApp {
             RuntimeEvent::ContentDelta { text } => {
                 self.clear_pending_work();
                 self.append_assistant_delta(&text);
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ToolStarted { name, call } => {
@@ -601,6 +602,7 @@ impl TuiApp {
                 self.active_assistant_location = None;
                 let location = self.push_tool(call.id.clone(), name, call.function.arguments);
                 self.tool_rows.insert(call.id, location);
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ToolFinished { name, result, call } => {
@@ -623,6 +625,7 @@ impl TuiApp {
                         self.refresh_transcript_cache();
                     }
                 }
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::UsageUpdated { .. } => {}
@@ -637,6 +640,7 @@ impl TuiApp {
                     kind: TranscriptKind::Error,
                     text: error.message,
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::PermissionRequested { name, reason, .. } => {
@@ -650,6 +654,7 @@ impl TuiApp {
                     .trim()
                     .to_string(),
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::PermissionDenied { name, reason, .. } => {
@@ -658,6 +663,7 @@ impl TuiApp {
                     kind: TranscriptKind::Error,
                     text: format!("permission denied: {name}: {reason}"),
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::PlanCompleted { plan } => {
@@ -666,6 +672,7 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: format!("plan completed\n{plan}"),
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ContextPruned {
@@ -676,6 +683,7 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: format!("context pruned: {messages_pruned} messages"),
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ContextCompacted => {
@@ -684,6 +692,7 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: "context compacted".to_string(),
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::ContextHandoff => {
@@ -692,12 +701,14 @@ impl TuiApp {
                     kind: TranscriptKind::System,
                     text: "context handoff".to_string(),
                 });
+                self.restore_pending_work_if_active();
                 self.viewport.on_new_output();
             }
             RuntimeEvent::AssistantMessage { message, .. } => {
                 if let Some(content) = message.content {
                     self.clear_pending_work();
                     self.set_assistant_message(content);
+                    self.restore_pending_work_if_active();
                     self.viewport.on_new_output();
                 }
             }
@@ -740,6 +751,16 @@ impl TuiApp {
     }
 
     fn append_assistant_delta(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if text.trim().is_empty()
+            && self.active_assistant.is_none()
+            && self.active_assistant_location.is_none()
+        {
+            return;
+        }
+
         if self.turns.is_empty() && !self.transcript.is_empty() {
             let row = self.active_assistant.unwrap_or_else(|| {
                 let row = self.transcript.len();
@@ -780,6 +801,10 @@ impl TuiApp {
     }
 
     fn set_assistant_message(&mut self, text: String) {
+        if text.trim().is_empty() {
+            return;
+        }
+
         if self.turns.is_empty() && !self.transcript.is_empty() {
             let row = self.active_assistant.unwrap_or_else(|| {
                 let row = self.transcript.len();
@@ -936,7 +961,6 @@ impl TuiApp {
     }
 
     fn set_permission_prompt(&mut self, prompt: PermissionPrompt) {
-        self.clear_pending_work();
         self.permission_prompt_view = Some(PermissionPromptView::from_request(&prompt.request));
         self.permission_prompt = Some(prompt);
         self.viewport.jump_to_bottom();
@@ -995,7 +1019,7 @@ impl TuiApp {
             };
             if let Some(TurnTranscriptItem::Row(item)) = self.turn_item_mut(location) {
                 item.text = format!(
-                    "working for {} - Esc to interrupt",
+                    "Working... {} - Esc to interrupt",
                     format_duration(started.elapsed())
                 );
                 self.refresh_transcript_cache();
@@ -1011,10 +1035,28 @@ impl TuiApp {
         };
         if row < self.transcript.len() {
             self.transcript[row].text = format!(
-                "working for {} - Esc to interrupt",
+                "Working... {} - Esc to interrupt",
                 format_duration(started.elapsed())
             );
         }
+    }
+
+    fn restore_pending_work_if_active(&mut self) {
+        if !self.active || self.turn_started_at.is_none() || self.pending_work_location.is_some() {
+            return;
+        }
+
+        let location = self.push_turn_row(TranscriptKind::System, self.pending_work_text());
+        self.pending_work_location = Some(location);
+        self.pending_work_row = self.flat_index_for_location(location);
+    }
+
+    fn pending_work_text(&self) -> String {
+        let elapsed = self
+            .turn_started_at
+            .map(|started| format_duration(started.elapsed()))
+            .unwrap_or_else(|| "0s".to_string());
+        format!("Working... {elapsed} - Esc to interrupt")
     }
 
     fn push_turn_footer(&mut self, status: &TurnStatus, worked_for: &str) {
@@ -1327,11 +1369,10 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
         .set_content_height(transcript_lines.lines.len());
     app.viewport.set_viewport_height(chunks[0].height as usize);
     let scroll = app.viewport.scroll_top.min(u16::MAX as usize) as u16;
-    let transcript = Paragraph::new(transcript_lines)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+    let transcript = Paragraph::new(transcript_lines).scroll((scroll, 0));
     frame.render_widget(transcript, chunks[0]);
 
+    frame.render_widget(Clear, chunks[1]);
     if let Some(prompt) = &app.permission_prompt_view {
         let input = Paragraph::new(permission_prompt_text(prompt))
             .block(
@@ -1373,6 +1414,7 @@ fn draw(frame: &mut Frame, app: &mut TuiApp) {
         ));
     }
 
+    frame.render_widget(Clear, chunks[2]);
     let status = Paragraph::new(status_line(app, chunks[2].width));
     frame.render_widget(status, chunks[2]);
 }
@@ -1461,7 +1503,7 @@ fn transcript_text(app: &TuiApp, width: u16) -> Text<'static> {
         return Text::from(lines);
     }
 
-    for item in &app.transcript {
+    for (idx, item) in app.transcript.iter().enumerate() {
         if matches!(item.kind, TranscriptKind::User) {
             lines.push(Line::raw(""));
             lines.extend(user_message_text(&item.text, width));
@@ -1482,6 +1524,9 @@ fn transcript_text(app: &TuiApp, width: u16) -> Text<'static> {
                 divider_line(&item.text, width),
                 style,
             )));
+            if idx + 1 == app.transcript.len() {
+                lines.push(Line::raw(""));
+            }
             continue;
         }
 
@@ -1624,15 +1669,6 @@ fn startup_text(app: &TuiApp) -> Text<'static> {
     ])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusState {
-    Idle,
-    Active,
-    Permission,
-    Cancelling,
-    Failed,
-}
-
 fn status_line(app: &TuiApp, width: u16) -> String {
     abbreviate(&full_status_line(app), width as usize)
 }
@@ -1642,19 +1678,10 @@ fn full_status_line(app: &TuiApp) -> String {
         return "initializing runtime".to_string();
     };
 
-    let state = status_state(app);
-    let state = match state {
-        StatusState::Idle => "idle".to_string(),
-        StatusState::Active => elapsed_state("active", app.turn_started_at),
-        StatusState::Permission => elapsed_state("permission", app.turn_started_at),
-        StatusState::Cancelling => elapsed_state("cancelling", app.turn_started_at),
-        StatusState::Failed => "failed".to_string(),
-    };
     let cost = status.cost_usd.map(format_cost).unwrap_or_default();
     let tool_count = visible_tool_count(app);
     format!(
-        "{} | model: {} | msgs: {} | tools: {} | tokens: {}/{}{}",
-        state,
+        "model: {} | msgs: {} | tools: {} | tokens: {}/{}{}",
         display_model(status),
         status.messages_count,
         tool_count,
@@ -1669,33 +1696,6 @@ fn display_model(status: &RuntimeStatus) -> String {
         Some(routed) if routed != status.model => format!("{}:{routed}", status.model),
         _ => status.model.clone(),
     }
-}
-
-fn status_state(app: &TuiApp) -> StatusState {
-    if app
-        .active_cancel
-        .as_ref()
-        .is_some_and(CancellationToken::is_cancelled)
-    {
-        return StatusState::Cancelling;
-    }
-    if app.permission_prompt_view.is_some() {
-        return StatusState::Permission;
-    }
-    if app.active {
-        return StatusState::Active;
-    }
-    if matches!(app.last_turn_status, Some(TurnStatus::Error)) {
-        return StatusState::Failed;
-    }
-    StatusState::Idle
-}
-
-fn elapsed_state(label: &str, started_at: Option<Instant>) -> String {
-    let elapsed = started_at
-        .map(|started| format_duration(started.elapsed()))
-        .unwrap_or_else(|| "0s".to_string());
-    format!("{label} {elapsed}")
 }
 
 fn visible_tool_count(app: &TuiApp) -> usize {
@@ -2173,6 +2173,103 @@ mod tests {
         assert_eq!(app.transcript[0].text, "Explored\nRead ?");
     }
 
+    #[test]
+    fn empty_assistant_delta_before_tool_does_not_render_blank_assistant_row() {
+        let mut app = TuiApp::new();
+        let call = tool_call("call-1", "read_file");
+
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: String::new(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "\n".to_string(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "read_file".to_string(),
+            call: call.clone(),
+        });
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "read_file".to_string(),
+            result: "ok".to_string(),
+            call,
+        });
+
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.transcript[0].kind, TranscriptKind::Tool);
+        assert_eq!(app.transcript[0].text, "Explored\nRead ?");
+    }
+
+    #[tokio::test]
+    async fn pending_work_row_stays_at_turn_tail_until_outcome() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+        let call = tool_call("call-1", "read_file");
+
+        insert_prompt(&mut app, "inspect files");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("submit");
+        let _ = command_rx.try_recv().expect("command");
+
+        assert_eq!(
+            app.transcript.last().expect("pending").kind,
+            TranscriptKind::System
+        );
+        assert!(app
+            .transcript
+            .last()
+            .expect("pending")
+            .text
+            .starts_with("Working..."));
+
+        app.apply_runtime_event(RuntimeEvent::ToolStarted {
+            name: "read_file".to_string(),
+            call: call.clone(),
+        });
+        assert_eq!(app.transcript[1].kind, TranscriptKind::Tool);
+        assert_eq!(
+            app.transcript.last().expect("pending").kind,
+            TranscriptKind::System
+        );
+        assert!(app
+            .transcript
+            .last()
+            .expect("pending")
+            .text
+            .starts_with("Working..."));
+
+        app.apply_runtime_event(RuntimeEvent::ToolFinished {
+            name: "read_file".to_string(),
+            result: "ok".to_string(),
+            call,
+        });
+        assert_eq!(app.transcript[1].kind, TranscriptKind::Tool);
+        assert_eq!(
+            app.transcript.last().expect("pending").kind,
+            TranscriptKind::System
+        );
+        assert!(app
+            .transcript
+            .last()
+            .expect("pending")
+            .text
+            .starts_with("Working..."));
+
+        app.apply_turn_outcome(ok_outcome());
+
+        assert_eq!(
+            app.transcript.last().expect("footer").kind,
+            TranscriptKind::Divider
+        );
+        assert!(app
+            .transcript
+            .last()
+            .expect("footer")
+            .text
+            .starts_with("Worked for "));
+    }
+
     #[tokio::test]
     async fn transcript_groups_exploration_tools_inside_their_turns() {
         let backend = TestBackend::new(96, 28);
@@ -2475,7 +2572,7 @@ mod tests {
         let mut app = TuiApp::new();
         app.transcript.push(TranscriptItem {
             kind: TranscriptKind::System,
-            text: "working for 0s - Esc to interrupt".to_string(),
+            text: "Working... 0s - Esc to interrupt".to_string(),
         });
         app.pending_work_row = Some(0);
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(65));
@@ -2484,7 +2581,7 @@ mod tests {
 
         assert_eq!(
             app.transcript[0].text,
-            "working for 1m 5s - Esc to interrupt"
+            "Working... 1m 5s - Esc to interrupt"
         );
     }
 
@@ -2589,7 +2686,7 @@ mod tests {
         assert!(!status.contains("Enter submit"));
         assert!(!status.contains("\\ then Enter newline"));
         assert!(!status.contains("Esc exit"));
-        assert!(status.starts_with("idle |"));
+        assert!(status.starts_with("model:"));
     }
 
     #[test]
@@ -2619,7 +2716,7 @@ mod tests {
 
         let status = status_line(&app, 120);
 
-        assert!(status.starts_with("idle |"));
+        assert!(status.starts_with("model:"));
         assert!(status.contains("msgs: 2"));
         assert!(status.contains("tools: 1"));
         assert!(!status.contains("msgs: 4"));
@@ -2653,65 +2750,14 @@ mod tests {
     }
 
     #[test]
-    fn status_line_active_shows_turn_elapsed_time() {
-        let mut app = TuiApp::new();
-        app.status = Some(runtime_status(true, 1, 0, 0, None));
-        app.active = true;
-        app.turn_started_at = Some(Instant::now() - Duration::from_secs(65));
-
-        let status = status_line(&app, 120);
-
-        assert!(status.starts_with("active 1m 5s |"));
-    }
-
-    #[test]
-    fn status_line_permission_state_takes_precedence_over_active() {
-        let mut app = TuiApp::new();
-        app.status = Some(runtime_status(true, 1, 0, 0, None));
-        app.active = true;
-        app.turn_started_at = Some(Instant::now() - Duration::from_secs(2));
-        app.permission_prompt_view = Some(PermissionPromptView {
-            name: "bash".to_string(),
-            call_id: "call_1".to_string(),
-            arguments: "{}".to_string(),
-            reason: None,
-        });
-
-        let status = status_line(&app, 120);
-
-        assert!(status.starts_with("permission 2s |"));
-    }
-
-    #[test]
-    fn status_line_cancelling_state_takes_precedence_over_permission() {
-        let mut app = TuiApp::new();
-        app.status = Some(runtime_status(true, 1, 0, 0, None));
-        app.active = true;
-        app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        app.active_cancel = Some(cancel);
-        app.permission_prompt_view = Some(PermissionPromptView {
-            name: "bash".to_string(),
-            call_id: "call_1".to_string(),
-            arguments: "{}".to_string(),
-            reason: None,
-        });
-
-        let status = status_line(&app, 120);
-
-        assert!(status.starts_with("cancelling 3s |"));
-    }
-
-    #[test]
-    fn status_line_post_usage_shows_tokens_cost_and_failed_state() {
+    fn status_line_post_usage_shows_tokens_and_cost_without_state_prefix() {
         let mut app = TuiApp::new();
         app.status = Some(runtime_status(false, 4, 1234, 56, Some(0.00125)));
         app.last_turn_status = Some(TurnStatus::Error);
 
         let status = status_line(&app, 120);
 
-        assert!(status.starts_with("failed |"));
+        assert!(status.starts_with("model:"));
         assert!(status.contains("msgs: 4"));
         assert!(status.contains("tokens: 1234/56"));
         assert!(status.contains("$0.0013"));
@@ -2760,7 +2806,7 @@ mod tests {
                 .all(|line| line.chars().count() == width as usize));
             assert!(screen.contains("short prompt"));
             assert!(screen.contains("visible assistant row"));
-            assert!(screen.last_line().starts_with("idle |"));
+            assert!(screen.last_line().starts_with("model:"));
             assert_eq!(screen.last_line().chars().count(), width as usize);
         }
     }
@@ -2778,7 +2824,7 @@ mod tests {
         assert_eq!(screen.lines.len(), 4);
         assert!(screen.lines.iter().all(|line| line.chars().count() == 24));
         assert!(screen.contains("tiny"));
-        assert!(screen.last_line().starts_with("idle |"));
+        assert!(screen.last_line().starts_with("model:"));
     }
 
     #[test]
@@ -2823,7 +2869,7 @@ mod tests {
         assert!(screen.contains("..."));
         assert!(!screen.contains("arg-tail-marker"));
         assert!(!screen.contains("result-tail-marker"));
-        assert!(screen.last_line().starts_with("idle |"));
+        assert!(screen.last_line().starts_with("model:"));
     }
 
     #[tokio::test]
@@ -2857,7 +2903,7 @@ mod tests {
         assert_eq!(turn_counter, 0);
         assert!(command_rx.try_recv().is_err());
         assert!(screen.contains("unchanged draft"));
-        assert!(screen.last_line().starts_with("active "));
+        assert!(screen.last_line().starts_with("model:"));
     }
 
     #[tokio::test]
@@ -2905,7 +2951,7 @@ mod tests {
 
         assert!(intro.contains("Heddle"));
         assert!(intro.contains("model:"));
-        assert!(intro.last_line().starts_with("idle |"));
+        assert!(intro.last_line().starts_with("model:"));
 
         let mut failed = TuiApp::new();
         failed.status = Some(runtime_status(false, 2, 10, 20, None));
@@ -2923,7 +2969,7 @@ mod tests {
         let error_screen = render_app(60, 16, &mut failed);
 
         assert!(error_screen.contains("! provider said no"));
-        assert!(error_screen.last_line().starts_with("failed |"));
+        assert!(error_screen.last_line().starts_with("model:"));
     }
 
     #[test]
@@ -3172,6 +3218,63 @@ mod tests {
         let bottom = draw_screen(&mut terminal, &mut app);
         assert!(bottom.contains("transcript row 089"));
         assert!(app.viewport.follow_tail);
+    }
+
+    #[tokio::test]
+    async fn render_streaming_tail_stays_above_input_across_turns() {
+        let (command_tx, mut command_rx) = mpsc::channel(2);
+        let mut app = TuiApp::new();
+        let mut turn_counter = 0;
+
+        insert_prompt(&mut app, "first prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("first submit");
+        let _ = command_rx.try_recv().expect("first command");
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: (0..48)
+                .map(|idx| {
+                    if idx % 7 == 0 {
+                        format!(
+                            "first-response-line-{idx:02} **bold markdown marker** `inline code` [link](https://example.invalid/path)"
+                        )
+                    } else {
+                        format!("first-response-line-{idx:02}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
+        app.apply_turn_outcome(ok_outcome());
+
+        let first_tail = render_app(80, 24, &mut app);
+        assert!(first_tail.contains("first-response-line-47"));
+        assert!(!first_tail.last_line().contains("first-response-line-47"));
+
+        let fullscreen_tail = render_app(160, 48, &mut app);
+        assert!(fullscreen_tail.contains("first-response-line-47"));
+        assert!(!fullscreen_tail
+            .last_line()
+            .contains("first-response-line-47"));
+
+        insert_prompt(&mut app, "second prompt");
+        app.submit(&command_tx, &mut turn_counter)
+            .await
+            .expect("second submit");
+        let _ = command_rx.try_recv().expect("second command");
+        let submitted = render_app(80, 24, &mut app);
+        assert!(submitted.contains("second prompt"));
+        assert!(submitted.contains("Working..."));
+
+        app.apply_runtime_event(RuntimeEvent::ContentDelta {
+            text: "second response visible".to_string(),
+        });
+        app.apply_turn_outcome(ok_outcome());
+        let second_tail = render_app(80, 24, &mut app);
+
+        assert!(second_tail.contains("second prompt"));
+        assert!(second_tail.contains("second response visible"));
+        assert!(!second_tail.last_line().contains("second response visible"));
     }
 
     #[test]
