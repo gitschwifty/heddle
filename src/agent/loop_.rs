@@ -266,7 +266,10 @@ pub fn run_agent_loop<'a>(
             }
             empty_response_retries = 0;
             if let Some(usage) = response_usage.clone() {
-                yield AgentEvent::Usage { usage };
+                yield AgentEvent::Usage {
+                    usage,
+                    generation_id: Some(response.id.clone()),
+                };
             }
             yield AgentEvent::AssistantMessage {
                 message: assistant_msg.clone(),
@@ -409,6 +412,7 @@ pub fn run_agent_loop_streaming<'a>(
             let mut stream_usage = None;
             let mut finish_reasons: Vec<String> = Vec::new();
             let mut last_routed_model: Option<String> = None;
+            let mut usage_generation_id: Option<String> = None;
 
             loop {
                 let chunk_res = match &options.signal {
@@ -466,6 +470,7 @@ pub fn run_agent_loop_streaming<'a>(
                 }
                 if let Some(u) = chunk.usage {
                     debug("agent", "usage chunk received");
+                    usage_generation_id = Some(chunk.id.clone());
                     stream_usage = Some(u);
                 }
             }
@@ -529,7 +534,10 @@ pub fn run_agent_loop_streaming<'a>(
                 },
             };
             if let Some(u) = stream_usage.take() {
-                yield AgentEvent::Usage { usage: u };
+                yield AgentEvent::Usage {
+                    usage: u,
+                    generation_id: usage_generation_id.clone(),
+                };
             }
             messages.push(Message::Assistant(assistant_msg.clone()));
             last_assistant_content = assistant_msg.content.clone();

@@ -82,6 +82,18 @@ pub enum WorkerEvent {
         prompt_tokens: u64,
         completion_tokens: u64,
         total_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_micros: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_currency: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cached_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_write_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generation_id: Option<String>,
     },
     RoutedModel {
         model: String,
@@ -124,6 +136,18 @@ pub struct UsageSummary {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

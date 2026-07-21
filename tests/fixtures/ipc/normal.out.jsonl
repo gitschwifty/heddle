@@ -2,6 +2,6 @@
 {"type":"event","event":{"event":"tool_start","name":"glob","args":{"pattern":"*"}},"event_seq":0,"send_id":"2"}
 {"type":"event","event":{"event":"tool_end","name":"glob","result_preview":"placeholder"},"event_seq":1,"send_id":"2"}
 {"type":"event","event":{"event":"content_delta","text":"Here are the files..."},"event_seq":2,"send_id":"2"}
-{"type":"event","event":{"event":"usage","prompt_tokens":42,"completion_tokens":15,"total_tokens":57},"event_seq":3,"send_id":"2"}
-{"type":"result","id":"2","status":"ok","response":"Here are the files...","tool_calls_made":[{"name":"glob","args":{"pattern":"*"}}],"usage":{"prompt_tokens":42,"completion_tokens":15,"total_tokens":57},"iterations":2}
+{"type":"event","event":{"event":"usage","prompt_tokens":42,"completion_tokens":15,"total_tokens":57,"generation_id":"chatcmpl-test"},"event_seq":3,"send_id":"2"}
+{"type":"result","id":"2","status":"ok","response":"Here are the files...","tool_calls_made":[{"name":"glob","args":{"pattern":"*"}}],"usage":{"prompt_tokens":42,"completion_tokens":15,"total_tokens":57,"generation_id":"chatcmpl-test"},"iterations":2}
 {"type":"shutdown_ok","id":"3"}

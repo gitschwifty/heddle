@@ -607,7 +607,7 @@ async fn usage_event_from_streaming_via_usage_chunk() {
         .filter(|e| matches!(e, AgentEvent::Usage { .. }))
         .collect();
     assert_eq!(usages.len(), 1);
-    if let AgentEvent::Usage { usage } = usages[0] {
+    if let AgentEvent::Usage { usage, .. } = usages[0] {
         assert_eq!(usage.prompt_tokens, 20);
         assert_eq!(usage.total_tokens, 30);
     }

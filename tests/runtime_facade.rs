@@ -10,13 +10,16 @@ use heddle::runtime::{
 };
 use heddle::session::jsonl::{load_session, CONTEXT_RESET_MARKER_TYPE};
 use heddle::session::setup::{create_session, SessionOptions};
-use heddle::types::{AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage};
+use heddle::types::{
+    AssistantMessage, CompletionTokenDetails, Message, PromptTokenDetails, SystemMessage,
+    ToolMessage, Usage, UserMessage,
+};
 use heddle::types::{Delta, StreamChoice, StreamChunk};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
 mod common;
-use common::mocks::{finish_chunk, text_chunk, tool_call_chunk, usage_chunk, MockProvider};
+use common::mocks::{finish_chunk, text_chunk, tool_call_chunk, MockProvider};
 use common::Sandbox;
 
 fn routed_model_chunk(model: &str) -> StreamChunk {
@@ -29,6 +32,31 @@ fn routed_model_chunk(model: &str) -> StreamChunk {
             finish_reason: None,
         }],
         usage: None,
+    }
+}
+
+fn detailed_usage_chunk() -> StreamChunk {
+    StreamChunk {
+        model: None,
+        id: "gen-runtime-usage".to_string(),
+        choices: vec![StreamChoice {
+            index: 0,
+            delta: Delta::default(),
+            finish_reason: Some("stop".to_string()),
+        }],
+        usage: Some(Usage {
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            total_tokens: 18,
+            cost: Some(0.0001234),
+            prompt_tokens_details: Some(PromptTokenDetails {
+                cached_tokens: Some(5),
+                cache_write_tokens: Some(6),
+            }),
+            completion_tokens_details: Some(CompletionTokenDetails {
+                reasoning_tokens: Some(7),
+            }),
+        }),
     }
 }
 
@@ -46,7 +74,7 @@ async fn runtime_send_emits_events_and_returns_outcome() {
     let provider = MockProvider::new().push_chunks(vec![
         text_chunk("Hello"),
         text_chunk(", runtime"),
-        usage_chunk(11, 7, 18, None),
+        detailed_usage_chunk(),
         finish_chunk("stop"),
     ]);
     session.provider = provider;
@@ -68,7 +96,14 @@ async fn runtime_send_emits_events_and_returns_outcome() {
     assert_eq!(outcome.status, TurnStatus::Ok);
     assert_eq!(outcome.response.as_deref(), Some("Hello, runtime"));
     assert_eq!(outcome.iterations, 1);
-    assert_eq!(outcome.usage.as_ref().unwrap().total_tokens, 18);
+    let usage = outcome.usage.as_ref().unwrap();
+    assert_eq!(usage.total_tokens, 18);
+    assert_eq!(usage.cost_micros, Some(123));
+    assert_eq!(usage.cost_currency.as_deref(), Some("USD"));
+    assert_eq!(usage.cached_tokens, Some(5));
+    assert_eq!(usage.cache_write_tokens, Some(6));
+    assert_eq!(usage.reasoning_tokens, Some(7));
+    assert_eq!(usage.generation_id.as_deref(), Some("gen-runtime-usage"));
     assert!(events
         .iter()
         .any(|e| matches!(e, RuntimeEvent::ContentDelta { text } if text == "Hello")));

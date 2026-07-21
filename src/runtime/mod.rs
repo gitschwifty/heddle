@@ -44,16 +44,41 @@ pub struct RuntimeUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub cost_micros: Option<u64>,
+    pub cost_currency: Option<String>,
+    pub cached_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub generation_id: Option<String>,
 }
 
 impl From<Usage> for RuntimeUsage {
     fn from(value: Usage) -> Self {
+        let prompt_tokens_details = value.prompt_tokens_details;
+        let completion_tokens_details = value.completion_tokens_details;
         Self {
             prompt_tokens: value.prompt_tokens,
             completion_tokens: value.completion_tokens,
             total_tokens: value.total_tokens,
+            cost_micros: value.cost.map(cost_usd_to_micros),
+            cost_currency: value.cost.map(|_| "USD".to_string()),
+            cached_tokens: prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens),
+            cache_write_tokens: prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cache_write_tokens),
+            reasoning_tokens: completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens),
+            generation_id: None,
         }
     }
+}
+
+fn cost_usd_to_micros(cost: f64) -> u64 {
+    if !cost.is_finite() || cost <= 0.0 {
+        return 0;
+    }
+    (cost * 1_000_000.0).round() as u64
 }
 
 #[derive(Debug, Clone)]
@@ -323,9 +348,14 @@ impl HeddleRuntime {
                         }
                     }
                 }
-                AgentEvent::Usage { usage } => {
+                AgentEvent::Usage {
+                    usage,
+                    generation_id,
+                } => {
                     self.session.cost_tracker.lock().add_usage(&usage);
-                    total_usage = Some(usage.into());
+                    let mut runtime_usage: RuntimeUsage = usage.into();
+                    runtime_usage.generation_id = generation_id;
+                    total_usage = Some(runtime_usage);
                 }
                 AgentEvent::RoutedModel { model } => {
                     self.last_routed_model = Some(model);
@@ -448,9 +478,16 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
             result: result.clone(),
             call: call.clone(),
         }),
-        AgentEvent::Usage { usage } => Some(RuntimeEvent::UsageUpdated {
-            usage: usage.clone().into(),
-        }),
+        AgentEvent::Usage {
+            usage,
+            generation_id,
+        } => {
+            let mut runtime_usage: RuntimeUsage = usage.clone().into();
+            runtime_usage.generation_id = generation_id.clone();
+            Some(RuntimeEvent::UsageUpdated {
+                usage: runtime_usage,
+            })
+        }
         AgentEvent::RoutedModel { model } => Some(RuntimeEvent::RoutedModel {
             model: model.clone(),
         }),

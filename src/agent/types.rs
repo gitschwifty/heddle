@@ -22,6 +22,7 @@ pub enum AgentEvent {
     },
     Usage {
         usage: Usage,
+        generation_id: Option<String>,
     },
     RoutedModel {
         model: String,

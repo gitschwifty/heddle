@@ -775,7 +775,7 @@ async fn run_one(
                     }
                 }
             }
-            AgentEvent::Usage { usage } => {
+            AgentEvent::Usage { usage, .. } => {
                 tokens_in += usage.prompt_tokens;
                 tokens_out += usage.completion_tokens;
                 usd += usage.cost.unwrap_or(0.0);

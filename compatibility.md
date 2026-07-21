@@ -44,6 +44,7 @@
 - `routed_model` WorkerEvent (`model`) may be emitted during a send when the provider reports the concrete model that served the response.
 - `StatusOk` gains optional `last_routed_model`; it is omitted until the provider reports a routed model.
 - `InitConfig` gains optional `app_attribution` (`referer`, `title`, optional `categories`) so headless clients can set provider dashboard attribution. It is ignored unless both `referer` and `title` are present.
+- `usage` events and result summaries gain optional `cost_micros`, `cost_currency`, token detail fields, and `generation_id`.
 
 **Compatibility:** Additive only. Existing 0.x clients with the same MAJOR version remain compatible if they ignore unknown event types and unknown optional fields as required by this policy.
 

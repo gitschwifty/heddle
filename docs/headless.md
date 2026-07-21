@@ -224,9 +224,19 @@ Token usage for the current LLM call.
   "event": "usage",
   "prompt_tokens": 1500,
   "completion_tokens": 200,
-  "total_tokens": 1700
+  "total_tokens": 1700,
+  "cost_micros": 123,
+  "cost_currency": "USD",
+  "cached_tokens": 400,
+  "cache_write_tokens": 0,
+  "reasoning_tokens": 25,
+  "generation_id": "gen-..."
 }
 ```
+
+`cost_micros`, `cost_currency`, token detail fields, and `generation_id` are
+optional. `generation_id` is the provider response/chunk `id` and can be used
+with provider-side usage/audit endpoints when supported.
 
 #### routed_model
 
@@ -332,7 +342,13 @@ Returned when a send completes (success, error, or cancellation).
   "usage": {
     "prompt_tokens": 2000,
     "completion_tokens": 500,
-    "total_tokens": 2500
+    "total_tokens": 2500,
+    "cost_micros": 456,
+    "cost_currency": "USD",
+    "cached_tokens": 1000,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 50,
+    "generation_id": "gen-..."
   },
   "iterations": 2,
   "session_id": "550e8400-...",

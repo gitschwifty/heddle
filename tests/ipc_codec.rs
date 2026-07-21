@@ -182,6 +182,12 @@ fn build_result_ok() {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                cost_micros: None,
+                cost_currency: None,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                generation_id: None,
             }),
             iterations: 1,
             ..Default::default()
@@ -195,6 +201,28 @@ fn build_result_ok() {
     assert_eq!(v["iterations"], 1);
     assert_eq!(v["usage"]["total_tokens"], 15);
     assert_eq!(v["tool_calls_made"][0]["name"], "glob");
+}
+
+#[test]
+fn usage_summary_serializes_optional_cost_and_detail_fields() {
+    let usage = UsageSummary {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+        cost_micros: Some(123),
+        cost_currency: Some("USD".into()),
+        cached_tokens: Some(4),
+        cache_write_tokens: Some(3),
+        reasoning_tokens: Some(2),
+        generation_id: Some("gen-123".into()),
+    };
+    let v = serde_json::to_value(usage).unwrap();
+    assert_eq!(v["cost_micros"], 123);
+    assert_eq!(v["cost_currency"], "USD");
+    assert_eq!(v["cached_tokens"], 4);
+    assert_eq!(v["cache_write_tokens"], 3);
+    assert_eq!(v["reasoning_tokens"], 2);
+    assert_eq!(v["generation_id"], "gen-123");
 }
 
 #[test]

@@ -103,7 +103,7 @@ impl HeddleTool for SubagentTool {
         );
         let mut events = Vec::new();
         while let Some(event) = stream.next().await {
-            if let AgentEvent::Usage { usage } = &event {
+            if let AgentEvent::Usage { usage, .. } = &event {
                 if let Some(ct) = &self.options.cost_tracker {
                     ct.lock().add_usage(usage);
                 }

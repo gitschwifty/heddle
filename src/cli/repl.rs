@@ -508,7 +508,7 @@ pub async fn start_cli() -> Result<()> {
                 AgentEvent::PlanComplete { plan } => {
                     println!("\n  [plan complete]\n{plan}");
                 }
-                AgentEvent::Usage { usage } => {
+                AgentEvent::Usage { usage, .. } => {
                     ctx.cost_tracker.lock().add_usage(&usage);
                     if let Some(mc) = &ctx.metrics_collector {
                         mc.lock()

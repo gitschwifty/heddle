@@ -407,6 +407,12 @@ fn usage_summary(usage: RuntimeUsage) -> UsageSummary {
         prompt_tokens: usage.prompt_tokens,
         completion_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
+        cost_micros: usage.cost_micros,
+        cost_currency: usage.cost_currency,
+        cached_tokens: usage.cached_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        generation_id: usage.generation_id,
     }
 }
 
@@ -439,6 +445,12 @@ fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            cost_micros: usage.cost_micros,
+            cost_currency: usage.cost_currency.clone(),
+            cached_tokens: usage.cached_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            generation_id: usage.generation_id.clone(),
         }),
         RuntimeEvent::RoutedModel { model } => Some(WorkerEvent::RoutedModel {
             model: model.clone(),

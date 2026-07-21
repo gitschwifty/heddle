@@ -7,7 +7,7 @@ mod common;
 use futures::StreamExt;
 use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::ProviderConfig;
-use heddle::types::{Message, UserMessage};
+use heddle::types::{Message, Usage, UserMessage};
 use serde_json::json;
 
 const FREE_MODELS: &[&str] = &[
@@ -63,6 +63,9 @@ async fn send_returns_text_response() {
     let content = resp.choices[0].message.content.as_deref().unwrap_or("");
     assert!(!content.is_empty(), "expected non-empty content");
     assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
+    let usage = resp.usage.as_ref().expect("expected usage");
+    assert_basic_usage(usage);
+    assert!(usage.cost.is_some(), "expected OpenRouter cost in usage");
 }
 
 #[tokio::test]
@@ -84,8 +87,14 @@ async fn stream_yields_chunks_and_assembles_content() {
     let mut stream = p.stream(user_msg(), None, json!({}));
     let mut parts = Vec::new();
     let mut saw_finish = false;
+    let mut usage_chunk_id: Option<String> = None;
+    let mut usage: Option<Usage> = None;
     while let Some(item) = stream.next().await {
         let chunk = item.expect("stream chunk error");
+        if let Some(u) = chunk.usage {
+            usage_chunk_id = Some(chunk.id.clone());
+            usage = Some(u);
+        }
         if let Some(choice) = chunk.choices.first() {
             if let Some(c) = &choice.delta.content {
                 parts.push(c.clone());
@@ -99,6 +108,10 @@ async fn stream_yields_chunks_and_assembles_content() {
     assert!(!parts.is_empty(), "expected content chunks");
     assert!(!assembled.is_empty());
     assert!(saw_finish, "expected a finish_reason");
+    let usage = usage.expect("expected final usage chunk");
+    assert!(usage_chunk_id.as_deref().is_some_and(|id| !id.is_empty()));
+    assert_basic_usage(&usage);
+    assert!(usage.cost.is_some(), "expected OpenRouter cost in usage");
 }
 
 #[tokio::test]
@@ -130,4 +143,22 @@ async fn send_with_reasoning_returns_response() {
     let content = resp.choices[0].message.content.as_deref().unwrap_or("");
     assert!(!content.is_empty());
     assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
+    let usage = resp.usage.as_ref().expect("expected usage");
+    assert_basic_usage(usage);
+    assert!(usage.cost.is_some(), "expected OpenRouter cost in usage");
+    if let Some(details) = &usage.completion_tokens_details {
+        assert!(details.reasoning_tokens.is_some());
+    }
+}
+
+fn assert_basic_usage(usage: &Usage) {
+    assert!(usage.prompt_tokens > 0, "expected prompt tokens");
+    assert!(usage.total_tokens >= usage.prompt_tokens);
+    assert_eq!(
+        usage.total_tokens,
+        usage.prompt_tokens + usage.completion_tokens
+    );
+    if let Some(cost) = usage.cost {
+        assert!(cost >= 0.0, "expected non-negative cost, got {cost}");
+    }
 }

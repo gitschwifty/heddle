@@ -341,10 +341,15 @@ async fn usage_event_yields_token_counts() {
         .filter(|e| matches!(e, AgentEvent::Usage { .. }))
         .collect();
     assert_eq!(usages.len(), 1);
-    if let AgentEvent::Usage { usage } = usages[0] {
+    if let AgentEvent::Usage {
+        usage,
+        generation_id,
+    } = usages[0]
+    {
         assert_eq!(usage.prompt_tokens, 10);
         assert_eq!(usage.completion_tokens, 5);
         assert_eq!(usage.total_tokens, 15);
+        assert_eq!(generation_id.as_deref(), Some("chatcmpl-test"));
     }
 }
 
@@ -430,7 +435,7 @@ async fn usage_includes_cost_when_present() {
         AgentLoopOptions::default(),
     );
     let events = collect_events(stream).await;
-    if let Some(AgentEvent::Usage { usage }) = events
+    if let Some(AgentEvent::Usage { usage, .. }) = events
         .iter()
         .find(|e| matches!(e, AgentEvent::Usage { .. }))
     {
