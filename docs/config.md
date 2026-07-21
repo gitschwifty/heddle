@@ -34,6 +34,11 @@ editor_model = "..."           # Model for edit operations
 max_tokens = 128000            # Max context window (or HEDDLE_MAX_TOKENS)
 temperature = 0.7              # Sampling temperature (or HEDDLE_TEMPERATURE)
 
+[app_attribution]              # Optional OpenRouter dashboard attribution
+referer = "https://github.com/gitschwifty/heddle"
+title = "Heddle"
+categories = "cli-agent"
+
 # ── Session Behavior ────────────────────────────────
 system_prompt = "You are..."   # Custom system prompt
 approval_mode = "suggest"      # "suggest" | "auto-edit" | "full-auto" | "plan" | "yolo"
@@ -83,6 +88,8 @@ matchers = { tool = "bash" }
 | `HEDDLE_BASE_URL` | `base_url` |
 | `HEDDLE_MAX_TOKENS` | `max_tokens` |
 | `HEDDLE_TEMPERATURE` | `temperature` |
+| `HEDDLE_APP_REFERER` + `HEDDLE_APP_TITLE` | `app_attribution.referer` + `app_attribution.title` |
+| `HEDDLE_APP_CATEGORIES` | `app_attribution.categories` |
 | `HEDDLE_APPROVAL_MODE` | `approval_mode` |
 | `HEDDLE_TOOLS` | `tools` (comma-separated) |
 | `HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES` | `web_fetch_allow_private_addresses` |

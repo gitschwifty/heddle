@@ -51,6 +51,7 @@ fn make_provider(api_key: String) -> Arc<dyn Provider> {
         model: FREE_MODELS[0].to_string(),
         base_url: None,
         request_params: Some(json!({ "models": fallback, "route": "fallback" })),
+        app_attribution: None,
         retry: None,
     })
 }

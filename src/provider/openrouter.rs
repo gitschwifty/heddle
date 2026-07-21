@@ -12,7 +12,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
 
 use super::overrides::validate_overrides;
-use super::types::{ChunkStream, Provider, ProviderConfig};
+use super::types::{AppAttribution, ChunkStream, Provider, ProviderConfig};
 use crate::debug::debug;
 use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition};
 
@@ -20,6 +20,8 @@ const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_DELAY_MS: u64 = 1000;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_REFERER: &str = "https://github.com/gitschwifty/heddle";
+const DEFAULT_TITLE: &str = "Heddle";
 
 pub struct OpenRouterProvider {
     config: ProviderConfig,
@@ -48,11 +50,19 @@ impl OpenRouterProvider {
             HeaderValue::from_str(&format!("Bearer {}", self.config.api_key))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let attribution = effective_attribution(self.config.app_attribution.as_ref());
+        headers.insert("HTTP-Referer", HeaderValue::from_str(attribution.referer)?);
         headers.insert(
-            "HTTP-Referer",
-            HeaderValue::from_static("https://github.com/gitschwifty/heddle"),
+            "X-OpenRouter-Title",
+            HeaderValue::from_str(attribution.title)?,
         );
-        headers.insert("X-Title", HeaderValue::from_static("Heddle"));
+        headers.insert("X-Title", HeaderValue::from_str(attribution.title)?);
+        if let Some(categories) = attribution.categories {
+            headers.insert(
+                "X-OpenRouter-Categories",
+                HeaderValue::from_str(categories)?,
+            );
+        }
         Ok(headers)
     }
 
@@ -200,6 +210,7 @@ impl Provider for OpenRouterProvider {
         let api_key = self.config.api_key.clone();
         let base_url = self.base_url().to_string();
         let request_params = self.config.request_params.clone();
+        let app_attribution = self.config.app_attribution.clone();
         let model = self.config.model.clone();
         let retry = self.config.retry.clone();
         let client = self.client.clone();
@@ -211,6 +222,7 @@ impl Provider for OpenRouterProvider {
                     model: model.clone(),
                     base_url: Some(base_url),
                     request_params,
+                    app_attribution,
                     retry,
                 },
                 client,
@@ -284,6 +296,33 @@ impl Provider for OpenRouterProvider {
         }
         new_config.request_params = Some(Value::Object(merged));
         create_openrouter_provider(new_config)
+    }
+}
+
+struct EffectiveAttribution<'a> {
+    referer: &'a str,
+    title: &'a str,
+    categories: Option<&'a str>,
+}
+
+fn effective_attribution(attribution: Option<&AppAttribution>) -> EffectiveAttribution<'_> {
+    match attribution {
+        Some(attr) if !attr.referer.trim().is_empty() && !attr.title.trim().is_empty() => {
+            EffectiveAttribution {
+                referer: attr.referer.trim(),
+                title: attr.title.trim(),
+                categories: attr
+                    .categories
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
+            }
+        }
+        _ => EffectiveAttribution {
+            referer: DEFAULT_REFERER,
+            title: DEFAULT_TITLE,
+            categories: None,
+        },
     }
 }
 

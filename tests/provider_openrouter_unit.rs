@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::{Provider, ProviderConfig, RetryConfig};
+use heddle::provider::types::{AppAttribution, Provider, ProviderConfig, RetryConfig};
 use heddle::types::{
     Message, StreamChunk, ToolCallKind, ToolDefinition, ToolFunction, UserMessage,
 };
@@ -19,6 +19,7 @@ fn make_provider(base_url: &str, retry: Option<RetryConfig>) -> Arc<dyn Provider
         model: TEST_MODEL.to_string(),
         base_url: Some(base_url.to_string()),
         request_params: None,
+        app_attribution: None,
         retry,
     })
 }
@@ -210,6 +211,66 @@ async fn send_includes_auth_and_content_type_headers() {
     );
     assert_eq!(h.get("content-type").unwrap(), "application/json");
     assert!(h.get("http-referer").is_some());
+    assert_eq!(h.get("x-openrouter-title").unwrap(), "Heddle");
+}
+
+#[tokio::test]
+async fn send_uses_custom_app_attribution_headers() {
+    let server = MockServer::start().await;
+    mount_json_once(&server, text_response_json("Hi")).await;
+
+    let p = create_openrouter_provider(ProviderConfig {
+        api_key: TEST_KEY.to_string(),
+        model: TEST_MODEL.to_string(),
+        base_url: Some(server.uri()),
+        request_params: None,
+        app_attribution: Some(AppAttribution {
+            referer: "https://github.com/gitschwifty/orboros".into(),
+            title: "Orboros".into(),
+            categories: Some("cli-agent".into()),
+        }),
+        retry: Some(default_retry()),
+    });
+    p.send(&user_msgs(), None, &json!({})).await.unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let h = &reqs[0].headers;
+    assert_eq!(
+        h.get("http-referer").unwrap(),
+        "https://github.com/gitschwifty/orboros"
+    );
+    assert_eq!(h.get("x-openrouter-title").unwrap(), "Orboros");
+    assert_eq!(h.get("x-title").unwrap(), "Orboros");
+    assert_eq!(h.get("x-openrouter-categories").unwrap(), "cli-agent");
+}
+
+#[tokio::test]
+async fn send_ignores_partial_app_attribution() {
+    let server = MockServer::start().await;
+    mount_json_once(&server, text_response_json("Hi")).await;
+
+    let p = create_openrouter_provider(ProviderConfig {
+        api_key: TEST_KEY.to_string(),
+        model: TEST_MODEL.to_string(),
+        base_url: Some(server.uri()),
+        request_params: None,
+        app_attribution: Some(AppAttribution {
+            referer: "https://github.com/gitschwifty/orboros".into(),
+            title: "".into(),
+            categories: Some("cli-agent".into()),
+        }),
+        retry: Some(default_retry()),
+    });
+    p.send(&user_msgs(), None, &json!({})).await.unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let h = &reqs[0].headers;
+    assert_eq!(
+        h.get("http-referer").unwrap(),
+        "https://github.com/gitschwifty/heddle"
+    );
+    assert_eq!(h.get("x-openrouter-title").unwrap(), "Heddle");
+    assert!(h.get("x-openrouter-categories").is_none());
 }
 
 #[tokio::test]
@@ -533,6 +594,7 @@ async fn per_call_overrides_win_over_request_params() {
         model: TEST_MODEL.to_string(),
         base_url: Some(server.uri()),
         request_params: Some(json!({"temperature": 0.3, "top_p": 0.9})),
+        app_attribution: None,
         retry: None,
     });
 

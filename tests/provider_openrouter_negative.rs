@@ -12,6 +12,7 @@ fn provider(base_url: String) -> std::sync::Arc<dyn heddle::provider::types::Pro
         model: "test-model".to_string(),
         base_url: Some(base_url),
         request_params: None,
+        app_attribution: None,
         retry: None,
     })
 }

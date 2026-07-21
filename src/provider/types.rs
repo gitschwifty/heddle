@@ -10,6 +10,14 @@ use serde_json::Value;
 
 use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition};
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AppAttribution {
+    pub referer: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RetryConfig {
     /// Default 3.
@@ -25,6 +33,8 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     /// Extra fields merged into every request body.
     pub request_params: Option<Value>,
+    /// Optional app attribution headers for provider dashboards.
+    pub app_attribution: Option<AppAttribution>,
     /// `None` ⇒ retry disabled; `Some(_)` ⇒ retry on 429.
     pub retry: Option<RetryConfig>,
 }

@@ -20,6 +20,9 @@ fn clear_env() {
         "HEDDLE_BASE_URL",
         "HEDDLE_MAX_TOKENS",
         "HEDDLE_TEMPERATURE",
+        "HEDDLE_APP_REFERER",
+        "HEDDLE_APP_TITLE",
+        "HEDDLE_APP_CATEGORIES",
         "HEDDLE_WEAK_MODEL",
         "HEDDLE_APPROVAL_MODE",
         "HEDDLE_TOOLS",
@@ -153,6 +156,26 @@ fn loads_base_url() {
     write_global(&sb, r#"base_url = "http://localhost:8080""#);
     let cfg = load_config(None);
     assert_eq!(cfg.base_url.as_deref(), Some("http://localhost:8080"));
+}
+
+#[test]
+fn loads_app_attribution() {
+    let sb = Sandbox::new("loader-app-attribution");
+    clear_env();
+    write_global(
+        &sb,
+        r#"
+[app_attribution]
+referer = "https://github.com/gitschwifty/orboros"
+title = "Orboros"
+categories = "cli-agent"
+"#,
+    );
+    let cfg = load_config(None);
+    let app = cfg.app_attribution.unwrap();
+    assert_eq!(app.referer, "https://github.com/gitschwifty/orboros");
+    assert_eq!(app.title, "Orboros");
+    assert_eq!(app.categories.as_deref(), Some("cli-agent"));
 }
 
 #[test]

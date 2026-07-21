@@ -11,6 +11,7 @@ use crate::config::paths::{get_heddle_home, get_local_heddle_dir};
 use crate::debug::debug;
 use crate::hooks::loader::load_hooks;
 use crate::hooks::types::ResolvedHooksConfig;
+use crate::provider::types::AppAttribution;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -65,6 +66,7 @@ pub struct HeddleConfig {
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
     pub base_url: Option<String>,
+    pub app_attribution: Option<AppAttribution>,
 
     pub system_prompt: Option<String>,
     pub approval_mode: Option<ApprovalMode>,
@@ -93,6 +95,7 @@ impl Default for HeddleConfig {
             max_tokens: None,
             temperature: None,
             base_url: None,
+            app_attribution: None,
             system_prompt: None,
             approval_mode: None,
             instructions: None,
@@ -179,6 +182,17 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(s) = table.get("base_url").and_then(as_str) {
         config.base_url = Some(s.to_string());
+    }
+    if let Some(t) = table.get("app_attribution").and_then(|v| v.as_table()) {
+        let referer = t.get("referer").and_then(as_str).map(str::to_string);
+        let title = t.get("title").and_then(as_str).map(str::to_string);
+        if let (Some(referer), Some(title)) = (referer, title) {
+            config.app_attribution = Some(AppAttribution {
+                referer,
+                title,
+                categories: t.get("categories").and_then(as_str).map(str::to_string),
+            });
+        }
     }
 
     if let Some(n) = table.get("max_tokens").and_then(as_int) {
@@ -319,6 +333,16 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     }
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);
+    }
+    if let (Ok(referer), Ok(title)) = (
+        std::env::var("HEDDLE_APP_REFERER"),
+        std::env::var("HEDDLE_APP_TITLE"),
+    ) {
+        merged.app_attribution = Some(AppAttribution {
+            referer,
+            title,
+            categories: std::env::var("HEDDLE_APP_CATEGORIES").ok(),
+        });
     }
     if let Ok(v) = std::env::var("HEDDLE_MAX_TOKENS") {
         if let Ok(n) = v.parse::<u64>() {

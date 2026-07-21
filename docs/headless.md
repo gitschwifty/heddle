@@ -1,6 +1,6 @@
 # Headless Mode
 
-Heddle's headless mode exposes the agent loop over a JSON-over-stdio protocol. This is how external applications (like [Orboros](https://github.com/pjtaggart/orboros)) embed heddle as a worker.
+Heddle's headless mode exposes the agent loop over a JSON-over-stdio protocol. This is how external applications (like [Orboros](https://github.com/gitschwifty/orboros)) embed heddle as a worker.
 
 ```bash
 cargo run --bin heddle-headless
@@ -62,7 +62,12 @@ Initialize a session. Must be sent before any other request.
     "tools": ["read_file", "write_file", "edit_file", "glob", "grep", "bash"],
     "max_iterations": 10,
     "task_id": "task-abc",
-    "worker_id": "worker-1"
+    "worker_id": "worker-1",
+    "app_attribution": {
+      "referer": "https://github.com/gitschwifty/orboros",
+      "title": "Orboros",
+      "categories": "cli-agent"
+    }
   }
 }
 ```
@@ -78,6 +83,12 @@ Initialize a session. Must be sent before any other request.
 | `config.max_iterations` | number | no | Max agent loop iterations |
 | `config.task_id` | string | no | Task ID for correlation (echoed in events/results) |
 | `config.worker_id` | string | no | Worker ID for correlation |
+| `config.app_attribution.referer` | string | no | OpenRouter app attribution URL; only used when `title` is also set |
+| `config.app_attribution.title` | string | no | OpenRouter app attribution display name; only used when `referer` is also set |
+| `config.app_attribution.categories` | string | no | Optional OpenRouter app attribution categories |
+
+If `app_attribution` is omitted, or only one of `referer`/`title` is set,
+provider requests use Heddle's default attribution headers.
 
 ### send
 

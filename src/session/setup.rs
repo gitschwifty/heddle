@@ -30,7 +30,7 @@ use crate::hooks::types::HookMode;
 use crate::memory::loader::load_memory_context;
 use crate::permissions::checker::PermissionChecker;
 use crate::provider::factory::create_providers;
-use crate::provider::types::Provider;
+use crate::provider::types::{AppAttribution, Provider};
 use crate::session::fork::{fork_session, ForkOptions};
 use crate::session::jsonl::{append_message, load_session, write_session_meta, SessionMeta};
 use crate::session::list::find_session;
@@ -114,6 +114,7 @@ pub struct SessionOptions {
     pub session_name: Option<String>,
     pub agent: Option<String>,
     pub permission_overrides: Option<PermissionOverrides>,
+    pub app_attribution: Option<AppAttribution>,
 }
 
 fn default_tools(config: &HeddleConfig) -> Vec<Arc<dyn HeddleTool>> {
@@ -201,6 +202,9 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     }
     if let Some(model) = &options.model {
         config.model = model.clone();
+    }
+    if let Some(app_attribution) = &options.app_attribution {
+        config.app_attribution = Some(app_attribution.clone());
     }
 
     let agent_definitions = load_agent_definitions(&discovery);

@@ -46,6 +46,7 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
             model: model.to_string(),
             base_url: config.base_url.clone(),
             request_params: params.clone(),
+            app_attribution: config.app_attribution.clone(),
             retry: Some(RetryConfig::default()),
         })
     };

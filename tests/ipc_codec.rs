@@ -30,6 +30,7 @@ fn decode_valid_init_request() {
             max_iterations: None,
             task_id: None,
             worker_id: None,
+            app_attribution: None,
             permissions: None,
             hooks: None,
         }),

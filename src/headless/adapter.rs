@@ -203,6 +203,7 @@ fn build_session_options(config: &InitConfig) -> SessionOptions {
             deny: p.deny.clone(),
             ask: p.ask.clone(),
         }),
+        app_attribution: config.app_attribution.clone(),
         ..Default::default()
     }
 }

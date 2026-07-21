@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::errors::ErrorEnvelope;
 use crate::config::types::PermissionsConfigSchema;
 use crate::hooks::types::HooksConfig;
+use crate::provider::types::AppAttribution;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {
@@ -18,6 +19,8 @@ pub struct InitConfig {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_attribution: Option<AppAttribution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PermissionsConfigSchema>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

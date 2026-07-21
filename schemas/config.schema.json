@@ -9,6 +9,16 @@
         "null"
       ]
     },
+    "app_attribution": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AppAttributionSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "approval_mode": {
       "anyOf": [
         {
@@ -163,6 +173,29 @@
     }
   },
   "definitions": {
+    "AppAttributionSchema": {
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "referer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "ApprovalModeWire": {
       "type": "string",
       "enum": [

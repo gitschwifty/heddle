@@ -77,6 +77,25 @@ fn init_config_accepts_task_and_worker_id() {
 }
 
 #[test]
+fn init_config_accepts_app_attribution() {
+    let v = json!({
+        "model": "openrouter/auto",
+        "system_prompt": "prompt",
+        "tools": [],
+        "app_attribution": {
+            "referer": "https://github.com/gitschwifty/orboros",
+            "title": "Orboros",
+            "categories": "cli-agent"
+        }
+    });
+    let r: InitConfig = serde_json::from_value(v).unwrap();
+    let app = r.app_attribution.unwrap();
+    assert_eq!(app.referer, "https://github.com/gitschwifty/orboros");
+    assert_eq!(app.title, "Orboros");
+    assert_eq!(app.categories.as_deref(), Some("cli-agent"));
+}
+
+#[test]
 fn init_config_rejects_missing_model() {
     let v = json!({ "system_prompt": "prompt", "tools": [] });
     let r: Result<InitConfig, _> = serde_json::from_value(v);

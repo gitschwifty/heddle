@@ -27,6 +27,14 @@ pub struct ProviderConfigSchema {
     pub max_tokens: Option<f64>,
     pub temperature: Option<f64>,
     pub base_url: Option<String>,
+    pub app_attribution: Option<AppAttributionSchema>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AppAttributionSchema {
+    pub referer: Option<String>,
+    pub title: Option<String>,
+    pub categories: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -71,6 +79,7 @@ pub struct HeddleConfigSchema {
     pub max_tokens: Option<f64>,
     pub temperature: Option<f64>,
     pub base_url: Option<String>,
+    pub app_attribution: Option<AppAttributionSchema>,
     pub system_prompt: Option<String>,
     pub approval_mode: Option<ApprovalModeWire>,
     pub instructions: Option<Vec<String>>,

@@ -43,7 +43,12 @@ fn provider_config_accepts_full() {
         "editor_model": "anthropic/claude-opus",
         "max_tokens": 4096,
         "temperature": 0.7,
-        "base_url": "http://localhost:8080"
+        "base_url": "http://localhost:8080",
+        "app_attribution": {
+            "referer": "https://github.com/gitschwifty/orboros",
+            "title": "Orboros",
+            "categories": "cli-agent"
+        }
     }));
     assert!(v.is_ok());
     let v = v.unwrap();
@@ -119,6 +124,11 @@ fn heddle_config_accepts_full() {
         "max_tokens": 4096,
         "temperature": 0.7,
         "base_url": "http://localhost:8080",
+        "app_attribution": {
+            "referer": "https://github.com/gitschwifty/orboros",
+            "title": "Orboros",
+            "categories": "cli-agent"
+        },
         "system_prompt": "Be helpful.",
         "approval_mode": "suggest",
         "instructions": ["HEDDLE.md", "AGENTS.md"],

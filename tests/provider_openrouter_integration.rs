@@ -50,6 +50,7 @@ async fn send_returns_text_response() {
         model: FREE_MODELS[0].to_string(),
         base_url: None,
         request_params: Some(json!({ "models": fallback, "route": "fallback" })),
+        app_attribution: None,
         retry: None,
     });
 
@@ -76,6 +77,7 @@ async fn stream_yields_chunks_and_assembles_content() {
         model: FREE_MODELS[0].to_string(),
         base_url: None,
         request_params: Some(json!({ "models": fallback, "route": "fallback" })),
+        app_attribution: None,
         retry: None,
     });
 
@@ -115,6 +117,7 @@ async fn send_with_reasoning_returns_response() {
             "route": "fallback",
             "reasoning": { "enabled": true },
         })),
+        app_attribution: None,
         retry: None,
     });
 
