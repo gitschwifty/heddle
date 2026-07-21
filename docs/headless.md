@@ -17,7 +17,7 @@ Communication is newline-delimited JSON (JSONL) on stdin/stdout. Each line is a 
 - Every request has an `id` field for correlation
 - Streaming events during a `send` are emitted as `event` responses
 
-**Protocol version:** `0.2.0` (stored in `PROTOCOL_VERSION` file).
+**Protocol version:** `0.3.0` (stored in `PROTOCOL_VERSION` file).
 
 ## Lifecycle
 
@@ -55,7 +55,7 @@ Initialize a session. Must be sent before any other request.
 {
   "type": "init",
   "id": "1",
-  "protocol_version": "0.2.0",
+  "protocol_version": "0.3.0",
   "config": {
     "model": "anthropic/claude-sonnet-4",
     "system_prompt": "You are a coding assistant.",
@@ -146,7 +146,7 @@ Returned after successful initialization.
   "type": "init_ok",
   "id": "1",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "protocol_version": "0.2.0"
+  "protocol_version": "0.3.0"
 }
 ```
 
@@ -157,10 +157,10 @@ If protocol versions are incompatible:
   "type": "init_ok",
   "id": "1",
   "session_id": "",
-  "protocol_version": "0.2.0",
+  "protocol_version": "0.3.0",
   "error": {
     "code": "protocol_version_mismatch",
-    "message": "Client requested 0.1.0, server is 0.2.0",
+    "message": "Client requested 0.1.0, server is 0.3.0",
     "retryable": false
   }
 }

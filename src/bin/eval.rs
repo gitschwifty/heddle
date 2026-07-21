@@ -520,7 +520,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
 /// Normalize file contents for diffing.
 ///
 /// Most LLMs are inconsistent about line endings and trailing newlines —
-/// `0.2.0` vs `0.2.0\n` vs `0.2.0\r\n` is noise we don't want to score on.
+/// `0.3.0` vs `0.3.0\n` vs `0.3.0\r\n` is noise we don't want to score on.
 /// We:
 ///   - decode as UTF-8 (binary files: byte-compare as-is)
 ///   - convert CRLF -> LF

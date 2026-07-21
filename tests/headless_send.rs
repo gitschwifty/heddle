@@ -257,7 +257,7 @@ async fn events_carry_task_id_and_worker_id_when_provided_in_init() {
     let init = json!({
         "type": "init",
         "id": "1",
-        "protocol_version": "0.2.0",
+        "protocol_version": "0.3.0",
         "config": {
             "model": "openrouter/auto",
             "system_prompt": "You are helpful.",

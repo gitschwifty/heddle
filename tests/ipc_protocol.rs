@@ -54,6 +54,19 @@ fn check_compatibility_minor_mismatch_compatible_with_warn() {
 }
 
 #[test]
+fn check_compatibility_previous_minor_compatible_with_warn() {
+    let server = parse_semver(&PROTOCOL_VERSION);
+    if server.1 == 0 {
+        return;
+    }
+    let client = format!("{}.{}.{}", server.0, server.1 - 1, server.2);
+    let r = check_compatibility(&client);
+    assert!(r.compatible);
+    assert!(matches!(r.level, CompatLevel::Minor));
+    assert!(r.warn.is_some());
+}
+
+#[test]
 fn check_compatibility_patch_mismatch_compatible() {
     let server = parse_semver(&PROTOCOL_VERSION);
     let client = format!("{}.{}.{}", server.0, server.1, server.2 + 1);

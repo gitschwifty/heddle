@@ -17,7 +17,7 @@ fn init_returns_init_ok_with_session_id_and_protocol_version() {
     assert_eq!(msg["type"], "init_ok");
     assert_eq!(msg["id"], "1");
     assert!(msg["session_id"].is_string());
-    assert_eq!(msg["protocol_version"], "0.2.0");
+    assert_eq!(msg["protocol_version"], "0.3.0");
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn protocol_version_included_in_init_ok() {
     h.send_line(&init_msg());
     let lines = h.wait_for_lines(1, T);
     let msg = parse_line(&lines[0]);
-    assert_eq!(msg["protocol_version"], "0.2.0");
+    assert_eq!(msg["protocol_version"], "0.3.0");
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn tool_restriction_via_init_config_tools() {
     let init = serde_json::json!({
         "type": "init",
         "id": "1",
-        "protocol_version": "0.2.0",
+        "protocol_version": "0.3.0",
         "config": {
             "model": "openrouter/auto",
             "system_prompt": "You are helpful.",
