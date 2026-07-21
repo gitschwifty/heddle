@@ -365,6 +365,7 @@ fn handle_status(state: &Arc<Mutex<State>>, id: String) {
     write_line(&IpcResponse::StatusOk {
         id,
         model: status.model,
+        last_routed_model: status.last_routed_model,
         messages_count: status.messages_count,
         session_id: status.session_id,
         active: status.active,
@@ -437,6 +438,9 @@ fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+        }),
+        RuntimeEvent::RoutedModel { model } => Some(WorkerEvent::RoutedModel {
+            model: model.clone(),
         }),
         RuntimeEvent::Error { error } => Some(WorkerEvent::Error {
             code: error.code.clone(),

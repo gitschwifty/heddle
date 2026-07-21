@@ -104,7 +104,9 @@ explicit override; when it is unset, `/context` reports the OpenRouter registry
 context length when available. Routed ids such as `openrouter/free`,
 `openrouter/auto`, or fallback `models` arrays may be served by a different
 underlying model; when OpenRouter includes that model id in a response, Heddle
-prints it in the REPL as `[model: provider/model-id]`.
+prints it in the REPL as `[model: provider/model-id]`. The TUI status line and
+`/status` command show this as `configured-model:routed-model`, for example
+`openrouter/free:openai/gpt-oss-120b`.
 
 ## JSON Schema / Taplo Autocomplete
 

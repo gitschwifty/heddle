@@ -31,6 +31,7 @@ pub struct RuntimeConfig {
 pub struct RuntimeStatus {
     pub session_id: String,
     pub model: String,
+    pub last_routed_model: Option<String>,
     pub messages_count: u64,
     pub active: bool,
     pub total_input_tokens: u64,
@@ -152,6 +153,9 @@ pub enum RuntimeEvent {
     UsageUpdated {
         usage: RuntimeUsage,
     },
+    RoutedModel {
+        model: String,
+    },
     Error {
         error: RuntimeError,
     },
@@ -179,6 +183,7 @@ pub enum RuntimeEvent {
 
 pub struct HeddleRuntime {
     session: SessionContext,
+    last_routed_model: Option<String>,
 }
 
 impl HeddleRuntime {
@@ -188,7 +193,10 @@ impl HeddleRuntime {
     }
 
     pub fn from_session(session: SessionContext) -> Self {
-        Self { session }
+        Self {
+            session,
+            last_routed_model: None,
+        }
     }
 
     pub fn into_session(self) -> SessionContext {
@@ -208,6 +216,7 @@ impl HeddleRuntime {
         RuntimeStatus {
             session_id: self.session.session_id.clone(),
             model: self.session.config.model.clone(),
+            last_routed_model: self.last_routed_model.clone(),
             messages_count: self
                 .session
                 .messages
@@ -317,6 +326,9 @@ impl HeddleRuntime {
                 AgentEvent::Usage { usage } => {
                     self.session.cost_tracker.lock().add_usage(&usage);
                     total_usage = Some(usage.into());
+                }
+                AgentEvent::RoutedModel { model } => {
+                    self.last_routed_model = Some(model);
                 }
                 AgentEvent::LoopDetected { count } => {
                     error = Some(RuntimeError {
@@ -439,7 +451,9 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
         AgentEvent::Usage { usage } => Some(RuntimeEvent::UsageUpdated {
             usage: usage.clone().into(),
         }),
-        AgentEvent::RoutedModel { .. } => None,
+        AgentEvent::RoutedModel { model } => Some(RuntimeEvent::RoutedModel {
+            model: model.clone(),
+        }),
         AgentEvent::LoopDetected { count } => Some(RuntimeEvent::Error {
             error: RuntimeError {
                 code: "loop_detected".into(),

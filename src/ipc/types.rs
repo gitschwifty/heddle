@@ -80,6 +80,9 @@ pub enum WorkerEvent {
         completion_tokens: u64,
         total_tokens: u64,
     },
+    RoutedModel {
+        model: String,
+    },
     Error {
         code: String,
         message: String,
@@ -174,6 +177,8 @@ pub enum IpcResponse {
     StatusOk {
         id: String,
         model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_routed_model: Option<String>,
         messages_count: u64,
         session_id: String,
         active: bool,

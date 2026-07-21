@@ -138,6 +138,35 @@ fn wrap_event_no_correlation() {
 }
 
 #[test]
+fn routed_model_event_serializes_model() {
+    let ev = WorkerEvent::RoutedModel {
+        model: "openai/gpt-oss-120b".into(),
+    };
+    let wrapped = wrap_event(ev, "send-1", 0, None);
+    let v: Value = serde_json::to_value(&wrapped).unwrap();
+
+    assert_eq!(v["event"]["event"], "routed_model");
+    assert_eq!(v["event"]["model"], "openai/gpt-oss-120b");
+}
+
+#[test]
+fn status_ok_can_include_last_routed_model() {
+    let res = IpcResponse::StatusOk {
+        id: "status-1".into(),
+        model: "openrouter/free".into(),
+        last_routed_model: Some("openai/gpt-oss-120b".into()),
+        messages_count: 2,
+        session_id: "sess-1".into(),
+        active: false,
+    };
+    let v: Value = serde_json::to_value(&res).unwrap();
+
+    assert_eq!(v["type"], "status_ok");
+    assert_eq!(v["model"], "openrouter/free");
+    assert_eq!(v["last_routed_model"], "openai/gpt-oss-120b");
+}
+
+#[test]
 fn build_result_ok() {
     let res = build_result(
         "2",

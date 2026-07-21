@@ -217,6 +217,16 @@ Token usage for the current LLM call.
 }
 ```
 
+#### routed_model
+
+The provider reported the concrete model that served the current response. This
+is useful for routed aliases such as `openrouter/free`; `model` in `status_ok`
+remains the configured model.
+
+```json
+{ "event": "routed_model", "model": "openai/gpt-oss-120b" }
+```
+
 #### error
 
 An error occurred during processing.
@@ -363,11 +373,16 @@ Returned when a send completes (success, error, or cancellation).
   "type": "status_ok",
   "id": "3",
   "model": "anthropic/claude-sonnet-4",
+  "last_routed_model": "openai/gpt-oss-120b",
   "messages_count": 12,
   "session_id": "550e8400-...",
   "active": false
 }
 ```
+
+`last_routed_model` is omitted until the provider reports a routed model. For
+`openrouter/free`, clients can display `model:last_routed_model` to show both the
+configured alias and the concrete model from the last response.
 
 ### shutdown_ok
 

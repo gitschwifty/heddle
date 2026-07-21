@@ -11,12 +11,26 @@ use heddle::runtime::{
 use heddle::session::jsonl::{load_session, CONTEXT_RESET_MARKER_TYPE};
 use heddle::session::setup::{create_session, SessionOptions};
 use heddle::types::{AssistantMessage, Message, SystemMessage, ToolMessage, UserMessage};
+use heddle::types::{Delta, StreamChoice, StreamChunk};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
 mod common;
 use common::mocks::{finish_chunk, text_chunk, tool_call_chunk, usage_chunk, MockProvider};
 use common::Sandbox;
+
+fn routed_model_chunk(model: &str) -> StreamChunk {
+    StreamChunk {
+        model: Some(model.to_string()),
+        id: "chatcmpl-test".to_string(),
+        choices: vec![StreamChoice {
+            index: 0,
+            delta: Delta::default(),
+            finish_reason: None,
+        }],
+        usage: None,
+    }
+}
 
 #[tokio::test]
 async fn runtime_send_emits_events_and_returns_outcome() {
@@ -65,6 +79,50 @@ async fn runtime_send_emits_events_and_returns_outcome() {
     assert_eq!(status.messages_count, 2);
     assert_eq!(status.total_input_tokens, 11);
     assert_eq!(status.total_output_tokens, 7);
+}
+
+#[tokio::test]
+async fn runtime_status_tracks_last_routed_model_from_stream() {
+    let _sb = Sandbox::new("runtime-routed-model");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+
+    let mut session = create_session(SessionOptions {
+        mode: Some(Mode::Headless),
+        model: Some("openrouter/free".to_string()),
+        ..SessionOptions::default()
+    })
+    .await
+    .expect("create_session");
+    session.provider = MockProvider::new().push_chunks(vec![
+        routed_model_chunk("openai/gpt-oss-120b"),
+        text_chunk("Hello"),
+        finish_chunk("stop"),
+    ]);
+
+    let mut runtime = HeddleRuntime::from_session(session);
+    let mut events = Vec::new();
+    let outcome = runtime
+        .send(
+            "hi".to_string(),
+            TurnOptions {
+                id: "turn-1".to_string(),
+                cancel: CancellationToken::new(),
+                permission_resolver: None,
+            },
+            |event| events.push(event),
+        )
+        .await;
+
+    assert_eq!(outcome.status, TurnStatus::Ok);
+    assert!(events.iter().any(
+        |event| matches!(event, RuntimeEvent::RoutedModel { model } if model == "openai/gpt-oss-120b")
+    ));
+    let status = runtime.status(false);
+    assert_eq!(status.model, "openrouter/free");
+    assert_eq!(
+        status.last_routed_model.as_deref(),
+        Some("openai/gpt-oss-120b")
+    );
 }
 
 #[tokio::test]

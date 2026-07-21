@@ -626,6 +626,11 @@ impl TuiApp {
                 self.viewport.on_new_output();
             }
             RuntimeEvent::UsageUpdated { .. } => {}
+            RuntimeEvent::RoutedModel { model } => {
+                if let Some(status) = &mut self.status {
+                    status.last_routed_model = Some(model);
+                }
+            }
             RuntimeEvent::Error { error } => {
                 self.clear_pending_work();
                 self.transcript.push(TranscriptItem {
@@ -1106,7 +1111,7 @@ fn tui_status_text(status: Option<&RuntimeStatus>) -> String {
     format!(
         "session: {}\nmodel: {}\nmessages: {}\ntokens: {} in / {} out\ncost: {}",
         status.session_id,
-        status.model,
+        display_model(status),
         status.messages_count,
         status.total_input_tokens,
         status.total_output_tokens,
@@ -1650,13 +1655,20 @@ fn full_status_line(app: &TuiApp) -> String {
     format!(
         "{} | model: {} | msgs: {} | tools: {} | tokens: {}/{}{}",
         state,
-        status.model,
+        display_model(status),
         status.messages_count,
         tool_count,
         status.total_input_tokens,
         status.total_output_tokens,
         cost,
     )
+}
+
+fn display_model(status: &RuntimeStatus) -> String {
+    match status.last_routed_model.as_deref() {
+        Some(routed) if routed != status.model => format!("{}:{routed}", status.model),
+        _ => status.model.clone(),
+    }
 }
 
 fn status_state(app: &TuiApp) -> StatusState {
@@ -1904,6 +1916,7 @@ mod tests {
         RuntimeStatus {
             session_id: "session".to_string(),
             model: "anthropic/claude-sonnet-4".to_string(),
+            last_routed_model: None,
             messages_count,
             active,
             total_input_tokens,
@@ -2613,6 +2626,33 @@ mod tests {
     }
 
     #[test]
+    fn status_line_shows_last_routed_model_when_it_differs_from_configured_model() {
+        let mut app = TuiApp::new();
+        let mut status = runtime_status(false, 2, 0, 0, None);
+        status.model = "openrouter/free".to_string();
+        status.last_routed_model = Some("openai/gpt-oss-120b".to_string());
+        app.status = Some(status);
+
+        let line = status_line(&app, 120);
+
+        assert!(line.contains("model: openrouter/free:openai/gpt-oss-120b"));
+    }
+
+    #[test]
+    fn routed_model_event_updates_cached_tui_status() {
+        let mut app = TuiApp::new();
+        let mut status = runtime_status(false, 2, 0, 0, None);
+        status.model = "openrouter/free".to_string();
+        app.status = Some(status);
+
+        app.apply_runtime_event(RuntimeEvent::RoutedModel {
+            model: "openai/gpt-oss-20b".to_string(),
+        });
+
+        assert!(status_line(&app, 120).contains("openrouter/free:openai/gpt-oss-20b"));
+    }
+
+    #[test]
     fn status_line_active_shows_turn_elapsed_time() {
         let mut app = TuiApp::new();
         app.status = Some(runtime_status(true, 1, 0, 0, None));
@@ -2696,6 +2736,7 @@ mod tests {
             app.status = Some(RuntimeStatus {
                 session_id: "session".to_string(),
                 model: "provider/super-long-model-name-for-narrow-terminal".to_string(),
+                last_routed_model: None,
                 messages_count: 128,
                 active: false,
                 total_input_tokens: 123_456,
@@ -2964,6 +3005,7 @@ mod tests {
         app.status = Some(RuntimeStatus {
             session_id: "session-1".to_string(),
             model: "model-a".to_string(),
+            last_routed_model: None,
             messages_count: 3,
             active: false,
             total_input_tokens: 13,
@@ -3001,6 +3043,7 @@ mod tests {
         app.status = Some(RuntimeStatus {
             session_id: "session-1".to_string(),
             model: "model-a".to_string(),
+            last_routed_model: None,
             messages_count: 3,
             active: false,
             total_input_tokens: 13,
@@ -3020,6 +3063,31 @@ mod tests {
         assert!(app.transcript[0].text.contains("messages: 3"));
         assert!(app.transcript[0].text.contains("tokens: 13 in / 21 out"));
         assert!(app.transcript[0].text.contains("cost: $0.1250"));
+    }
+
+    #[tokio::test]
+    async fn status_slash_command_shows_last_routed_model_when_present() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let mut app = TuiApp::new();
+        app.status = Some(RuntimeStatus {
+            session_id: "session-1".to_string(),
+            model: "openrouter/free".to_string(),
+            last_routed_model: Some("openai/gpt-oss-120b".to_string()),
+            messages_count: 3,
+            active: false,
+            total_input_tokens: 13,
+            total_output_tokens: 21,
+            cost_usd: Some(0.125),
+        });
+
+        app.apply_slash_command(SlashCommand::Status, &command_tx)
+            .await
+            .expect("status command");
+
+        assert!(command_rx.try_recv().is_err());
+        assert!(app.transcript[0]
+            .text
+            .contains("model: openrouter/free:openai/gpt-oss-120b"));
     }
 
     #[tokio::test]
