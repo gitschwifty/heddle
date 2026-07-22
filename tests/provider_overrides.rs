@@ -45,16 +45,34 @@ fn rejects_invalid_max_tokens() {
 }
 
 #[test]
-fn validates_session_id_max_128() {
+fn validates_session_id_max_256() {
     assert_eq!(vo(json!({ "session_id": "short" }))["session_id"], "short");
-    let long = "a".repeat(128);
+    let long = "a".repeat(256);
     assert_eq!(
         vo(json!({ "session_id": long.clone() }))["session_id"],
         long
     );
-    let too_long = "a".repeat(129);
+    let too_long = "a".repeat(257);
     assert!(vo(json!({ "session_id": too_long }))
         .get("session_id")
+        .is_none());
+}
+
+#[test]
+fn validates_cache_control() {
+    assert_eq!(
+        vo(json!({ "cache_control": { "type": "ephemeral" } }))["cache_control"],
+        json!({ "type": "ephemeral" })
+    );
+    assert_eq!(
+        vo(json!({ "cache_control": { "type": "ephemeral", "ttl": "1h" } }))["cache_control"],
+        json!({ "type": "ephemeral", "ttl": "1h" })
+    );
+    assert!(vo(json!({ "cache_control": { "type": "persistent" } }))
+        .get("cache_control")
+        .is_none());
+    assert!(vo(json!({ "cache_control": "ephemeral" }))
+        .get("cache_control")
         .is_none());
 }
 
@@ -120,11 +138,47 @@ fn passes_through_complex_objects() {
     let r = vo(json!({
         "response_format": { "type": "json_object" },
         "tool_choice": "auto",
-        "provider": { "order": ["openai"] },
     }));
     assert_eq!(r["response_format"], json!({ "type": "json_object" }));
     assert_eq!(r["tool_choice"], "auto");
-    assert_eq!(r["provider"], json!({ "order": ["openai"] }));
+}
+
+#[test]
+fn validates_provider_routing_object() {
+    let r = vo(json!({
+        "provider": {
+            "order": ["anthropic", "openai"],
+            "allow_fallbacks": false,
+            "require_parameters": true,
+            "data_collection": "deny",
+            "zdr": true,
+            "ignored": "field",
+        },
+    }));
+    assert_eq!(
+        r["provider"],
+        json!({
+            "order": ["anthropic", "openai"],
+            "allow_fallbacks": false,
+            "require_parameters": true,
+            "data_collection": "deny",
+            "zdr": true,
+        })
+    );
+}
+
+#[test]
+fn drops_invalid_provider_routing_fields() {
+    let r = vo(json!({
+        "provider": {
+            "order": ["anthropic", 42],
+            "allow_fallbacks": "false",
+            "require_parameters": "true",
+            "data_collection": "private",
+            "zdr": "true",
+        },
+    }));
+    assert!(r.get("provider").is_none());
 }
 
 #[test]

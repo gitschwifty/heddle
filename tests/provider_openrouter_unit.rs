@@ -396,6 +396,47 @@ async fn send_overrides_merge_into_body() {
 }
 
 #[tokio::test]
+async fn send_includes_cache_and_provider_routing_overrides() {
+    let server = MockServer::start().await;
+    mount_json_once(&server, text_response_json("Hi")).await;
+
+    let p = make_provider(&server.uri(), Some(default_retry()));
+    p.send(
+        &user_msgs(),
+        None,
+        &json!({
+            "session_id": "eval-cache-session",
+            "cache_control": { "type": "ephemeral" },
+            "provider": {
+                "order": ["anthropic"],
+                "allow_fallbacks": false,
+                "require_parameters": true,
+                "data_collection": "deny",
+                "zdr": true,
+                "ignored": "not sent"
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["session_id"], "eval-cache-session");
+    assert_eq!(body["cache_control"], json!({ "type": "ephemeral" }));
+    assert_eq!(
+        body["provider"],
+        json!({
+            "order": ["anthropic"],
+            "allow_fallbacks": false,
+            "require_parameters": true,
+            "data_collection": "deny",
+            "zdr": true,
+        })
+    );
+}
+
+#[tokio::test]
 async fn per_call_model_override_replaces_config_model() {
     let server = MockServer::start().await;
     mount_json_once(&server, text_response_json("Hi")).await;
