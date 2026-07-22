@@ -4,7 +4,9 @@
 //! `HeddleRuntime` as the turn execution boundary.
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Stdout};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +36,7 @@ use crate::runtime::{
 use crate::session::setup::SessionOptions;
 
 mod input;
+mod markdown;
 mod render;
 mod slash;
 mod transcript;
@@ -46,8 +49,9 @@ use render::{blank_fill, input_text, status_line, transcript_text};
 use slash::{parse_tui_slash_command, tui_help_text, tui_status_text, SlashCommand};
 use transcript::{
     abbreviate, display_model, divider_line, flatten_transcript_turns, format_cost,
-    is_exploration_tool, summarize_arguments, wrap_message_lines, ToolState, ToolTranscript,
-    TranscriptItem, TranscriptKind, TranscriptLocation, TranscriptTurn, TurnTranscriptItem,
+    is_exploration_tool, logical_transcript_markdown, summarize_arguments, turn_logical_text,
+    wrap_message_lines, ToolState, ToolTranscript, TranscriptItem, TranscriptKind,
+    TranscriptLocation, TranscriptTurn, TurnTranscriptItem,
 };
 use viewport::ViewportState;
 
@@ -294,6 +298,7 @@ struct TuiApp {
     active_cancel: Option<CancellationToken>,
     permission_prompt: Option<PermissionPrompt>,
     permission_prompt_view: Option<PermissionPromptView>,
+    copy_buffer: Option<String>,
     cwd: String,
 }
 
@@ -978,6 +983,9 @@ impl TuiApp {
             }
             SlashCommand::Status => self.push_system_row(tui_status_text(self.status.as_ref())),
             SlashCommand::Help => self.push_system_row(tui_help_text()),
+            SlashCommand::CopyLast => self.copy_last_assistant_response(),
+            SlashCommand::CopyTurn => self.copy_current_turn(),
+            SlashCommand::ExportTranscript => self.export_transcript(),
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::Unknown(command) => self.push_system_row(format!(
                 "unknown command: {command}. Type /help for available TUI commands."
@@ -1007,6 +1015,70 @@ impl TuiApp {
             })],
         });
         self.refresh_transcript_cache();
+    }
+
+    fn copy_last_assistant_response(&mut self) {
+        let Some(text) = self.last_assistant_text() else {
+            self.push_system_row("no assistant response available to copy".to_string());
+            return;
+        };
+        let bytes = text.len();
+        self.copy_buffer = Some(text);
+        self.write_copy_file(
+            "heddle-copy.md",
+            "copy file updated: last assistant response",
+            bytes,
+        );
+    }
+
+    fn copy_current_turn(&mut self) {
+        let Some(turn) = self.turns.last() else {
+            self.push_system_row("no turn available to copy".to_string());
+            return;
+        };
+        let text = turn_logical_text(turn);
+        let bytes = text.len();
+        self.copy_buffer = Some(text);
+        self.write_copy_file("heddle-copy.md", "copy file updated: current turn", bytes);
+    }
+
+    fn export_transcript(&mut self) {
+        let text = logical_transcript_markdown(&self.turns);
+        let bytes = text.len();
+        self.copy_buffer = Some(text);
+        self.write_copy_file(
+            "heddle-transcript.md",
+            "export file updated: transcript Markdown",
+            bytes,
+        );
+    }
+
+    fn write_copy_file(&mut self, file_name: &str, label: &str, bytes: usize) {
+        let Some(text) = self.copy_buffer.as_ref() else {
+            return;
+        };
+        let path = PathBuf::from(&self.cwd).join(file_name);
+        match fs::write(&path, text) {
+            Ok(()) => self.push_system_row(format!("{label} ({bytes} bytes): {}", path.display())),
+            Err(error) => self.push_transcript_row(
+                TranscriptKind::Error,
+                format!("failed to write {file_name}: {error}"),
+            ),
+        }
+    }
+
+    fn last_assistant_text(&self) -> Option<String> {
+        self.turns
+            .iter()
+            .rev()
+            .flat_map(|turn| turn.items.iter().rev())
+            .find_map(|item| match item {
+                TurnTranscriptItem::Row(TranscriptItem {
+                    kind: TranscriptKind::Assistant,
+                    text,
+                }) if !text.trim().is_empty() => Some(text.clone()),
+                _ => None,
+            })
     }
 }
 

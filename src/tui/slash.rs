@@ -7,18 +7,25 @@ pub(super) enum SlashCommand {
     Clear,
     Status,
     Help,
+    CopyLast,
+    CopyTurn,
+    ExportTranscript,
     Quit,
     Unknown(String),
 }
 
 pub(super) fn parse_tui_slash_command(input: &str) -> SlashCommand {
-    let token = input.split_whitespace().next().unwrap_or(input.trim());
-    match token {
-        "/clear" => SlashCommand::Clear,
-        "/status" => SlashCommand::Status,
-        "/help" => SlashCommand::Help,
-        "/quit" | "/exit" => SlashCommand::Quit,
-        other => SlashCommand::Unknown(other.to_string()),
+    let mut tokens = input.split_whitespace();
+    let token = tokens.next().unwrap_or(input.trim());
+    match (token, tokens.next()) {
+        ("/copy", Some("last")) => SlashCommand::CopyLast,
+        ("/copy", Some("turn")) => SlashCommand::CopyTurn,
+        ("/export", Some("transcript")) => SlashCommand::ExportTranscript,
+        ("/clear", _) => SlashCommand::Clear,
+        ("/status", _) => SlashCommand::Status,
+        ("/help", _) => SlashCommand::Help,
+        ("/quit" | "/exit", _) => SlashCommand::Quit,
+        (other, _) => SlashCommand::Unknown(other.to_string()),
     }
 }
 
@@ -28,6 +35,9 @@ pub(super) fn tui_help_text() -> String {
         "/help - show TUI commands and keybindings",
         "/status - show session, model, message, token, and cost status",
         "/clear - clear conversation context and transcript view",
+        "/copy last - write the last assistant response to heddle-copy.md",
+        "/copy turn - write the current turn to heddle-copy.md",
+        "/export transcript - write the full transcript to heddle-transcript.md",
         "/quit, /exit - exit the TUI",
         "",
         "Keybindings:",

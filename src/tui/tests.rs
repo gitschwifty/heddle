@@ -3,6 +3,7 @@ use crate::runtime::{RuntimeError, RuntimeStatus, RuntimeUsage};
 use crate::types::{FunctionCall, ToolCall, ToolCallKind};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::Terminal;
 
 fn runtime_status(
@@ -824,6 +825,127 @@ fn transcript_render_trims_leading_assistant_newline_and_indents_wraps() {
 }
 
 #[test]
+fn transcript_render_derives_markdown_lines_without_mutating_raw_text() {
+    let mut app = TuiApp::new();
+    let raw = "# **Plan**\n\n- inspect the **rendering** path\n- keep *logical* text intact\n\n> quoted `inline` note\n\n```rust\nlet value = 42;\n```\nSee [docs](https://example.invalid/docs).\n\n| Feature | `State` |\n| --- | --- |\n| **Tables** | *Basic* |\n\nA very long paragraph that should wrap visually.";
+    app.transcript.push(TranscriptItem {
+        kind: TranscriptKind::Assistant,
+        text: raw.to_string(),
+    });
+
+    let rendered_lines = transcript_text(&app, 32).lines;
+    let rendered = rendered_lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(rendered.iter().any(|line| line.contains("- Plan")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("- inspect the rendering path")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("- keep logical text intact")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("| quoted inline note")));
+    assert!(!rendered.iter().any(|line| line.contains("```")));
+    assert!(rendered.iter().any(|line| line.contains("let value = 42;")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("docs <https://example.invalid/docs>")));
+    assert!(rendered.iter().any(|line| line.contains("Feature  State")));
+    assert!(rendered.iter().any(|line| line.contains("Tables  Basic")));
+    assert!(rendered.iter().any(|line| line.contains("wrap visually")));
+    assert!(!rendered.iter().any(|line| line.contains("**")));
+    assert!(!rendered.iter().any(|line| line.contains('`')));
+
+    let inline_span = rendered_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content.as_ref() == "inline")
+        .expect("inline code should render as a styled span");
+    assert_eq!(inline_span.style.fg, Some(Color::Cyan));
+    assert_eq!(inline_span.style.bg, None);
+
+    let table_inline_span = rendered_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content.as_ref() == "State")
+        .expect("table inline code should render as a styled span");
+    assert_eq!(table_inline_span.style.fg, Some(Color::Cyan));
+    assert_eq!(table_inline_span.style.bg, None);
+
+    assert_eq!(app.transcript[0].text, raw);
+}
+
+#[test]
+fn transcript_renders_readme_sized_markdown_without_perf_regression() {
+    let mut markdown = String::from("# README\n\n");
+    for idx in 0..120 {
+        markdown.push_str(&format!("## Section {idx}\n\n"));
+        markdown.push_str(&format!(
+            "- parse **bold {idx}** and *italic {idx}* spans with `inline_{idx}` code\n"
+        ));
+        markdown.push_str(&format!(
+            "- keep [link {idx}](https://example.invalid/readme/{idx}) readable\n\n"
+        ));
+        markdown.push_str("> quoted `inline` note with *emphasis*\n\n");
+        markdown.push_str("| Feature | State | Notes |\n");
+        markdown.push_str("| --- | --- | --- |\n");
+        markdown.push_str(&format!("| **Markdown** | `Ready` | *section {idx}* |\n\n"));
+        markdown.push_str("```rust\n");
+        markdown.push_str(&format!("let section_{idx} = {idx};\n"));
+        markdown.push_str("```\n\n");
+    }
+    assert!(markdown.len() > 35_000);
+
+    let mut app = TuiApp::new();
+    app.transcript.push(TranscriptItem {
+        kind: TranscriptKind::Assistant,
+        text: markdown,
+    });
+
+    let started = Instant::now();
+    let rendered_lines = transcript_text(&app, 100).lines;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(750),
+        "readme-sized markdown render took {elapsed:?}"
+    );
+
+    let rendered = rendered_lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert!(rendered.len() > 900);
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("- parse bold 42 and italic 42 spans with inline_42 code")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("link 42 <https://example.invalid/readme/42>")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("Markdown  Ready  section 42")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.contains("let section_42 = 42;")));
+    assert!(!rendered.iter().any(|line| line.contains("```")));
+    assert!(!rendered.iter().any(|line| line.contains("**")));
+}
+
+#[test]
 fn transcript_keeps_divider_close_to_next_user_block() {
     let mut app = TuiApp::new();
     app.transcript.push(TranscriptItem {
@@ -1167,8 +1289,94 @@ fn slash_command_parser_recognizes_tui_local_commands() {
     assert_eq!(parse_tui_slash_command("/clear"), SlashCommand::Clear);
     assert_eq!(parse_tui_slash_command(" /status "), SlashCommand::Status);
     assert_eq!(parse_tui_slash_command("/help"), SlashCommand::Help);
+    assert_eq!(
+        parse_tui_slash_command("/copy last"),
+        SlashCommand::CopyLast
+    );
+    assert_eq!(
+        parse_tui_slash_command("/copy turn"),
+        SlashCommand::CopyTurn
+    );
+    assert_eq!(
+        parse_tui_slash_command("/export transcript"),
+        SlashCommand::ExportTranscript
+    );
     assert_eq!(parse_tui_slash_command("/quit"), SlashCommand::Quit);
     assert_eq!(parse_tui_slash_command("/exit"), SlashCommand::Quit);
+}
+
+#[tokio::test]
+async fn copy_last_stores_raw_assistant_text_without_wrapped_line_breaks() {
+    let (command_tx, mut command_rx) = mpsc::channel(1);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut app = TuiApp::new();
+    app.cwd = temp.path().display().to_string();
+    let raw = "# Heading\n\n- first bullet\n- second bullet\n\n```rust\nfn main() {}\n```";
+    app.turns.push(TranscriptTurn {
+        items: vec![TurnTranscriptItem::Row(TranscriptItem {
+            kind: TranscriptKind::Assistant,
+            text: raw.to_string(),
+        })],
+    });
+    app.refresh_transcript_cache();
+
+    app.apply_slash_command(SlashCommand::CopyLast, &command_tx)
+        .await
+        .expect("copy last");
+
+    assert!(command_rx.try_recv().is_err());
+    assert_eq!(app.copy_buffer.as_deref(), Some(raw));
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("heddle-copy.md")).expect("copy file"),
+        raw
+    );
+    assert!(app
+        .transcript
+        .last()
+        .expect("status row")
+        .text
+        .contains("heddle-copy.md"));
+}
+
+#[tokio::test]
+async fn copy_turn_and_export_transcript_use_logical_markdown() {
+    let (command_tx, mut command_rx) = mpsc::channel(1);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut app = TuiApp::new();
+    app.cwd = temp.path().display().to_string();
+    app.turns.push(TranscriptTurn {
+        items: vec![
+            TurnTranscriptItem::Row(TranscriptItem {
+                kind: TranscriptKind::User,
+                text: "summarize".to_string(),
+            }),
+            TurnTranscriptItem::Row(TranscriptItem {
+                kind: TranscriptKind::Assistant,
+                text: "done".to_string(),
+            }),
+        ],
+    });
+    app.refresh_transcript_cache();
+
+    app.apply_slash_command(SlashCommand::CopyTurn, &command_tx)
+        .await
+        .expect("copy turn");
+    assert!(command_rx.try_recv().is_err());
+    let copied = app.copy_buffer.as_ref().expect("copy buffer");
+    assert!(copied.contains("## User\n\nsummarize"));
+    assert!(copied.contains("## Assistant\n\ndone"));
+    let copy_file = std::fs::read_to_string(temp.path().join("heddle-copy.md")).expect("copy file");
+    assert_eq!(copy_file, *copied);
+
+    app.apply_slash_command(SlashCommand::ExportTranscript, &command_tx)
+        .await
+        .expect("export transcript");
+    let exported = app.copy_buffer.as_ref().expect("export buffer");
+    assert!(exported.starts_with("# Turn 1"));
+    assert!(exported.contains("## Assistant\n\ndone"));
+    let export_file =
+        std::fs::read_to_string(temp.path().join("heddle-transcript.md")).expect("export file");
+    assert_eq!(export_file, *exported);
 }
 
 #[tokio::test]
@@ -1189,6 +1397,7 @@ async fn slash_commands_do_not_route_to_runtime_channel() {
     assert_eq!(app.transcript.len(), 1);
     assert_eq!(app.transcript[0].kind, TranscriptKind::System);
     assert!(app.transcript[0].text.contains("/clear"));
+    assert!(app.transcript[0].text.contains("/copy last"));
 }
 
 #[tokio::test]

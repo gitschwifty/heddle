@@ -124,6 +124,50 @@ pub(super) fn flatten_transcript_turns(turns: &[TranscriptTurn]) -> Vec<Transcri
     rows
 }
 
+pub(super) fn turn_logical_text(turn: &TranscriptTurn) -> String {
+    let mut out = Vec::new();
+    for item in &turn.items {
+        match item {
+            TurnTranscriptItem::Row(row) => match row.kind {
+                TranscriptKind::User => out.push(format!("## User\n\n{}", row.text.trim())),
+                TranscriptKind::Assistant => {
+                    out.push(format!("## Assistant\n\n{}", row.text.trim()))
+                }
+                TranscriptKind::Error => out.push(format!("## Error\n\n{}", row.text.trim())),
+                TranscriptKind::System | TranscriptKind::Divider => {}
+                TranscriptKind::Tool => out.push(row.text.trim().to_string()),
+            },
+            TurnTranscriptItem::Tool(tool) => {
+                out.push(format!(
+                    "## Tool: {}\n\n{}",
+                    tool.name,
+                    action_tool_row(tool)
+                ));
+            }
+        }
+    }
+    out.into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+pub(super) fn logical_transcript_markdown(turns: &[TranscriptTurn]) -> String {
+    turns
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, turn)| {
+            let text = turn_logical_text(turn);
+            if text.is_empty() {
+                None
+            } else {
+                Some(format!("# Turn {}\n\n{text}", idx + 1))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 pub(super) fn is_exploration_tool(name: &str) -> bool {
     matches!(name, "read_file" | "grep" | "glob")
 }

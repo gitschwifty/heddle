@@ -5,8 +5,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{
-    abbreviate, display_model, divider_line, format_cost, wrap_message_lines, InputBuffer,
-    PermissionPromptView, TranscriptKind, TuiApp,
+    abbreviate, display_model, divider_line, format_cost, markdown::assistant_markdown_lines,
+    wrap_message_lines, InputBuffer, PermissionPromptView, TranscriptKind, TuiApp,
 };
 
 pub(super) fn draw(frame: &mut Frame, app: &mut TuiApp) {
@@ -196,7 +196,11 @@ pub(super) fn transcript_text(app: &TuiApp, width: u16) -> Text<'static> {
             continue;
         }
 
-        lines.extend(transcript_item_lines(&item.text, marker, style, width));
+        if matches!(item.kind, TranscriptKind::Assistant) {
+            lines.extend(assistant_markdown_lines(&item.text, marker, style, width));
+        } else {
+            lines.extend(transcript_item_lines(&item.text, marker, style, width));
+        }
         lines.push(Line::raw(""));
     }
     Text::from(lines)
