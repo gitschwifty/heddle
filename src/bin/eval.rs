@@ -94,6 +94,14 @@ enum Cmd {
         /// include assistant text for diagnosis.
         #[arg(long, default_value_t = false)]
         record_all_text: bool,
+        /// Prewarm each selected prompt's stable instruction prefix, then use
+        /// cache-friendly routing for the sweep. Requires a paid pinned model.
+        #[arg(long, default_value_t = false)]
+        cache_prewarm: bool,
+        /// Request Anthropic's one-hour cache TTL. Requires --cache-prewarm
+        /// and an anthropic/* model; provider-default TTL is otherwise used.
+        #[arg(long, default_value_t = false)]
+        cache_ttl_1h: bool,
     },
 }
 
@@ -499,6 +507,32 @@ fn compose_system_prompt(prompt: &Prompt, workspace: &Path) -> String {
     parts.join("\n\n")
 }
 
+fn compose_messages(prompt: &Prompt, workspace: &Path, cache_mode: bool) -> Vec<Message> {
+    if !cache_mode {
+        let composed = compose_system_prompt(prompt, workspace);
+        return if composed.is_empty() {
+            Vec::new()
+        } else {
+            vec![Message::System(SystemMessage { content: composed })]
+        };
+    }
+
+    // Put the stable prompt body first so it remains a reusable provider-cache
+    // prefix while task-specific workspace context can still vary per run.
+    let mut messages = Vec::new();
+    let body = prompt.body.trim();
+    if !body.is_empty() {
+        messages.push(Message::System(SystemMessage {
+            content: body.to_string(),
+        }));
+    }
+    let context = render_context(&prompt.front.context, workspace);
+    if !context.is_empty() {
+        messages.push(Message::System(SystemMessage { content: context }));
+    }
+    messages
+}
+
 // ─── Sandbox helpers ─────────────────────────────────────────────────────
 
 fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
@@ -634,7 +668,47 @@ const FREE_FALLBACK: &[&str] = &[
     "openrouter/free",
 ];
 
-fn make_provider(model: &str, api_key: String, max_tokens_per_response: u32) -> Arc<dyn Provider> {
+#[derive(Debug, Clone)]
+struct CachePrewarmConfig {
+    session_id: String,
+    ttl_1h: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PrewarmResult {
+    prompt_id: String,
+    duration_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routed_model: Option<String>,
+    tokens_in: u64,
+    tokens_out: u64,
+    cached_tokens: u64,
+    cache_write_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CachePrewarmRun {
+    session_id: String,
+    ttl: String,
+    prewarms: Vec<PrewarmResult>,
+}
+
+fn validate_cache_model(model: &str, ttl_1h: bool) -> Result<()> {
+    if model == "openrouter/auto" || model == "openrouter/free" || model.ends_with(":free") {
+        bail!("--cache-prewarm requires a pinned paid model; {model:?} is routed or free");
+    }
+    if ttl_1h && !model.starts_with("anthropic/") {
+        bail!("--cache-ttl-1h is only supported for anthropic/* models");
+    }
+    Ok(())
+}
+
+fn make_provider(
+    model: &str,
+    api_key: String,
+    max_tokens_per_response: u32,
+    cache: Option<&CachePrewarmConfig>,
+) -> Arc<dyn Provider> {
     // Per-response cap is the load-bearing cost guard. The session-level
     // budget check only fires after a `Usage` event arrives — by that point
     // the model has already produced (and we've paid for) the response.
@@ -649,6 +723,21 @@ fn make_provider(model: &str, api_key: String, max_tokens_per_response: u32) -> 
         params.insert("models".into(), json!(fallback));
         params.insert("route".into(), json!("fallback"));
     }
+    if let Some(cache) = cache {
+        params.insert("session_id".into(), json!(cache.session_id));
+        let mut cache_control = serde_json::Map::new();
+        cache_control.insert("type".into(), json!("ephemeral"));
+        if cache.ttl_1h {
+            cache_control.insert("ttl".into(), json!("1h"));
+        }
+        params.insert(
+            "cache_control".into(),
+            serde_json::Value::Object(cache_control),
+        );
+        // A cache key is not useful if OpenRouter silently falls back to a
+        // different upstream provider mid-sweep.
+        params.insert("provider".into(), json!({ "allow_fallbacks": false }));
+    }
     create_openrouter_provider(ProviderConfig {
         api_key,
         model: model.to_string(),
@@ -659,13 +748,58 @@ fn make_provider(model: &str, api_key: String, max_tokens_per_response: u32) -> 
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+async fn prewarm_prompt(
+    prompt: &Prompt,
+    model: &str,
+    api_key: &str,
+    cache: &CachePrewarmConfig,
+) -> Result<PrewarmResult> {
+    let stable_prefix = prompt.body.trim();
+    if stable_prefix.is_empty() {
+        bail!(
+            "--cache-prewarm requires a non-empty prompt body ({})",
+            prompt.id
+        );
+    }
+
+    let provider = make_provider(model, api_key.to_string(), 1, Some(cache));
+    let start = Instant::now();
+    let response = provider
+        .send(
+            &[
+                Message::System(SystemMessage {
+                    content: stable_prefix.to_string(),
+                }),
+                Message::User(UserMessage {
+                    content: "Acknowledge these instructions briefly.".to_string(),
+                }),
+            ],
+            None,
+            &json!({}),
+        )
+        .await
+        .with_context(|| format!("prewarming prompt {}", prompt.id))?;
+    let usage = response.usage.unwrap_or_default();
+    let details = usage.prompt_tokens_details.as_ref();
+    Ok(PrewarmResult {
+        prompt_id: prompt.id.clone(),
+        duration_ms: start.elapsed().as_millis(),
+        routed_model: response.model,
+        tokens_in: usage.prompt_tokens,
+        tokens_out: usage.completion_tokens,
+        cached_tokens: details.and_then(|d| d.cached_tokens).unwrap_or(0),
+        cache_write_tokens: details.and_then(|d| d.cache_write_tokens).unwrap_or(0),
+    })
+}
+
+#[derive(Debug, Clone)]
 struct RunOneOptions {
     max_turns: u32,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     task_timeout_secs: u64,
     record_all_text: bool,
+    cache: Option<CachePrewarmConfig>,
 }
 
 async fn run_one(
@@ -673,7 +807,7 @@ async fn run_one(
     prompt: &Prompt,
     model: &str,
     api_key: &str,
-    options: RunOneOptions,
+    options: &RunOneOptions,
 ) -> TaskResult {
     let start = Instant::now();
     let tempdir = tempfile::tempdir().expect("tempdir");
@@ -682,13 +816,15 @@ async fn run_one(
         return error_result(task, prompt, model, format!("copy before/: {e}"), start);
     }
 
-    let composed = compose_system_prompt(prompt, workspace);
-    let mut messages = Vec::new();
-    if !composed.is_empty() {
-        messages.push(Message::System(SystemMessage {
-            content: composed.clone(),
-        }));
-    }
+    let cache_mode = options.cache.is_some();
+    let mut messages = compose_messages(prompt, workspace, cache_mode);
+    let rendered_system_prompt_chars = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::System(system) => Some(system.content.chars().count()),
+            _ => None,
+        })
+        .sum();
     messages.push(Message::User(UserMessage {
         content: task.spec.prompt.clone(),
     }));
@@ -707,7 +843,12 @@ async fn run_one(
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };
 
-    let provider = make_provider(model, api_key.to_string(), options.max_tokens_per_response);
+    let provider = make_provider(
+        model,
+        api_key.to_string(),
+        options.max_tokens_per_response,
+        options.cache.as_ref(),
+    );
     let effective_max_turns = task
         .spec
         .max_turns
@@ -847,7 +988,7 @@ async fn run_one(
         evals_version: "0.1.0".into(),
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
-        rendered_system_prompt_chars: composed.chars().count(),
+        rendered_system_prompt_chars,
         routed_model,
         run_index: 0,
         tool_sequence,
@@ -1218,6 +1359,8 @@ async fn main() -> Result<()> {
             results_dir,
             runs,
             record_all_text,
+            cache_prewarm,
+            cache_ttl_1h,
         } => {
             cmd_run(
                 &evals,
@@ -1232,6 +1375,8 @@ async fn main() -> Result<()> {
                 results_dir,
                 runs.max(1),
                 record_all_text,
+                cache_prewarm,
+                cache_ttl_1h,
             )
             .await
         }
@@ -1366,6 +1511,19 @@ mod tests {
     fn run_meta_persists_cache_token_totals() {
         let dir = tempfile::tempdir().unwrap();
         let results = vec![result(75, 25, None), result(5, 10, None)];
+        let prewarm = CachePrewarmRun {
+            session_id: "heddle-eval-cache-test".into(),
+            ttl: "provider_default".into(),
+            prewarms: vec![PrewarmResult {
+                prompt_id: "prompt-1".into(),
+                duration_ms: 20,
+                routed_model: Some("anthropic/claude-sonnet-4".into()),
+                tokens_in: 50,
+                tokens_out: 1,
+                cached_tokens: 0,
+                cache_write_tokens: 50,
+            }],
+        };
         write_run_artifacts(
             dir.path(),
             "openrouter/auto",
@@ -1379,6 +1537,7 @@ mod tests {
             &results,
             "summary",
             "",
+            Some(&prewarm),
         )
         .unwrap();
 
@@ -1388,6 +1547,50 @@ mod tests {
         .unwrap();
         assert_eq!(meta["cache_tokens"]["cached_tokens"], 80);
         assert_eq!(meta["cache_tokens"]["cache_write_tokens"], 35);
+        assert_eq!(
+            meta["cache_prewarm"]["session_id"],
+            "heddle-eval-cache-test"
+        );
+        assert_eq!(
+            meta["cache_prewarm"]["prewarms"][0]["cache_write_tokens"],
+            50
+        );
+    }
+
+    #[test]
+    fn cache_mode_separates_stable_prompt_body_from_dynamic_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt = Prompt {
+            id: "dynamic".into(),
+            front: PromptFrontMatter {
+                context: ContextConfig {
+                    cwd: true,
+                    ..ContextConfig::default()
+                },
+                ..PromptFrontMatter::default()
+            },
+            body: "Follow the project instructions.".into(),
+        };
+
+        let messages = compose_messages(&prompt, dir.path(), true);
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(
+            &messages[0],
+            Message::System(SystemMessage { content }) if content == "Follow the project instructions."
+        ));
+        assert!(matches!(
+            &messages[1],
+            Message::System(SystemMessage { content }) if content.contains("Current Working Directory")
+        ));
+    }
+
+    #[test]
+    fn cache_mode_rejects_unstable_models_and_invalid_ttl() {
+        assert!(validate_cache_model("openrouter/free", false).is_err());
+        assert!(validate_cache_model("openrouter/auto", false).is_err());
+        assert!(validate_cache_model("example/model:free", false).is_err());
+        assert!(validate_cache_model("openai/gpt-5", true).is_err());
+        assert!(validate_cache_model("anthropic/claude-sonnet-4", true).is_ok());
     }
 }
 
@@ -1405,6 +1608,8 @@ async fn cmd_run(
     results_dir: Option<PathBuf>,
     runs: u32,
     record_all_text: bool,
+    cache_prewarm: bool,
+    cache_ttl_1h: bool,
 ) -> Result<()> {
     let manifest = load_manifest(evals)?;
     let model = model_flag
@@ -1439,6 +1644,19 @@ async fn cmd_run(
     if chosen_prompts.is_empty() || chosen_tasks.is_empty() {
         bail!("nothing to run (no prompts or no tasks selected)");
     }
+
+    if cache_ttl_1h && !cache_prewarm {
+        bail!("--cache-ttl-1h requires --cache-prewarm");
+    }
+    let cache = if cache_prewarm {
+        validate_cache_model(&model, cache_ttl_1h)?;
+        Some(CachePrewarmConfig {
+            session_id: format!("heddle-eval-cache-{}", Utc::now().format("%Y%m%dT%H%M%S%f")),
+            ttl_1h: cache_ttl_1h,
+        })
+    } else {
+        None
+    };
 
     // Build the (task, prompt) pairs. Smoke tasks only run against the
     // `default` prompt when matrix mode (>1 chosen prompt), so they don't
@@ -1479,6 +1697,39 @@ async fn cmd_run(
     let results_dir = results_dir.unwrap_or_else(|| evals.join("results").join(ts));
     let total_pairs = smoke_pairs.len() + matrix_pairs.len();
     println!("Running {total_pairs} (task, prompt) pairs against {model}");
+    let cache_prewarm_run = if let Some(cache) = &cache {
+        println!(
+            "Prewarming {} stable prompt prefix(es) with session {}",
+            chosen_prompts.len(),
+            cache.session_id
+        );
+        let mut prewarms = Vec::with_capacity(chosen_prompts.len());
+        for prompt in &chosen_prompts {
+            let result = prewarm_prompt(prompt, &model, &api_key, cache).await?;
+            println!(
+                "  prewarm {}: {}/{} tokens, cache {}/{} r/w, {}ms",
+                result.prompt_id,
+                result.tokens_in,
+                result.tokens_out,
+                result.cached_tokens,
+                result.cache_write_tokens,
+                result.duration_ms,
+            );
+            prewarms.push(result);
+        }
+        Some(CachePrewarmRun {
+            session_id: cache.session_id.clone(),
+            ttl: if cache.ttl_1h {
+                "1h"
+            } else {
+                "provider_default"
+            }
+            .to_string(),
+            prewarms,
+        })
+    } else {
+        None
+    };
     if is_matrix && smoke_count > 0 {
         println!(
             "  ({} smoke run(s) up front; {} matrix run(s) after — matrix aborts if any smoke fails)",
@@ -1498,6 +1749,7 @@ async fn cmd_run(
         max_tokens_per_response,
         task_timeout_secs,
         record_all_text,
+        cache,
     };
 
     // Pass 1: smoke
@@ -1508,7 +1760,7 @@ async fn cmd_run(
             "[smoke {idx}/{smoke_total}] {} | {}",
             task.spec.id, prompt.id
         );
-        let r = run_one(task, prompt, &model, &api_key, run_options).await;
+        let r = run_one(task, prompt, &model, &api_key, &run_options).await;
         let outcome = match (
             r.scores.outcome.passed,
             r.scores.efficiency.tokens_in_budget,
@@ -1593,7 +1845,7 @@ async fn cmd_run(
                     format!("[matrix {idx}/{matrix_total}]")
                 };
                 println!("{prefix} {} | {}", task.spec.id, prompt.id);
-                let mut r = run_one(task, prompt, &model, &api_key, run_options).await;
+                let mut r = run_one(task, prompt, &model, &api_key, &run_options).await;
                 if runs > 1 {
                     r.run_index = run_n;
                 }
@@ -1660,6 +1912,7 @@ async fn cmd_run(
         &results,
         &summary,
         &failures,
+        cache_prewarm_run.as_ref(),
     )?;
     println!(
         "Wrote summary.md, summary.json, run_meta.json -> {}",
@@ -1683,6 +1936,8 @@ struct RunMeta {
     budget_stop_usd: f64,
     counts: RunCounts,
     cache_tokens: CacheTokenTotals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_prewarm: Option<CachePrewarmRun>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1713,6 +1968,7 @@ fn write_run_artifacts(
     results: &[TaskResult],
     summary_md: &str,
     failures_md: &str,
+    cache_prewarm: Option<&CachePrewarmRun>,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
 
@@ -1747,6 +2003,7 @@ fn write_run_artifacts(
             failed: results.len() - passed,
         },
         cache_tokens,
+        cache_prewarm: cache_prewarm.cloned(),
     };
 
     fs::write(
@@ -1777,6 +2034,14 @@ fn write_run_artifacts(
         "- budget_stop_usd: `${:.4}`\n",
         meta.budget_stop_usd
     ));
+    if let Some(cache) = &meta.cache_prewarm {
+        md.push_str(&format!(
+            "- cache_prewarm: session=`{}`, ttl=`{}`, prefixes={}\n",
+            cache.session_id,
+            cache.ttl,
+            cache.prewarms.len()
+        ));
+    }
     md.push_str(summary_md);
     md.push_str(failures_md);
     fs::write(results_dir.join("summary.md"), md)?;
