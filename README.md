@@ -1,5 +1,9 @@
 # Heddle
 
+<p align="center">
+  <img src="docs/assets/heddle-icon.png" alt="Heddle circuit mark" width="256">
+</p>
+
 Rust LLM API harness — tool execution, streaming, edits, context management.
 
 Heddle gives LLMs the ability to read, write, edit, and search files, run shell commands, and maintain persistent conversation sessions. Built on OpenRouter's OpenAI-compatible API with a headless JSON-over-stdio mode for embedding in other applications.
