@@ -109,7 +109,7 @@ fn ipc_request_accepts_init() {
     check_request_ok(json!({
         "type": "init",
         "id": "1",
-        "protocol_version": "0.3.0",
+        "protocol_version": "0.4.0",
         "config": { "model": "m", "system_prompt": "s", "tools": [] },
     }));
 }
@@ -217,7 +217,7 @@ fn ipc_response_init_ok() {
         "type": "init_ok",
         "id": "1",
         "session_id": "sess-1",
-        "protocol_version": "0.3.0",
+        "protocol_version": "0.4.0",
     }));
 }
 
@@ -227,7 +227,7 @@ fn ipc_response_init_ok_with_error_envelope() {
         "type": "init_ok",
         "id": "1",
         "session_id": "sess-1",
-        "protocol_version": "0.3.0",
+        "protocol_version": "0.4.0",
         "error": { "code": "protocol_error", "message": "bad config", "retryable": false },
     }));
 }

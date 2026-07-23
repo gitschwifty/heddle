@@ -4,6 +4,7 @@
 //! writes `IpcResponse`s to stdout. Cancellation flips an `AbortToken` watched
 //! by the in-flight agent loop.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,13 +28,16 @@ use crate::ipc::codec::{
 use crate::ipc::errors::ErrorEnvelope;
 use crate::ipc::protocol::{check_compatibility, PROTOCOL_VERSION};
 use crate::ipc::types::{
-    InitConfig, IpcRequest, IpcResponse, ToolCallSummary, UsageSummary, WorkerEvent,
+    EffectiveRuntimeMetadata, FailureDetails, InitConfig, IpcRequest, IpcResponse, RoutingMetadata,
+    RuntimeMode, ToolCallSummary, UsageSummary, WorkerEvent,
 };
 use crate::runtime::{
     HeddleRuntime, RuntimeError, RuntimeEvent, RuntimeToolCall, RuntimeUsage, TurnOptions,
     TurnOutcome, TurnStatus,
 };
-use crate::session::setup::{create_session, PermissionOverrides, SessionContext, SessionOptions};
+use crate::session::setup::{
+    create_session, PermissionOverrides, RuntimePlacement, SessionContext, SessionOptions,
+};
 use crate::tools::ask_user::create_ask_user_tool;
 
 struct State {
@@ -43,6 +47,8 @@ struct State {
     cancel_target_id: Option<String>,
     active_cancel: Option<CancellationToken>,
     pending_cancel_ids: Vec<String>,
+    runtime_metadata: Option<EffectiveRuntimeMetadata>,
+    routing: Option<RoutingMetadata>,
 }
 
 impl State {
@@ -54,6 +60,8 @@ impl State {
             cancel_target_id: None,
             active_cancel: None,
             pending_cancel_ids: Vec::new(),
+            runtime_metadata: None,
+            routing: None,
         }
     }
 }
@@ -161,7 +169,13 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
         }
     }
 
-    let session_opts = build_session_options(&config);
+    let (session_opts, mut runtime_metadata) = match build_session_options(&config) {
+        Ok(value) => value,
+        Err(error) => {
+            write_line(&protocol_error(Some(&id), error));
+            return;
+        }
+    };
     let session = match create_session(session_opts).await {
         Ok(s) => s,
         Err(e) => {
@@ -173,6 +187,9 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
     let session = wire_ipc_overrides(session, &config);
 
     let session_id = session.session_id.clone();
+    if let Some(metadata) = &mut runtime_metadata {
+        metadata.transcript_path = session.session_file.to_string_lossy().into_owned();
+    }
     let runtime = HeddleRuntime::from_session(session);
     {
         let mut s = state.lock();
@@ -182,6 +199,8 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
             worker_id: config.worker_id.clone(),
         };
         s.runtime = Some(runtime);
+        s.runtime_metadata = runtime_metadata.clone();
+        s.routing = config.routing.clone();
     }
 
     write_line(&IpcResponse::InitOk {
@@ -189,23 +208,58 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
         session_id,
         protocol_version: PROTOCOL_VERSION.clone(),
         error: None,
+        runtime: runtime_metadata,
+        routing: config.routing.clone(),
     });
 }
 
-fn build_session_options(config: &InitConfig) -> SessionOptions {
-    SessionOptions {
-        mode: Some(Mode::Headless),
-        model: Some(config.model.clone()),
-        system_prompt: Some(config.system_prompt.clone()),
-        tools: Some(config.tools.clone()),
-        permission_overrides: config.permissions.as_ref().map(|p| PermissionOverrides {
-            allow: p.allow.clone(),
-            deny: p.deny.clone(),
-            ask: p.ask.clone(),
-        }),
-        app_attribution: config.app_attribution.clone(),
-        ..Default::default()
+fn build_session_options(
+    config: &InitConfig,
+) -> std::result::Result<(SessionOptions, Option<EffectiveRuntimeMetadata>), String> {
+    let runtime = config.runtime.as_ref();
+    let mode = runtime
+        .and_then(|r| r.mode.clone())
+        .unwrap_or(RuntimeMode::Default);
+    let state_root = runtime
+        .and_then(|r| r.state_root.as_ref())
+        .map(PathBuf::from);
+    let transcript_path = runtime
+        .and_then(|r| r.transcript_path.as_ref())
+        .map(PathBuf::from);
+    if matches!(mode, RuntimeMode::Isolated) && state_root.is_none() {
+        return Err("runtime.state_root is required when runtime.mode is isolated".into());
     }
+    let suppress_ambient_context = matches!(mode, RuntimeMode::Isolated)
+        && !runtime
+            .and_then(|r| r.inherit_ambient_config)
+            .unwrap_or(false);
+    let placement = runtime.map(|_| RuntimePlacement {
+        state_root: state_root.clone(),
+        transcript_path: transcript_path.clone(),
+        suppress_ambient_context,
+    });
+    let runtime_metadata = runtime.map(|_| EffectiveRuntimeMetadata {
+        mode,
+        state_root: state_root.map(|path| path.to_string_lossy().into_owned()),
+        transcript_path: String::new(),
+    });
+    Ok((
+        SessionOptions {
+            mode: Some(Mode::Headless),
+            model: Some(config.model.clone()),
+            system_prompt: Some(config.system_prompt.clone()),
+            tools: Some(config.tools.clone()),
+            permission_overrides: config.permissions.as_ref().map(|p| PermissionOverrides {
+                allow: p.allow.clone(),
+                deny: p.deny.clone(),
+                ask: p.ask.clone(),
+            }),
+            app_attribution: config.app_attribution.clone(),
+            runtime_placement: placement,
+            ..Default::default()
+        },
+        runtime_metadata,
+    ))
 }
 
 fn wire_ipc_overrides(mut session: SessionContext, config: &InitConfig) -> SessionContext {
@@ -339,7 +393,17 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
     heartbeat_token.cancel();
     let _ = heartbeat_handle.await;
 
-    write_line(&build_result(&id, build_result_args(outcome, correlation)));
+    let (runtime_metadata, mut routing) = {
+        let s = state.lock();
+        (s.runtime_metadata.clone(), s.routing.clone())
+    };
+    if let Some(metadata) = &mut routing {
+        metadata.routed_model = runtime.status(false).last_routed_model;
+    }
+    write_line(&build_result(
+        &id,
+        build_result_args(outcome, correlation, runtime_metadata, routing),
+    ));
     return_runtime(state, runtime);
 }
 
@@ -366,14 +430,31 @@ fn handle_status(state: &Arc<Mutex<State>>, id: String) {
     write_line(&IpcResponse::StatusOk {
         id,
         model: status.model,
-        last_routed_model: status.last_routed_model,
+        last_routed_model: status.last_routed_model.clone(),
         messages_count: status.messages_count,
         session_id: status.session_id,
         active: status.active,
+        runtime: s.runtime_metadata.clone(),
+        routing: s.routing.clone().map(|mut metadata| {
+            metadata.routed_model = status.last_routed_model.clone();
+            metadata
+        }),
     });
 }
 
-fn build_result_args(outcome: TurnOutcome, correlation: CorrelationContext) -> BuildResultArgs {
+fn build_result_args(
+    outcome: TurnOutcome,
+    correlation: CorrelationContext,
+    runtime: Option<EffectiveRuntimeMetadata>,
+    routing: Option<RoutingMetadata>,
+) -> BuildResultArgs {
+    let failure = outcome.error.as_ref().map(|error| FailureDetails {
+        code: error.code.clone(),
+        termination_reason: error.message.clone(),
+        iterations: outcome.iterations,
+        tool_calls_made: outcome.tool_calls_made.len() as u32,
+        last_tool_name: outcome.tool_calls_made.last().map(|call| call.name.clone()),
+    });
     BuildResultArgs {
         status: match outcome.status {
             TurnStatus::Ok => "ok".into(),
@@ -392,6 +473,9 @@ fn build_result_args(outcome: TurnOutcome, correlation: CorrelationContext) -> B
         total_latency_ms: Some(outcome.total_latency_ms),
         tool_latency_ms: Some(outcome.tool_latency_ms),
         model_latency_ms: Some(outcome.model_latency_ms),
+        runtime,
+        routing,
+        failure,
     }
 }
 

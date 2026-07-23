@@ -31,7 +31,7 @@ impl Headless {
             .stderr(Stdio::inherit())
             .env("HEDDLE_HOME", &heddle_home)
             .env("OPENROUTER_API_KEY", "test-key-headless")
-            .env("HEDDLE_PROTOCOL_VERSION", "0.3.0");
+            .env("HEDDLE_PROTOCOL_VERSION", "0.4.0");
         for (k, v) in extra_env {
             cmd.env(k, v);
         }
@@ -170,7 +170,7 @@ pub fn init_msg() -> String {
     serde_json::json!({
         "type": "init",
         "id": "1",
-        "protocol_version": "0.3.0",
+        "protocol_version": "0.4.0",
         "config": {
             "model": "openrouter/auto",
             "system_prompt": "You are helpful.",

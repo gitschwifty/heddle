@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
+use tempfile::tempdir;
 
 mod common;
 use common::headless::{init_msg, parse_line, Headless};
@@ -17,7 +18,7 @@ fn init_returns_init_ok_with_session_id_and_protocol_version() {
     assert_eq!(msg["type"], "init_ok");
     assert_eq!(msg["id"], "1");
     assert!(msg["session_id"].is_string());
-    assert_eq!(msg["protocol_version"], "0.3.0");
+    assert_eq!(msg["protocol_version"], "0.4.0");
 }
 
 #[test]
@@ -91,7 +92,7 @@ fn protocol_version_included_in_init_ok() {
     h.send_line(&init_msg());
     let lines = h.wait_for_lines(1, T);
     let msg = parse_line(&lines[0]);
-    assert_eq!(msg["protocol_version"], "0.3.0");
+    assert_eq!(msg["protocol_version"], "0.4.0");
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn tool_restriction_via_init_config_tools() {
     let init = serde_json::json!({
         "type": "init",
         "id": "1",
-        "protocol_version": "0.3.0",
+        "protocol_version": "0.4.0",
         "config": {
             "model": "openrouter/auto",
             "system_prompt": "You are helpful.",
@@ -137,4 +138,96 @@ fn tool_restriction_via_init_config_tools() {
     let lines = h.wait_for_lines(2, T);
     let status = parse_line(&lines[1]);
     assert_eq!(status["type"], "status_ok");
+}
+
+#[test]
+fn isolated_runtime_places_transcript_outside_default_heddle_home() {
+    let mut h = Headless::spawn(HashMap::new());
+    let artifacts = tempdir().unwrap();
+    let state_root = artifacts.path().join("state");
+    let transcript = artifacts.path().join("transcripts").join("worker.jsonl");
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.4.0",
+            "config": {
+                "model": "openrouter/auto", "system_prompt": "x", "tools": [],
+                "runtime": {
+                    "mode": "isolated", "state_root": state_root,
+                    "transcript_path": transcript
+                }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let init = parse_line(&lines[0]);
+    assert_eq!(init["runtime"]["mode"], "isolated");
+    assert_eq!(
+        init["runtime"]["state_root"],
+        state_root.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        init["runtime"]["transcript_path"],
+        transcript.to_string_lossy().as_ref()
+    );
+    assert!(transcript.exists());
+    assert!(state_root.exists());
+
+    h.send_line(&serde_json::json!({"type":"status","id":"s1"}).to_string());
+    let lines = h.wait_for_lines(2, T);
+    let status = parse_line(&lines[1]);
+    assert_eq!(
+        status["runtime"]["transcript_path"],
+        transcript.to_string_lossy().as_ref()
+    );
+    assert!(std::fs::read_dir(h.heddle_home()).unwrap().next().is_none());
+}
+
+#[test]
+fn isolated_runtime_requires_state_root() {
+    let mut h = Headless::spawn(HashMap::new());
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.4.0",
+            "config": {
+                "model": "openrouter/auto", "system_prompt": "x", "tools": [],
+                "runtime": { "mode": "isolated" }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let result = parse_line(&lines[0]);
+    assert_eq!(result["error"]["code"], "protocol_error");
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("runtime.state_root"));
+}
+
+#[test]
+fn routing_metadata_is_reported_through_init_and_status() {
+    let mut h = Headless::spawn(HashMap::new());
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.4.0",
+            "config": {
+                "model": "openrouter/auto", "system_prompt": "x", "tools": [],
+                "routing": {
+                    "gateway": "openrouter", "upstream_provider": "anthropic",
+                    "grouping_id": "bench-42"
+                }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let init = parse_line(&lines[0]);
+    assert_eq!(init["routing"]["gateway"], "openrouter");
+    assert_eq!(init["routing"]["upstream_provider"], "anthropic");
+
+    h.send_line(&serde_json::json!({"type":"status","id":"s1"}).to_string());
+    let lines = h.wait_for_lines(2, T);
+    let status = parse_line(&lines[1]);
+    assert_eq!(status["routing"]["grouping_id"], "bench-42");
 }

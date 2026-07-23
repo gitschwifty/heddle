@@ -17,7 +17,7 @@ Communication is newline-delimited JSON (JSONL) on stdin/stdout. Each line is a 
 - Every request has an `id` field for correlation
 - Streaming events during a `send` are emitted as `event` responses
 
-**Protocol version:** `0.3.0` (stored in `PROTOCOL_VERSION` file).
+**Protocol version:** `0.4.0` (stored in `PROTOCOL_VERSION` file).
 
 ## Lifecycle
 
@@ -55,7 +55,7 @@ Initialize a session. Must be sent before any other request.
 {
   "type": "init",
   "id": "1",
-  "protocol_version": "0.3.0",
+  "protocol_version": "0.4.0",
   "config": {
     "model": "anthropic/claude-sonnet-4",
     "system_prompt": "You are a coding assistant.",
@@ -67,6 +67,16 @@ Initialize a session. Must be sent before any other request.
       "referer": "https://github.com/gitschwifty/orboros",
       "title": "Orboros",
       "categories": "cli-agent"
+    },
+    "runtime": {
+      "mode": "isolated",
+      "state_root": "/tmp/orboros/run-42/state",
+      "transcript_path": "/tmp/orboros/run-42/transcripts/worker-1.jsonl"
+    },
+    "routing": {
+      "gateway": "openrouter",
+      "upstream_provider": "anthropic",
+      "grouping_id": "bench-run-42"
     }
   }
 }
@@ -86,9 +96,30 @@ Initialize a session. Must be sent before any other request.
 | `config.app_attribution.referer` | string | no | OpenRouter app attribution URL; only used when `title` is also set |
 | `config.app_attribution.title` | string | no | OpenRouter app attribution display name; only used when `referer` is also set |
 | `config.app_attribution.categories` | string | no | Optional OpenRouter app attribution categories |
+| `config.runtime.mode` | `"default"` or `"isolated"` | no | Runtime placement policy; omitted preserves current behavior |
+| `config.runtime.state_root` | string | required for isolated | Caller-owned root for isolated mutable state |
+| `config.runtime.transcript_path` | string | no | Exact JSONL transcript/session path for this session |
+| `config.runtime.inherit_ambient_config` | boolean | no | In isolated mode, opt back into normal config/discovery; defaults to `false` |
+| `config.routing.gateway` | string | no | Gateway/client identity, e.g. `openrouter` |
+| `config.routing.upstream_provider` | string | no | Requested upstream provider behind a gateway |
+| `config.routing.direct_provider` | string | no | Direct provider identity for future native clients |
+| `config.routing.request_id` | string | no | Caller request correlation ID |
+| `config.routing.grouping_id` | string | no | Provider/dashboard grouping identifier |
 
 If `app_attribution` is omitted, or only one of `referer`/`title` is set,
 provider requests use Heddle's default attribution headers.
+
+#### Runtime placement
+
+When `config.runtime` is absent, headless keeps its existing session placement,
+config/discovery, and `HEDDLE_HOME` behavior. `mode: "isolated"` requires a
+caller-supplied `state_root`; it suppresses ambient config/discovery by default
+and disables stateful features that still rely on global paths. This avoids a
+worker writing into normal user state. `transcript_path` may also be used with
+the default mode when only the transcript destination should change.
+
+The runtime policy is per init request. Heddle does not mutate process-wide
+environment variables such as `HEDDLE_HOME` to implement it.
 
 ### send
 
@@ -157,7 +188,17 @@ Returned after successful initialization.
   "type": "init_ok",
   "id": "1",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "protocol_version": "0.3.0"
+  "protocol_version": "0.4.0",
+  "runtime": {
+    "mode": "isolated",
+    "state_root": "/tmp/orboros/run-42/state",
+    "transcript_path": "/tmp/orboros/run-42/transcripts/worker-1.jsonl"
+  },
+  "routing": {
+    "gateway": "openrouter",
+    "upstream_provider": "anthropic",
+    "grouping_id": "bench-run-42"
+  }
 }
 ```
 
@@ -168,10 +209,10 @@ If protocol versions are incompatible:
   "type": "init_ok",
   "id": "1",
   "session_id": "",
-  "protocol_version": "0.3.0",
+  "protocol_version": "0.4.0",
   "error": {
     "code": "protocol_version_mismatch",
-    "message": "Client requested 0.1.0, server is 0.3.0",
+    "message": "Client requested 0.1.0, server is 0.4.0",
     "retryable": false
   }
 }
@@ -356,7 +397,16 @@ Returned when a send completes (success, error, or cancellation).
   "worker_id": "worker-1",
   "model_latency_ms": 1200,
   "tool_latency_ms": 50,
-  "total_latency_ms": 1250
+  "total_latency_ms": 1250,
+  "runtime": {
+    "mode": "isolated",
+    "state_root": "/tmp/orboros/run-42/state",
+    "transcript_path": "/tmp/orboros/run-42/transcripts/worker-1.jsonl"
+  },
+  "routing": {
+    "gateway": "openrouter",
+    "upstream_provider": "anthropic"
+  }
 }
 ```
 
@@ -375,6 +425,14 @@ Returned when a send completes (success, error, or cancellation).
 | `session_id` | string? | Session ID |
 | `task_id` | string? | Echoed from init |
 | `worker_id` | string? | Echoed from init |
+| `runtime` | object? | Effective mode and actual state/transcript paths |
+| `routing` | object? | Caller routing metadata plus routed model when observed |
+| `failure` | object? | Structured termination details when `status` is `"error"` |
+
+`failure` includes a stable code, termination reason, final iteration count,
+tool-call count, and last tool name when applicable. Codes include
+`loop_detected`, `max_iterations`, `provider_error`, `tool_error`, and
+`cancelled`; clients should use the code rather than parsing the message.
 
 #### Cancelled result
 
@@ -403,13 +461,22 @@ Returned when a send completes (success, error, or cancellation).
   "last_routed_model": "openai/gpt-oss-120b",
   "messages_count": 12,
   "session_id": "550e8400-...",
-  "active": false
+  "active": false,
+  "runtime": {
+    "mode": "isolated",
+    "state_root": "/tmp/orboros/run-42/state",
+    "transcript_path": "/tmp/orboros/run-42/transcripts/worker-1.jsonl"
+  }
 }
 ```
 
 `last_routed_model` is omitted until the provider reports a routed model. For
 `openrouter/free`, clients can display `model:last_routed_model` to show both the
 configured alias and the concrete model from the last response.
+
+When runtime placement or routing metadata was supplied at init, `status_ok`
+also reports its effective `runtime` and `routing` metadata. `routing.routed_model`
+is populated after a provider reports one.
 
 ### shutdown_ok
 
@@ -441,6 +508,7 @@ All structured errors use the same envelope:
 | `tool_error` | no | Tool execution failed |
 | `loop_detected` | no | Doom loop — identical tool calls repeated |
 | `cancelled` | no | Send was cancelled via cancel request |
+| `max_iterations` | no | Agent loop reached its configured iteration cap |
 
 ## Protocol Compatibility
 

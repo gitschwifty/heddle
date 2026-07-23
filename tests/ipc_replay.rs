@@ -100,7 +100,7 @@ fn strip_ignored_removes_top_level_session_id() {
         "type": "init_ok",
         "id": "1",
         "session_id": "sess-anything",
-        "protocol_version": "0.3.0"
+        "protocol_version": "0.4.0"
     });
     let s = strip_ignored(&v);
     assert!(s.get("session_id").is_none());

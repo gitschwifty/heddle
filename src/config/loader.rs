@@ -380,3 +380,58 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     debug("config", "loaded (api_key REDACTED if present)");
     merged
 }
+
+/// Load defaults and environment overrides without reading ambient TOML files.
+/// Used by isolated headless sessions, whose caller supplies all filesystem roots.
+pub fn load_config_without_files() -> HeddleConfig {
+    let mut merged = HeddleConfig::default();
+
+    if let Ok(v) = std::env::var("HEDDLE_MODEL") {
+        merged.model = v;
+    }
+    if let Ok(v) = std::env::var("OPENROUTER_API_KEY") {
+        merged.api_key = Some(v);
+    }
+    if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
+        merged.base_url = Some(v);
+    }
+    if let (Ok(referer), Ok(title)) = (
+        std::env::var("HEDDLE_APP_REFERER"),
+        std::env::var("HEDDLE_APP_TITLE"),
+    ) {
+        merged.app_attribution = Some(AppAttribution {
+            referer,
+            title,
+            categories: std::env::var("HEDDLE_APP_CATEGORIES").ok(),
+        });
+    }
+    if let Ok(v) = std::env::var("HEDDLE_MAX_TOKENS") {
+        if let Ok(n) = v.parse::<u64>() {
+            merged.max_tokens = Some(n);
+        }
+    }
+    if let Ok(v) = std::env::var("HEDDLE_TEMPERATURE") {
+        if let Ok(n) = v.parse::<f64>() {
+            merged.temperature = Some(n);
+        }
+    }
+    if let Ok(v) = std::env::var("HEDDLE_WEAK_MODEL") {
+        merged.weak_model = Some(v);
+    }
+    if let Ok(v) = std::env::var("HEDDLE_APPROVAL_MODE") {
+        if let Ok(mode) = v.parse::<ApprovalMode>() {
+            merged.approval_mode = Some(mode);
+        }
+    }
+    if let Ok(v) = std::env::var("HEDDLE_TOOLS") {
+        let tools: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
+        if !tools.is_empty() {
+            merged.tools = Some(tools);
+        }
+    }
+    if let Ok(v) = std::env::var("HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES") {
+        merged.web_fetch_allow_private_addresses = matches!(v.as_str(), "1" | "true" | "yes");
+    }
+
+    merged
+}

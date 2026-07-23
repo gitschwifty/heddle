@@ -36,6 +36,12 @@
 
 ## Changelog
 
+### 0.4.0
+
+- Added optional headless init/runtime placement metadata and effective runtime
+  metadata on init, status, and result responses.
+- Added optional routing metadata and structured result failure details.
+
 ### 0.3.0
 
 **Summary:** Add routed-model metadata for router aliases such as `openrouter/free`, plus optional app attribution for embedded headless clients.

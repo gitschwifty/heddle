@@ -370,7 +370,14 @@ impl HeddleRuntime {
                     });
                 }
                 AgentEvent::Error { message } => {
-                    error = Some(runtime_error(&message, "provider_error"));
+                    error = Some(runtime_error(
+                        &message,
+                        if message.starts_with("Max iterations (") {
+                            "max_iterations"
+                        } else {
+                            "provider_error"
+                        },
+                    ));
                 }
                 _ => {}
             }
@@ -501,7 +508,14 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
             },
         }),
         AgentEvent::Error { message } => Some(RuntimeEvent::Error {
-            error: runtime_error(message, "provider_error"),
+            error: runtime_error(
+                message,
+                if message.starts_with("Max iterations (") {
+                    "max_iterations"
+                } else {
+                    "provider_error"
+                },
+            ),
         }),
         AgentEvent::PermissionRequest { name, call, reason } => {
             Some(RuntimeEvent::PermissionRequested {

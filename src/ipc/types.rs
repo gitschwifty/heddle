@@ -9,6 +9,59 @@ use crate::hooks::types::HooksConfig;
 use crate::provider::types::AppAttribution;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    Default,
+    Isolated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimePlacementConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RuntimeMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_ambient_config: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoutingMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grouping_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveRuntimeMetadata {
+    pub mode: RuntimeMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_root: Option<String>,
+    pub transcript_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureDetails {
+    pub code: String,
+    pub termination_reason: String,
+    pub iterations: u32,
+    pub tool_calls_made: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {
     pub model: String,
     pub system_prompt: String,
@@ -25,6 +78,10 @@ pub struct InitConfig {
     pub permissions: Option<PermissionsConfigSchema>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimePlacementConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +214,7 @@ pub struct ToolCallSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcResponse {
     InitOk {
@@ -165,6 +223,10 @@ pub enum IpcResponse {
         protocol_version: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorEnvelope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<EffectiveRuntimeMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing: Option<RoutingMetadata>,
     },
     Event {
         event: WorkerEvent,
@@ -200,6 +262,12 @@ pub enum IpcResponse {
         tool_latency_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         total_latency_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<EffectiveRuntimeMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing: Option<RoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<FailureDetails>,
     },
     StatusOk {
         id: String,
@@ -209,6 +277,10 @@ pub enum IpcResponse {
         messages_count: u64,
         session_id: String,
         active: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<EffectiveRuntimeMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        routing: Option<RoutingMetadata>,
     },
     ShutdownOk {
         id: String,

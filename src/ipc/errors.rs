@@ -48,6 +48,10 @@ fn error_code_label(code: &str) -> &'static str {
         "tool_error" => "Tool error",
         "protocol_error" => "Protocol error",
         "loop_detected" => "Doom loop detected",
+        "max_iterations" => "Max iterations reached",
+        "permission_denied" => "Permission denied",
+        "malformed_tool_call" => "Malformed tool call",
+        "cancelled" => "Cancelled",
         "timeout" => "Timeout",
         _ => "Unknown error",
     }

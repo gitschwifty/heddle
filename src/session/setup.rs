@@ -19,7 +19,9 @@ use crate::agents::types::AgentDefinition;
 use crate::config::agents_md::load_agents_context;
 use crate::config::discovery::{resolve_discovery, DiscoveryResult};
 use crate::config::features::{get_features, FeatureFlags, Mode};
-use crate::config::loader::{load_config, HeddleConfig, PermissionsLayer};
+use crate::config::loader::{
+    load_config, load_config_without_files, HeddleConfig, PermissionsLayer,
+};
 use crate::config::paths::{ensure_heddle_dirs, get_project_memory_dir, get_project_sessions_dir};
 use crate::context::paste_cache::PasteCache;
 use crate::cost::pricing::ModelPricing;
@@ -93,6 +95,7 @@ pub struct SessionContext {
     pub paste_cache: Option<Arc<Mutex<PasteCache>>>,
     pub session_start_time: chrono::DateTime<Utc>,
     pub base_system_prompt: String,
+    pub runtime_placement: Option<RuntimePlacement>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -100,6 +103,13 @@ pub struct PermissionOverrides {
     pub allow: Option<Vec<String>>,
     pub deny: Option<Vec<String>>,
     pub ask: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimePlacement {
+    pub state_root: Option<PathBuf>,
+    pub transcript_path: Option<PathBuf>,
+    pub suppress_ambient_context: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -115,6 +125,7 @@ pub struct SessionOptions {
     pub agent: Option<String>,
     pub permission_overrides: Option<PermissionOverrides>,
     pub app_attribution: Option<AppAttribution>,
+    pub runtime_placement: Option<RuntimePlacement>,
 }
 
 fn default_tools(config: &HeddleConfig) -> Vec<Arc<dyn HeddleTool>> {
@@ -135,13 +146,22 @@ fn build_system_message(
     features: &FeatureFlags,
     session_id: &str,
     base_prompt: &str,
+    include_ambient_context: bool,
 ) -> Result<Message> {
-    let agents_ctx = load_agents_context(None);
-    let memory_ctx = load_memory_context(None);
+    let agents_ctx = include_ambient_context
+        .then(|| load_agents_context(None))
+        .flatten();
+    let memory_ctx = include_ambient_context
+        .then(|| load_memory_context(None))
+        .flatten();
 
     let mut tasks_ctx = String::new();
     if features.tasks {
-        let tasks = load_tasks(None);
+        let tasks = if include_ambient_context {
+            load_tasks(None)
+        } else {
+            Vec::new()
+        };
         if !tasks.is_empty() {
             tasks_ctx = format!(
                 "## Current Tasks\n\n{}",
@@ -173,15 +193,29 @@ pub fn fresh_system_message(session: &SessionContext) -> Result<Message> {
         &session.features,
         &session.session_id,
         &session.base_system_prompt,
+        !session
+            .runtime_placement
+            .as_ref()
+            .map(|p| p.suppress_ambient_context)
+            .unwrap_or(false),
     )
 }
 
 pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
-    ensure_heddle_dirs();
-    // Fire-and-forget file-history cleanup.
-    tokio::task::spawn_blocking(|| {
-        run_file_history_cleanup(CleanupConfig::default());
-    });
+    let placement = options.runtime_placement.clone();
+    let isolated = placement
+        .as_ref()
+        .and_then(|p| p.state_root.as_ref())
+        .is_some();
+    if !isolated {
+        ensure_heddle_dirs();
+        // Fire-and-forget file-history cleanup.
+        tokio::task::spawn_blocking(|| {
+            run_file_history_cleanup(CleanupConfig::default());
+        });
+    } else if let Some(root) = placement.as_ref().and_then(|p| p.state_root.as_ref()) {
+        std::fs::create_dir_all(root)?;
+    }
 
     if let Some(cwd) = &options.cwd {
         if !cwd.exists() {
@@ -190,10 +224,33 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         std::env::set_current_dir(cwd)?;
     }
 
-    let mut config = load_config(None);
+    let mut config = if placement
+        .as_ref()
+        .map(|p| p.suppress_ambient_context)
+        .unwrap_or(false)
+    {
+        load_config_without_files()
+    } else {
+        load_config(None)
+    };
     let mode = options.mode.unwrap_or(Mode::Interactive);
-    let features = get_features(mode, config.features.as_ref());
-    let discovery = resolve_discovery(None, None);
+    let mut features = get_features(mode, config.features.as_ref());
+    if isolated {
+        // These components still use global path helpers. Do not let an isolated
+        // headless run silently create files under the caller's normal Heddle root.
+        features.file_history = false;
+        features.hooks = false;
+        features.tasks = false;
+    }
+    let discovery = if placement
+        .as_ref()
+        .map(|p| p.suppress_ambient_context)
+        .unwrap_or(false)
+    {
+        DiscoveryResult::default()
+    } else {
+        resolve_discovery(None, None)
+    };
 
     if config.api_key.is_none() {
         return Err(anyhow!(
@@ -253,7 +310,9 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     for tool in to_register {
         registry.register(tool)?;
     }
-    registry.register(create_save_memory_tool(get_project_memory_dir(None)))?;
+    if !isolated {
+        registry.register(create_save_memory_tool(get_project_memory_dir(None)))?;
+    }
 
     let (session_id, session_file, messages) = if let Some(target) = &options.resume {
         let found = find_session(Some(target), None)
@@ -271,8 +330,14 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         (result.session_id, result.session_file, loaded)
     } else {
         let sid = Uuid::new_v4().to_string();
-        let session_dir = get_project_sessions_dir(None);
-        let session_file = session_dir.join(format!("{sid}.jsonl"));
+        let session_file =
+            if let Some(path) = placement.as_ref().and_then(|p| p.transcript_path.clone()) {
+                path
+            } else if let Some(root) = placement.as_ref().and_then(|p| p.state_root.as_ref()) {
+                root.join("sessions").join(format!("{sid}.jsonl"))
+            } else {
+                get_project_sessions_dir(None).join(format!("{sid}.jsonl"))
+            };
         let meta = SessionMeta {
             kind: "session_meta".into(),
             id: sid.clone(),
@@ -286,7 +351,15 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         };
         write_session_meta(&session_file, &meta)?;
 
-        let system_msg = build_system_message(&features, &sid, &base_system_prompt)?;
+        let system_msg = build_system_message(
+            &features,
+            &sid,
+            &base_system_prompt,
+            !placement
+                .as_ref()
+                .map(|p| p.suppress_ambient_context)
+                .unwrap_or(false),
+        )?;
         append_message(&session_file, &system_msg)?;
         (sid, session_file, vec![system_msg])
     };
@@ -360,10 +433,12 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         registry.register(create_update_task_tool(None))?;
         registry.register(create_list_tasks_tool(session_id.clone(), None))?;
     }
-    registry.register(create_save_plan_tool(
-        session_id.clone(),
-        Some(config.model.clone()),
-    ))?;
+    if !isolated {
+        registry.register(create_save_plan_tool(
+            session_id.clone(),
+            Some(config.model.clone()),
+        ))?;
+    }
 
     let metrics_collector = if features.usage_data {
         Some(Arc::new(Mutex::new(MetricsCollector::new())))
@@ -396,6 +471,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         paste_cache,
         session_start_time: Utc::now(),
         base_system_prompt,
+        runtime_placement: placement,
     })
 }
 

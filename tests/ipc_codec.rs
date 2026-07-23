@@ -4,7 +4,7 @@ use heddle::ipc::codec::{
 };
 use heddle::ipc::errors::ErrorEnvelope;
 use heddle::ipc::types::{
-    InitConfig, IpcRequest, IpcResponse, ToolCallSummary, UsageSummary, WorkerEvent,
+    FailureDetails, InitConfig, IpcRequest, IpcResponse, ToolCallSummary, UsageSummary, WorkerEvent,
 };
 use serde_json::{json, Value};
 
@@ -33,6 +33,8 @@ fn decode_valid_init_request() {
             app_attribution: None,
             permissions: None,
             hooks: None,
+            runtime: None,
+            routing: None,
         }),
     })
     .unwrap();
@@ -159,6 +161,8 @@ fn status_ok_can_include_last_routed_model() {
         messages_count: 2,
         session_id: "sess-1".into(),
         active: false,
+        runtime: None,
+        routing: None,
     };
     let v: Value = serde_json::to_value(&res).unwrap();
 
@@ -289,6 +293,29 @@ fn build_result_omits_when_not_provided() {
     assert!(!s.contains("total_latency_ms"));
     assert!(!s.contains("model_latency_ms"));
     assert!(!s.contains("tool_latency_ms"));
+}
+
+#[test]
+fn build_result_includes_structured_failure_details() {
+    let res = build_result(
+        "2",
+        BuildResultArgs {
+            status: "error".into(),
+            iterations: 3,
+            failure: Some(FailureDetails {
+                code: "loop_detected".into(),
+                termination_reason: "Doom loop detected: 3 iterations".into(),
+                iterations: 3,
+                tool_calls_made: 3,
+                last_tool_name: Some("read_file".into()),
+            }),
+            ..Default::default()
+        },
+    );
+    let v: Value = serde_json::to_value(&res).unwrap();
+    assert_eq!(v["failure"]["code"], "loop_detected");
+    assert_eq!(v["failure"]["tool_calls_made"], 3);
+    assert_eq!(v["failure"]["last_tool_name"], "read_file");
 }
 
 #[test]

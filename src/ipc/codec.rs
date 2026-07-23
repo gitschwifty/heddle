@@ -3,7 +3,10 @@
 use serde_json::Value;
 
 use super::errors::ErrorEnvelope;
-use super::types::{IpcRequest, IpcResponse, ToolCallSummary, UsageSummary, WorkerEvent};
+use super::types::{
+    EffectiveRuntimeMetadata, FailureDetails, IpcRequest, IpcResponse, RoutingMetadata,
+    ToolCallSummary, UsageSummary, WorkerEvent,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct CorrelationContext {
@@ -69,6 +72,9 @@ pub struct BuildResultArgs {
     pub model_latency_ms: Option<u64>,
     pub tool_latency_ms: Option<u64>,
     pub total_latency_ms: Option<u64>,
+    pub runtime: Option<EffectiveRuntimeMetadata>,
+    pub routing: Option<RoutingMetadata>,
+    pub failure: Option<FailureDetails>,
 }
 
 pub fn build_result(id: &str, args: BuildResultArgs) -> IpcResponse {
@@ -86,6 +92,9 @@ pub fn build_result(id: &str, args: BuildResultArgs) -> IpcResponse {
         model_latency_ms: args.model_latency_ms,
         tool_latency_ms: args.tool_latency_ms,
         total_latency_ms: args.total_latency_ms,
+        runtime: args.runtime,
+        routing: args.routing,
+        failure: args.failure,
     }
 }
 
@@ -108,5 +117,8 @@ pub fn build_error(
         model_latency_ms: None,
         tool_latency_ms: None,
         total_latency_ms: None,
+        runtime: None,
+        routing: None,
+        failure: None,
     }
 }

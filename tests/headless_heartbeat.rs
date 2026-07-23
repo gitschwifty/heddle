@@ -202,7 +202,7 @@ async fn cancel_interrupts_bash_tool_and_resolves_quickly() {
     let init = json!({
         "type":"init",
         "id":"1",
-        "protocol_version":"0.3.0",
+        "protocol_version":"0.4.0",
         "config":{
             "model":"openrouter/auto",
             "system_prompt":"You are helpful.",
