@@ -160,7 +160,7 @@ async fn runtime_worker(
                         },
                     )
                     .await;
-                let _ = event_tx.send(RuntimeUpdate::Outcome(outcome));
+                let _ = event_tx.send(RuntimeUpdate::Outcome(Box::new(outcome)));
                 let _ = event_tx.send(RuntimeUpdate::Status(runtime.status(false)));
             }
             RuntimeCommand::ClearContext => match runtime.clear_context() {
@@ -260,7 +260,7 @@ enum RuntimeCommand {
 #[derive(Debug)]
 enum RuntimeUpdate {
     Event(RuntimeEvent),
-    Outcome(TurnOutcome),
+    Outcome(Box<TurnOutcome>),
     Status(RuntimeStatus),
     PermissionPrompt(PermissionPrompt),
 }
@@ -462,7 +462,7 @@ impl TuiApp {
     fn apply_runtime_update(&mut self, update: RuntimeUpdate) {
         match update {
             RuntimeUpdate::Event(event) => self.apply_runtime_event(event),
-            RuntimeUpdate::Outcome(outcome) => self.apply_turn_outcome(outcome),
+            RuntimeUpdate::Outcome(outcome) => self.apply_turn_outcome(*outcome),
             RuntimeUpdate::Status(status) => {
                 self.active = status.active;
                 if !status.active {
