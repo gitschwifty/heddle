@@ -35,6 +35,7 @@ static KNOWN_KEYS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "plugins",
         "provider",
         "session_id",
+        "cache_control",
         "debug",
     ]
     .into_iter()
@@ -58,11 +59,14 @@ pub fn validate_overrides(raw: &Value) -> Value {
         out.insert("model".into(), Value::String(v.to_string()));
     }
     if let Some(v) = table.get("session_id").and_then(Value::as_str) {
-        if v.len() <= 128 {
+        if v.len() <= 256 {
             out.insert("session_id".into(), Value::String(v.to_string()));
         } else {
-            debug("provider", "session_id exceeds 128 chars, ignoring");
+            debug("provider", "session_id exceeds 256 chars, ignoring");
         }
+    }
+    if let Some(cache_control) = table.get("cache_control").and_then(validate_cache_control) {
+        out.insert("cache_control".into(), cache_control);
     }
     if let Some(route) = table.get("route").and_then(Value::as_str) {
         if route == "fallback" || route == "sort" {
@@ -154,12 +158,15 @@ pub fn validate_overrides(raw: &Value) -> Value {
         }
     }
 
+    if let Some(provider) = table.get("provider").and_then(validate_provider_routing) {
+        out.insert("provider".into(), provider);
+    }
+
     for pass_through in [
         "response_format",
         "tools",
         "tool_choice",
         "plugins",
-        "provider",
         "debug",
     ] {
         if let Some(v) = table.get(pass_through) {
@@ -175,4 +182,62 @@ pub fn validate_overrides(raw: &Value) -> Value {
     }
 
     Value::Object(out)
+}
+
+fn validate_cache_control(value: &Value) -> Option<Value> {
+    let raw = value.as_object()?;
+    let cache_type = raw.get("type").and_then(Value::as_str)?;
+    if cache_type != "ephemeral" {
+        debug("provider", "cache_control.type must be ephemeral, ignoring");
+        return None;
+    }
+
+    let mut out = Map::new();
+    out.insert("type".into(), Value::String("ephemeral".to_string()));
+    if let Some(ttl) = raw.get("ttl").and_then(Value::as_str) {
+        if ttl == "1h" {
+            out.insert("ttl".into(), Value::String(ttl.to_string()));
+        } else {
+            debug("provider", "cache_control.ttl must be 1h when present");
+        }
+    }
+    Some(Value::Object(out))
+}
+
+fn validate_provider_routing(value: &Value) -> Option<Value> {
+    let raw = value.as_object()?;
+    let mut out = Map::new();
+
+    if let Some(order) = raw.get("order").and_then(Value::as_array) {
+        if order.iter().all(Value::is_string) {
+            out.insert("order".into(), Value::Array(order.clone()));
+        } else {
+            debug("provider", "provider.order must be an array of strings");
+        }
+    }
+    if let Some(allow_fallbacks) = raw.get("allow_fallbacks").and_then(Value::as_bool) {
+        out.insert("allow_fallbacks".into(), Value::Bool(allow_fallbacks));
+    }
+    if let Some(require_parameters) = raw.get("require_parameters").and_then(Value::as_bool) {
+        out.insert("require_parameters".into(), Value::Bool(require_parameters));
+    }
+    if let Some(data_collection) = raw.get("data_collection").and_then(Value::as_str) {
+        if data_collection == "allow" || data_collection == "deny" {
+            out.insert(
+                "data_collection".into(),
+                Value::String(data_collection.to_string()),
+            );
+        } else {
+            debug("provider", "provider.data_collection must be allow or deny");
+        }
+    }
+    if let Some(zdr) = raw.get("zdr").and_then(Value::as_bool) {
+        out.insert("zdr".into(), Value::Bool(zdr));
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(Value::Object(out))
+    }
 }
