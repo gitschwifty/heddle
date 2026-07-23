@@ -248,6 +248,9 @@ struct TaskResult {
     duration_ms: u128,
     scores: Scores,
     rendered_system_prompt_chars: usize,
+    /// Concrete model reported by the provider for routed aliases, when any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routed_model: Option<String>,
     /// 1-indexed run number when --runs N. 0 if single-run.
     #[serde(default)]
     run_index: u32,
@@ -307,6 +310,10 @@ struct EfficiencyScore {
 struct CostScore {
     tokens_in: u64,
     tokens_out: u64,
+    /// Prompt tokens served from a provider cache. Zero when unavailable.
+    cached_tokens: u64,
+    /// Prompt tokens written to a provider cache. Zero when unavailable.
+    cache_write_tokens: u64,
     // USD lookup is best-effort; 0.0 if pricing isn't loaded.
     usd: f64,
 }
@@ -721,7 +728,10 @@ async fn run_one(
     let mut turns = 0u32;
     let mut tokens_in = 0u64;
     let mut tokens_out = 0u64;
+    let mut cached_tokens = 0u64;
+    let mut cache_write_tokens = 0u64;
     let mut usd = 0.0f64;
+    let mut routed_model: Option<String> = None;
     let mut error: Option<String> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
     let mut finish_reasons: Vec<String> = Vec::new();
@@ -778,6 +788,16 @@ async fn run_one(
             AgentEvent::Usage { usage, .. } => {
                 tokens_in += usage.prompt_tokens;
                 tokens_out += usage.completion_tokens;
+                cached_tokens += usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|details| details.cached_tokens)
+                    .unwrap_or(0);
+                cache_write_tokens += usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|details| details.cache_write_tokens)
+                    .unwrap_or(0);
                 usd += usage.cost.unwrap_or(0.0);
                 if tokens_in + tokens_out > effective_max_tokens {
                     // Cost-control kill switch, NOT a correctness failure.
@@ -788,6 +808,7 @@ async fn run_one(
                     break;
                 }
             }
+            AgentEvent::RoutedModel { model } => routed_model = Some(model),
             AgentEvent::Error { message } => {
                 if message.contains("; retrying once") {
                     continue;
@@ -827,6 +848,7 @@ async fn run_one(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: composed.chars().count(),
+        routed_model,
         run_index: 0,
         tool_sequence,
         finish_reasons,
@@ -845,6 +867,8 @@ async fn run_one(
             cost: CostScore {
                 tokens_in,
                 tokens_out,
+                cached_tokens,
+                cache_write_tokens,
                 usd,
             },
             error,
@@ -868,6 +892,7 @@ fn error_result(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
+        routed_model: None,
         run_index: 0,
         tool_sequence: Vec::new(),
         finish_reasons: Vec::new(),
@@ -886,6 +911,8 @@ fn error_result(
             cost: CostScore {
                 tokens_in: 0,
                 tokens_out: 0,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
                 usd: 0.0,
             },
             error: Some(err),
@@ -912,9 +939,19 @@ fn format_summary(results: &[TaskResult]) -> String {
         return out;
     }
     let header = [
-        "task", "prompt", "model", "outcome", "tools", "turns", "tokens", "usd", "err",
+        "task",
+        "prompt",
+        "model",
+        "routed",
+        "outcome",
+        "tools",
+        "turns",
+        "tokens",
+        "cache r/w",
+        "usd",
+        "err",
     ];
-    let mut rows: Vec<[String; 9]> = Vec::with_capacity(results.len() + 1);
+    let mut rows: Vec<[String; 11]> = Vec::with_capacity(results.len() + 1);
     rows.push(header.map(String::from));
     for r in results {
         let outcome = match (
@@ -931,21 +968,26 @@ fn format_summary(results: &[TaskResult]) -> String {
             r.task_id.clone(),
             r.prompt_id.clone(),
             r.model.clone(),
+            r.routed_model.clone().unwrap_or_else(|| "-".into()),
             outcome.to_string(),
             r.scores.efficiency.tool_calls.to_string(),
             r.scores.efficiency.turns.to_string(),
             format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
+            format!(
+                "{}/{}",
+                r.scores.cost.cached_tokens, r.scores.cost.cache_write_tokens
+            ),
             format!("{:.6}", r.scores.cost.usd),
             err,
         ]);
     }
-    let mut widths = [0usize; 9];
+    let mut widths = [0usize; 11];
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-    let render = |row: &[String; 9]| -> String {
+    let render = |row: &[String; 11]| -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
@@ -979,6 +1021,17 @@ fn format_summary(results: &[TaskResult]) -> String {
             "(`pass*` = correct outcome but token budget exceeded mid-run; not a failure)\n",
         );
     }
+    let cached_total = results
+        .iter()
+        .map(|r| r.scores.cost.cached_tokens)
+        .sum::<u64>();
+    let cache_write_total = results
+        .iter()
+        .map(|r| r.scores.cost.cache_write_tokens)
+        .sum::<u64>();
+    out.push_str(&format!(
+        "cache tokens: {cached_total} read, {cache_write_total} written\n"
+    ));
     out.push('\n');
     out
 }
@@ -1008,9 +1061,11 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         "turns (avg)",
         "tokens in (avg±std)",
         "tokens out (avg)",
+        "cache read (avg)",
+        "cache write (avg)",
         "usd (avg)",
     ];
-    let mut rows: Vec<[String; 8]> = Vec::with_capacity(groups.len() + 1);
+    let mut rows: Vec<[String; 10]> = Vec::with_capacity(groups.len() + 1);
     rows.push(header.map(String::from));
 
     for ((task_id, prompt_id), runs_of) in &groups {
@@ -1040,6 +1095,16 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             .sum::<f64>()
             / n;
         let mean_usd = runs_of.iter().map(|r| r.scores.cost.usd).sum::<f64>() / n;
+        let mean_cached = runs_of
+            .iter()
+            .map(|r| r.scores.cost.cached_tokens as f64)
+            .sum::<f64>()
+            / n;
+        let mean_cache_write = runs_of
+            .iter()
+            .map(|r| r.scores.cost.cache_write_tokens as f64)
+            .sum::<f64>()
+            / n;
         let pct = if mean_in > 0.0 {
             std_in / mean_in * 100.0
         } else {
@@ -1053,17 +1118,19 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             format!("{mean_turns:.1}"),
             format!("{mean_in:.0}±{std_in:.0} ({pct:.0}%)"),
             format!("{mean_out:.0}"),
+            format!("{mean_cached:.0}"),
+            format!("{mean_cache_write:.0}"),
             format!("{mean_usd:.6}"),
         ]);
     }
 
-    let mut widths = [0usize; 8];
+    let mut widths = [0usize; 10];
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-    let render = |row: &[String; 8]| -> String {
+    let render = |row: &[String; 10]| -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
@@ -1220,6 +1287,108 @@ where
         out.push(m);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(
+        cached_tokens: u64,
+        cache_write_tokens: u64,
+        routed_model: Option<&str>,
+    ) -> TaskResult {
+        TaskResult {
+            task_id: "task-1".into(),
+            prompt_id: "prompt-1".into(),
+            model: "openrouter/auto".into(),
+            routed_model: routed_model.map(str::to_string),
+            heddle_commit: "abc123".into(),
+            evals_version: "0.1.0".into(),
+            timestamp: "2026-07-22T00:00:00Z".into(),
+            duration_ms: 1,
+            scores: Scores {
+                outcome: OutcomeScore {
+                    passed: true,
+                    diff_files: Vec::new(),
+                },
+                efficiency: EfficiencyScore {
+                    tool_calls: 1,
+                    turns: 1,
+                    tool_calls_in_range: true,
+                    tokens_in_budget: true,
+                },
+                cost: CostScore {
+                    tokens_in: 100,
+                    tokens_out: 20,
+                    cached_tokens,
+                    cache_write_tokens,
+                    usd: 0.01,
+                },
+                error: None,
+            },
+            rendered_system_prompt_chars: 10,
+            run_index: 0,
+            tool_sequence: Vec::new(),
+            finish_reasons: Vec::new(),
+            assistant_messages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn result_artifact_serializes_cache_metrics_and_routed_model() {
+        let value =
+            serde_json::to_value(result(75, 25, Some("anthropic/claude-sonnet-4"))).unwrap();
+        assert_eq!(value["routed_model"], "anthropic/claude-sonnet-4");
+        assert_eq!(value["scores"]["cost"]["cached_tokens"], 75);
+        assert_eq!(value["scores"]["cost"]["cache_write_tokens"], 25);
+    }
+
+    #[test]
+    fn summaries_include_cache_metrics_and_zeroes_when_unreported() {
+        let results = vec![
+            result(75, 25, Some("anthropic/claude-sonnet-4")),
+            result(0, 0, None),
+        ];
+        let summary = format_summary(&results);
+        assert!(summary.contains("cache r/w"));
+        assert!(summary.contains("75/25"));
+        assert!(summary.contains("0/0"));
+        assert!(summary.contains("cache tokens: 75 read, 25 written"));
+
+        let aggregated = format_aggregated_summary(&results, 2);
+        assert!(aggregated.contains("cache read (avg)"));
+        assert!(aggregated.contains("cache write (avg)"));
+        assert!(aggregated.contains("38"));
+    }
+
+    #[test]
+    fn run_meta_persists_cache_token_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = vec![result(75, 25, None), result(5, 10, None)];
+        write_run_artifacts(
+            dir.path(),
+            "openrouter/auto",
+            &["prompt-1".into()],
+            &["task-1".into()],
+            1_000,
+            500,
+            4,
+            60,
+            1.0,
+            &results,
+            "summary",
+            "",
+        )
+        .unwrap();
+
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("run_meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["cache_tokens"]["cached_tokens"], 80);
+        assert_eq!(meta["cache_tokens"]["cache_write_tokens"], 35);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1513,6 +1682,7 @@ struct RunMeta {
     task_timeout_secs: u64,
     budget_stop_usd: f64,
     counts: RunCounts,
+    cache_tokens: CacheTokenTotals,
 }
 
 #[derive(Debug, Serialize)]
@@ -1521,6 +1691,12 @@ struct RunCounts {
     passed: usize,
     passed_over_budget: usize,
     failed: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheTokenTotals {
+    cached_tokens: u64,
+    cache_write_tokens: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1545,6 +1721,13 @@ fn write_run_artifacts(
         .iter()
         .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
         .count();
+    let cache_tokens = CacheTokenTotals {
+        cached_tokens: results.iter().map(|r| r.scores.cost.cached_tokens).sum(),
+        cache_write_tokens: results
+            .iter()
+            .map(|r| r.scores.cost.cache_write_tokens)
+            .sum(),
+    };
     let meta = RunMeta {
         timestamp: Utc::now().to_rfc3339(),
         heddle_commit: git_short_sha().unwrap_or_else(|| "unknown".into()),
@@ -1563,6 +1746,7 @@ fn write_run_artifacts(
             passed_over_budget,
             failed: results.len() - passed,
         },
+        cache_tokens,
     };
 
     fs::write(
