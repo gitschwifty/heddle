@@ -71,9 +71,11 @@ impl ToolRegistry {
                 let available_str = available.join(", ");
                 return match suggestion {
                     Some(s) => format!(
-                        "Error: Unknown tool: {name}. Did you mean {s:?}? Available tools: {available_str}"
+                        "Error: Tool {name:?} is not enabled for this session. Did you mean {s:?}? Available tools: {available_str}"
                     ),
-                    None => format!("Error: Unknown tool: {name}. Available tools: {available_str}"),
+                    None => format!(
+                        "Error: Tool {name:?} is not enabled for this session. Available tools: {available_str}"
+                    ),
                 };
             }
         };

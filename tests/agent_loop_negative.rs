@@ -205,7 +205,7 @@ async fn unknown_tool_returns_error_to_model_and_loop_continues() {
         .expect("expected tool_end");
     if let AgentEvent::ToolEnd { result, .. } = tool_end {
         assert!(
-            result.contains("Error: Unknown tool: nonexistent_tool"),
+            result.contains("Error: Tool \"nonexistent_tool\" is not enabled for this session"),
             "got: {result}"
         );
     }

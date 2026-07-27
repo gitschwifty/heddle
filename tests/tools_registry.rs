@@ -84,7 +84,10 @@ async fn execute_by_name_with_json_args() {
 async fn execute_returns_error_for_unknown_tool() {
     let r = ToolRegistry::new();
     let result = r.execute("missing", "{}", ExecOptions::default()).await;
-    assert!(result.contains("Unknown tool: missing"), "got: {result}");
+    assert!(
+        result.contains("Tool \"missing\" is not enabled for this session"),
+        "got: {result}"
+    );
 }
 
 #[tokio::test]

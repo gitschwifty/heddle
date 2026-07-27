@@ -206,6 +206,50 @@ fn isolated_runtime_requires_state_root() {
 }
 
 #[test]
+fn runtime_placement_rejects_relative_state_root() {
+    let mut h = Headless::spawn(HashMap::new());
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.4.0",
+            "config": {
+                "model": "openrouter/auto", "system_prompt": "x", "tools": [],
+                "runtime": { "mode": "isolated", "state_root": "artifacts/state" }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let result = parse_line(&lines[0]);
+    assert_eq!(result["error"]["code"], "protocol_error");
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("runtime.state_root must be an absolute path"));
+}
+
+#[test]
+fn runtime_placement_rejects_relative_transcript_path() {
+    let mut h = Headless::spawn(HashMap::new());
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.4.0",
+            "config": {
+                "model": "openrouter/auto", "system_prompt": "x", "tools": [],
+                "runtime": { "transcript_path": "artifacts/worker.jsonl" }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let result = parse_line(&lines[0]);
+    assert_eq!(result["error"]["code"], "protocol_error");
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("runtime.transcript_path must be an absolute path"));
+}
+
+#[test]
 fn routing_metadata_is_reported_through_init_and_status() {
     let mut h = Headless::spawn(HashMap::new());
     h.send_line(
