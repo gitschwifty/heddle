@@ -33,6 +33,46 @@ cargo run --bin heddle-headless              # headless mode (reads JSONL on std
 
 The binaries auto-load `.env.local` then `.env` at startup via `dotenvy`. Put `OPENROUTER_API_KEY=...` in `.env.local` (gitignored) for local runs.
 
+## Evals and Benchmark Isolation
+
+The eval runner executes every task in a fresh temporary workspace copied from
+the fixture's `before/` directory. It bypasses normal session setup, so eval
+runs do not create or reuse the interactive session/history/memory state under
+`~/.heddle`. Preserve results explicitly with `--results-dir`; each directory
+contains per-task JSON, per-run JSONL transcripts under `transcripts/`,
+`summary.md`, `summary.json`, and `run_meta.json`. Eval transcripts preserve
+the model-facing system/user/assistant/tool-message sequence for qualitative
+grading, plus the model reported for each assistant turn. Result JSON retains
+the complete routed-model timeline and `summary.md` labels a run `mixed` with
+the distinct-model count and final model when the provider switched models.
+These are not resumable Heddle sessions.
+
+`run_meta.json` and `summary.md` also record the Heddle and eval-fixture Git
+short SHA plus each worktree's dirty state. A non-Git eval directory records
+an `unknown` eval revision and null dirty state.
+
+OpenRouter retries transient HTTP 429 responses up to three times. It honors
+`Retry-After` and OpenRouter rate-limit reset metadata when present, otherwise
+using exponential backoff with bounded jitter. Eval permits up to 90 seconds
+for an individual wait; REPL/headless clients use the shared 15-second cap.
+
+```bash
+cargo run --bin eval -- run --evals ./evals --results-dir ./artifacts/eval-baseline
+cargo run --bin eval -- run --evals ./evals --static-context-only \
+  --results-dir ./artifacts/eval-static
+```
+
+`--static-context-only` excludes prompts that inject cwd, date, git, or file
+tree context, making instruction-only comparisons reproducible. Cache prewarm
+currently targets pinned paid `anthropic/*` models; use a fixed results
+directory for each side of a before/after comparison.
+
+This is separate from headless worker isolation. Benchmark callers using
+`heddle-headless` should request `config.runtime.mode: "isolated"` with an
+explicit `state_root` and transcript path; see [Headless Mode](docs/headless.md).
+Do not use `HEDDLE_HOME` mutation or a normal interactive session as a benchmark
+isolation mechanism.
+
 ## Test
 
 ```bash

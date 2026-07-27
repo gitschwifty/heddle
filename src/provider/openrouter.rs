@@ -2,12 +2,13 @@
 //!
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
+use rand::Rng;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
 
@@ -19,6 +20,7 @@ use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition}
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_DELAY_MS: u64 = 1000;
+const DEFAULT_MAX_DELAY_MS: u64 = 15_000;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_REFERER: &str = "https://github.com/gitschwifty/heddle";
 const DEFAULT_TITLE: &str = "Heddle";
@@ -141,6 +143,16 @@ impl OpenRouterProvider {
                 }
             })
             .unwrap_or(DEFAULT_BASE_DELAY_MS);
+        let max_delay_ms = retry_cfg
+            .as_ref()
+            .map(|r| {
+                if r.max_delay_ms == 0 {
+                    DEFAULT_MAX_DELAY_MS
+                } else {
+                    r.max_delay_ms
+                }
+            })
+            .unwrap_or(DEFAULT_MAX_DELAY_MS);
 
         for attempt in 0..=max_retries {
             let resp = self
@@ -155,13 +167,10 @@ impl OpenRouterProvider {
                 return Ok(resp);
             }
 
-            let retry_after_ms = resp
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|s| s * 1000);
-            let delay = retry_after_ms.unwrap_or_else(|| base_delay_ms * (1u64 << attempt));
+            let headers = resp.headers().clone();
+            let body = resp.text().await.unwrap_or_default();
+            let exponential_delay_ms = base_delay_ms.saturating_mul(1u64 << attempt);
+            let delay = retry_delay_ms(&headers, &body, exponential_delay_ms, max_delay_ms);
             debug(
                 "provider",
                 &format!(
@@ -173,6 +182,61 @@ impl OpenRouterProvider {
         }
         Err(anyhow!("Retry loop exited unexpectedly"))
     }
+}
+
+fn retry_delay_ms(
+    headers: &HeaderMap,
+    body: &str,
+    exponential_delay_ms: u64,
+    max_delay_ms: u64,
+) -> u64 {
+    let requested_delay_ms = retry_after_ms(headers)
+        .or_else(|| rate_limit_reset_delay_ms(headers, body))
+        .unwrap_or(exponential_delay_ms);
+    let capped_delay_ms = requested_delay_ms.min(max_delay_ms);
+    if capped_delay_ms == 0 {
+        return 0;
+    }
+
+    // Spread callers within the configured cap to avoid a thundering herd at
+    // the rate-limit boundary.
+    let jitter_max_ms = (capped_delay_ms / 10).max(1);
+    let jitter_ms = rand::thread_rng().gen_range(0..=jitter_max_ms);
+    capped_delay_ms.saturating_add(jitter_ms).min(max_delay_ms)
+}
+
+fn retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("Retry-After")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1000))
+}
+
+fn rate_limit_reset_delay_ms(headers: &HeaderMap, body: &str) -> Option<u64> {
+    let reset = headers
+        .get("X-RateLimit-Reset")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| {
+            let body: Value = serde_json::from_str(body).ok()?;
+            let reset = body.pointer("/error/metadata/headers/X-RateLimit-Reset")?;
+            reset
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| reset.as_u64().map(|value| value.to_string()))
+        })?;
+    let epoch_ms = reset.parse::<u64>().ok()?;
+    let epoch_ms = if epoch_ms < 10_000_000_000 {
+        epoch_ms.saturating_mul(1000)
+    } else {
+        epoch_ms
+    };
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some(epoch_ms.saturating_sub(now_ms))
 }
 
 #[async_trait]
@@ -331,4 +395,37 @@ fn effective_attribution(attribution: Option<&AppAttribution>) -> EffectiveAttri
 #[doc(hidden)]
 pub fn empty_overrides() -> Value {
     json!({})
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_header_uses_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Retry-After", HeaderValue::from_static("12"));
+        assert_eq!(retry_after_ms(&headers), Some(12_000));
+    }
+
+    #[test]
+    fn reset_is_read_from_openrouter_error_metadata() {
+        let headers = HeaderMap::new();
+        let future_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+        let body = format!(
+            r#"{{"error":{{"metadata":{{"headers":{{"X-RateLimit-Reset":"{future_ms}"}}}}}}}}"#
+        );
+        let delay = rate_limit_reset_delay_ms(&headers, &body).unwrap();
+        assert!((59_000..=60_000).contains(&delay), "delay was {delay}");
+    }
+
+    #[test]
+    fn retry_delay_is_capped() {
+        let headers = HeaderMap::new();
+        assert_eq!(retry_delay_ms(&headers, "", 60_000, 0), 0);
+    }
 }

@@ -24,6 +24,9 @@ pub struct RetryConfig {
     pub max_retries: u32,
     /// Default 1000ms.
     pub base_delay_ms: u64,
+    /// Maximum delay for a single retry. Defaults to 15 seconds for normal
+    /// interactive/headless clients; batch callers can opt into a longer wait.
+    pub max_delay_ms: u64,
 }
 
 #[derive(Debug, Clone)]

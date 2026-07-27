@@ -8,7 +8,7 @@ use heddle::permissions::checker::PermissionChecker;
 use heddle::runtime::{
     HeddleRuntime, RuntimeEvent, RuntimePermissionResponse, TurnOptions, TurnStatus,
 };
-use heddle::session::jsonl::{load_session, CONTEXT_RESET_MARKER_TYPE};
+use heddle::session::jsonl::{load_session, CONTEXT_RESET_MARKER_TYPE, ROUTED_MODEL_MARKER_TYPE};
 use heddle::session::setup::{create_session, SessionOptions};
 use heddle::types::{
     AssistantMessage, CompletionTokenDetails, Message, PromptTokenDetails, SystemMessage,
@@ -128,6 +128,7 @@ async fn runtime_status_tracks_last_routed_model_from_stream() {
     })
     .await
     .expect("create_session");
+    let session_file = session.session_file.clone();
     session.provider = MockProvider::new().push_chunks(vec![
         routed_model_chunk("openai/gpt-oss-120b"),
         text_chunk("Hello"),
@@ -157,6 +158,13 @@ async fn runtime_status_tracks_last_routed_model_from_stream() {
     assert_eq!(
         status.last_routed_model.as_deref(),
         Some("openai/gpt-oss-120b")
+    );
+    let transcript = std::fs::read_to_string(session_file).unwrap();
+    let marker = format!(r#""type":"{ROUTED_MODEL_MARKER_TYPE}""#);
+    assert!(transcript.contains(&marker));
+    assert!(
+        transcript.find(&marker).unwrap() < transcript.find(r#""content":"Hello""#).unwrap(),
+        "routed-model marker should precede its assistant message: {transcript}"
     );
 }
 

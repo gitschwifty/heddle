@@ -1,6 +1,7 @@
 use heddle::session::jsonl::{
-    append_context_marker, append_message, load_session, load_session_meta, write_session_meta,
-    SessionMeta, CONTEXT_RESET_MARKER_TYPE,
+    append_context_marker, append_message, append_routed_model_marker, load_session,
+    load_session_meta, write_session_meta, SessionMeta, CONTEXT_RESET_MARKER_TYPE,
+    ROUTED_MODEL_MARKER_TYPE,
 };
 use heddle::types::{
     AssistantMessage, FunctionCall, Message, ToolCall, ToolCallKind, ToolMessage, UserMessage,
@@ -76,6 +77,17 @@ fn append_includes_iso_timestamp() {
     let v: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
     let ts = v["timestamp"].as_str().unwrap();
     chrono::DateTime::parse_from_rfc3339(ts).expect("valid ISO timestamp");
+}
+
+#[test]
+fn routed_model_marker_is_jsonl_metadata() {
+    let dir = tmp();
+    let path = dir.path().join("routed-model.jsonl");
+    append_routed_model_marker(&path, "openai/gpt-oss-120b").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
+    assert_eq!(value["type"], ROUTED_MODEL_MARKER_TYPE);
+    assert_eq!(value["model"], "openai/gpt-oss-120b");
 }
 
 #[test]

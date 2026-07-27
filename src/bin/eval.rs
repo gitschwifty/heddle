@@ -1,11 +1,11 @@
 //! Heddle eval harness runner.
 //!
 //! Loads task + prompt fixtures from an eval directory (default
-//! `evals-staging/` next to the worktree, or `--evals <path>`), runs each
+//! `evals/` in the repository, or `--evals <path>`), runs each
 //! (task, prompt) pair against the agent loop, and scores outcome +
 //! efficiency + cost.
 //!
-//! See `evals-staging/README.md` for the prompt/task format.
+//! See `evals/README.md` for the prompt/task format.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,7 +20,7 @@ use futures::StreamExt;
 use heddle::agent::loop_::{run_agent_loop, AgentLoopOptions};
 use heddle::agent::types::AgentEvent;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::{Provider, ProviderConfig};
+use heddle::provider::types::{Provider, ProviderConfig, RetryConfig};
 use heddle::tools::bash::create_bash_tool;
 use heddle::tools::edit::create_edit_tool;
 use heddle::tools::glob::create_glob_tool;
@@ -49,12 +49,12 @@ struct Cli {
 enum Cmd {
     /// List tasks and prompts in the eval directory.
     List {
-        #[arg(long, default_value = "evals-staging")]
+        #[arg(long, default_value = "evals")]
         evals: PathBuf,
     },
     /// Run one or more (task, prompt) pairs.
     Run {
-        #[arg(long, default_value = "evals-staging")]
+        #[arg(long, default_value = "evals")]
         evals: PathBuf,
         /// Comma-separated prompt ids, or "all".
         #[arg(long, default_value = "all")]
@@ -102,6 +102,10 @@ enum Cmd {
         /// and an anthropic/* model; provider-default TTL is otherwise used.
         #[arg(long, default_value_t = false)]
         cache_ttl_1h: bool,
+        /// Run only prompts without cwd, date, git, or file-tree context.
+        /// Explicitly selected dynamic prompts fail instead of being skipped.
+        #[arg(long, default_value_t = false)]
+        static_context_only: bool,
     },
 }
 
@@ -155,6 +159,25 @@ struct ContextConfig {
     git: Option<GitConfig>,
     #[serde(default)]
     file_tree: Option<FileTreeConfig>,
+}
+
+impl ContextConfig {
+    fn dynamic_features(&self) -> Vec<&'static str> {
+        let mut features = Vec::new();
+        if self.cwd {
+            features.push("cwd");
+        }
+        if self.date {
+            features.push("date");
+        }
+        if self.git.is_some() {
+            features.push("git");
+        }
+        if self.file_tree.is_some() {
+            features.push("file_tree");
+        }
+        features
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -259,6 +282,10 @@ struct TaskResult {
     /// Concrete model reported by the provider for routed aliases, when any.
     #[serde(skip_serializing_if = "Option::is_none")]
     routed_model: Option<String>,
+    /// Provider-reported model for each assistant response. This preserves
+    /// switches behind routed aliases such as `openrouter/free`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    routed_models: Vec<RoutedModelObservation>,
     /// 1-indexed run number when --runs N. 0 if single-run.
     #[serde(default)]
     run_index: u32,
@@ -272,6 +299,10 @@ struct TaskResult {
     /// `--record-all-text` to include it for passing runs too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     assistant_messages: Vec<AssistantTrace>,
+    /// Complete model-facing conversation retained only in the per-run
+    /// transcript artifact, not duplicated in the result JSON.
+    #[serde(skip)]
+    transcript: Vec<Message>,
 }
 
 #[derive(Debug, Serialize)]
@@ -280,6 +311,12 @@ struct AssistantTrace {
     #[serde(skip_serializing_if = "Option::is_none")]
     finish_reason: Option<String>,
     text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RoutedModelObservation {
+    assistant_turn: u32,
+    model: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -693,12 +730,14 @@ struct CachePrewarmRun {
     prewarms: Vec<PrewarmResult>,
 }
 
-fn validate_cache_model(model: &str, ttl_1h: bool) -> Result<()> {
+fn validate_cache_model(model: &str, _ttl_1h: bool) -> Result<()> {
     if model == "openrouter/auto" || model == "openrouter/free" || model.ends_with(":free") {
         bail!("--cache-prewarm requires a pinned paid model; {model:?} is routed or free");
     }
-    if ttl_1h && !model.starts_with("anthropic/") {
-        bail!("--cache-ttl-1h is only supported for anthropic/* models");
+    if !model.starts_with("anthropic/") {
+        bail!(
+            "--cache-prewarm currently supports pinned anthropic/* models; {model:?} uses a different OpenRouter caching path"
+        );
     }
     Ok(())
 }
@@ -744,7 +783,13 @@ fn make_provider(
         base_url: None,
         request_params: Some(serde_json::Value::Object(params)),
         app_attribution: None,
-        retry: None,
+        retry: Some(RetryConfig {
+            max_retries: 3,
+            base_delay_ms: 1_000,
+            // Batch runs can wait through a free-router minute window; normal
+            // REPL/headless clients retain the shorter provider default.
+            max_delay_ms: 90_000,
+        }),
     })
 }
 
@@ -873,6 +918,8 @@ async fn run_one(
     let mut cache_write_tokens = 0u64;
     let mut usd = 0.0f64;
     let mut routed_model: Option<String> = None;
+    let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
+    let mut pending_routed_model: Option<String> = None;
     let mut error: Option<String> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
     let mut finish_reasons: Vec<String> = Vec::new();
@@ -888,76 +935,88 @@ async fn run_one(
         max_iterations: Some(effective_max_turns),
         ..AgentLoopOptions::default()
     };
-    let stream = run_agent_loop(provider, registry, &mut messages, opts);
-    futures::pin_mut!(stream);
-    loop {
-        let remaining = Duration::from_secs(effective_timeout_secs).saturating_sub(start.elapsed());
-        let event = match timeout(remaining, stream.next()).await {
-            Ok(Some(event)) => event,
-            Ok(None) => break,
-            Err(_) => {
-                error = Some(format!("Task timed out after {effective_timeout_secs}s"));
-                break;
-            }
-        };
-
-        match event {
-            AgentEvent::ToolStart { name, .. } => {
-                tool_calls += 1;
-                println!("      -> {name}");
-                std::io::Write::flush(&mut std::io::stdout()).ok();
-                tool_sequence.push(name);
-            }
-            AgentEvent::AssistantMessage {
-                message,
-                finish_reason,
-            } => {
-                turns += 1;
-                if let Some(reason) = &finish_reason {
-                    finish_reasons.push(reason.clone());
-                }
-                if let Some(text) = message.content {
-                    if !text.is_empty() {
-                        assistant_messages.push(AssistantTrace {
-                            turn: turns,
-                            finish_reason,
-                            text,
-                        });
-                    }
-                }
-            }
-            AgentEvent::Usage { usage, .. } => {
-                tokens_in += usage.prompt_tokens;
-                tokens_out += usage.completion_tokens;
-                cached_tokens += usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|details| details.cached_tokens)
-                    .unwrap_or(0);
-                cache_write_tokens += usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|details| details.cache_write_tokens)
-                    .unwrap_or(0);
-                usd += usage.cost.unwrap_or(0.0);
-                if tokens_in + tokens_out > effective_max_tokens {
-                    // Cost-control kill switch, NOT a correctness failure.
-                    // Break so we don't burn more tokens, but still attempt
-                    // the dir diff below — the agent may have done the work
-                    // and just emitted verbose tail-text after.
-                    budget_exceeded = true;
+    {
+        let stream = run_agent_loop(provider, registry, &mut messages, opts);
+        futures::pin_mut!(stream);
+        loop {
+            let remaining =
+                Duration::from_secs(effective_timeout_secs).saturating_sub(start.elapsed());
+            let event = match timeout(remaining, stream.next()).await {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(_) => {
+                    error = Some(format!("Task timed out after {effective_timeout_secs}s"));
                     break;
                 }
-            }
-            AgentEvent::RoutedModel { model } => routed_model = Some(model),
-            AgentEvent::Error { message } => {
-                if message.contains("; retrying once") {
-                    continue;
+            };
+
+            match event {
+                AgentEvent::ToolStart { name, .. } => {
+                    tool_calls += 1;
+                    println!("      -> {name}");
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    tool_sequence.push(name);
                 }
-                error = Some(message);
-                break;
+                AgentEvent::AssistantMessage {
+                    message,
+                    finish_reason,
+                } => {
+                    turns += 1;
+                    if let Some(model) = pending_routed_model.take() {
+                        routed_models.push(RoutedModelObservation {
+                            assistant_turn: turns,
+                            model,
+                        });
+                    }
+                    if let Some(reason) = &finish_reason {
+                        finish_reasons.push(reason.clone());
+                    }
+                    if let Some(text) = message.content {
+                        if !text.is_empty() {
+                            assistant_messages.push(AssistantTrace {
+                                turn: turns,
+                                finish_reason,
+                                text,
+                            });
+                        }
+                    }
+                }
+                AgentEvent::Usage { usage, .. } => {
+                    tokens_in += usage.prompt_tokens;
+                    tokens_out += usage.completion_tokens;
+                    cached_tokens += usage
+                        .prompt_tokens_details
+                        .as_ref()
+                        .and_then(|details| details.cached_tokens)
+                        .unwrap_or(0);
+                    cache_write_tokens += usage
+                        .prompt_tokens_details
+                        .as_ref()
+                        .and_then(|details| details.cache_write_tokens)
+                        .unwrap_or(0);
+                    usd += usage.cost.unwrap_or(0.0);
+                    if tokens_in + tokens_out > effective_max_tokens {
+                        // Cost-control kill switch, NOT a correctness failure.
+                        // Break so we don't burn more tokens, but still attempt
+                        // the dir diff below — the agent may have done the work
+                        // and just emitted verbose tail-text after.
+                        budget_exceeded = true;
+                        break;
+                    }
+                }
+                AgentEvent::RoutedModel { model } => {
+                    pending_routed_model = Some(model.clone());
+                    routed_model = Some(model);
+                }
+                AgentEvent::Error { message } => {
+                    if message.contains("; retrying once") {
+                        continue;
+                    }
+                    error = Some(message);
+                    break;
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     if let Some(prev) = prev_cwd {
@@ -984,16 +1043,18 @@ async fn run_one(
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
         model: model.to_string(),
-        heddle_commit: git_short_sha().unwrap_or_else(|| "unknown".into()),
+        heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars,
         routed_model,
+        routed_models,
         run_index: 0,
         tool_sequence,
         finish_reasons,
         assistant_messages,
+        transcript: messages,
         scores: Scores {
             outcome: OutcomeScore {
                 passed,
@@ -1028,16 +1089,18 @@ fn error_result(
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
         model: model.to_string(),
-        heddle_commit: git_short_sha().unwrap_or_else(|| "unknown".into()),
+        heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
         routed_model: None,
+        routed_models: Vec::new(),
         run_index: 0,
         tool_sequence: Vec::new(),
         finish_reasons: Vec::new(),
         assistant_messages: Vec::new(),
+        transcript: Vec::new(),
         scores: Scores {
             outcome: OutcomeScore {
                 passed: false,
@@ -1061,18 +1124,54 @@ fn error_result(
     }
 }
 
-fn git_short_sha() -> Option<String> {
-    let out = std::process::Command::new("git")
+#[derive(Debug, Clone)]
+struct GitInfo {
+    commit: String,
+    dirty: Option<bool>,
+}
+
+fn git_info(dir: &Path) -> GitInfo {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
         .args(["rev-parse", "--short", "HEAD"])
+        .output();
+    let commit = match output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => "unknown".into(),
+    };
+    let dirty = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain"])
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| !output.stdout.is_empty());
+    GitInfo { commit, dirty }
+}
+
+fn heddle_git_info() -> GitInfo {
+    git_info(Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
 // ─── Output ──────────────────────────────────────────────────────────────
+
+fn outcome_label(result: &TaskResult) -> &'static str {
+    if result.scores.error.is_some() {
+        return "ERROR";
+    }
+    match (
+        result.scores.outcome.passed,
+        result.scores.efficiency.tokens_in_budget,
+    ) {
+        (true, true) => "pass",
+        (true, false) => "pass*",
+        (false, _) => "FAIL",
+    }
+}
 
 fn format_summary(results: &[TaskResult]) -> String {
     let mut out = String::new();
@@ -1095,22 +1194,14 @@ fn format_summary(results: &[TaskResult]) -> String {
     let mut rows: Vec<[String; 11]> = Vec::with_capacity(results.len() + 1);
     rows.push(header.map(String::from));
     for r in results {
-        let outcome = match (
-            r.scores.outcome.passed,
-            r.scores.efficiency.tokens_in_budget,
-        ) {
-            (true, true) => "pass",
-            (true, false) => "pass*",
-            (false, _) => "FAIL",
-        };
         let err = r.scores.error.as_deref().unwrap_or("");
         let err: String = err.chars().take(50).collect();
         rows.push([
             r.task_id.clone(),
             r.prompt_id.clone(),
             r.model.clone(),
-            r.routed_model.clone().unwrap_or_else(|| "-".into()),
-            outcome.to_string(),
+            routed_model_summary(r),
+            outcome_label(r).to_string(),
             r.scores.efficiency.tool_calls.to_string(),
             r.scores.efficiency.turns.to_string(),
             format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
@@ -1151,10 +1242,14 @@ fn format_summary(results: &[TaskResult]) -> String {
         .iter()
         .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
         .count();
-    let fail = results.len() - pass;
+    let errors = results
+        .iter()
+        .filter(|r| !r.scores.outcome.passed && r.scores.error.is_some())
+        .count();
+    let fail = results.len() - pass - errors;
     out.push('\n');
     out.push_str(&format!(
-        "{pass} passed ({over_budget} over budget), {fail} failed of {} total\n",
+        "{pass} passed ({over_budget} over budget), {fail} failed, {errors} errored of {} total\n",
         results.len()
     ));
     if over_budget > 0 {
@@ -1175,6 +1270,24 @@ fn format_summary(results: &[TaskResult]) -> String {
     ));
     out.push('\n');
     out
+}
+
+fn routed_model_summary(r: &TaskResult) -> String {
+    let mut models: Vec<&str> = Vec::new();
+    for observation in &r.routed_models {
+        if models.last().copied() != Some(observation.model.as_str()) {
+            models.push(&observation.model);
+        }
+    }
+    match models.as_slice() {
+        [] => r.routed_model.clone().unwrap_or_else(|| "-".into()),
+        [model] => (*model).to_string(),
+        models => format!(
+            "mixed ({} models; final {})",
+            models.len(),
+            models.last().expect("non-empty routed model list")
+        ),
+    }
 }
 
 /// Aggregate per (task, prompt) over multiple runs. Reports pass rate
@@ -1212,7 +1325,15 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
     for ((task_id, prompt_id), runs_of) in &groups {
         let n = runs_of.len() as f64;
         let passed = runs_of.iter().filter(|r| r.scores.outcome.passed).count();
-        let pass_rate = format!("{}/{}", passed, runs_of.len());
+        let errors = runs_of
+            .iter()
+            .filter(|r| !r.scores.outcome.passed && r.scores.error.is_some())
+            .count();
+        let pass_rate = if errors == 0 {
+            format!("{}/{}", passed, runs_of.len())
+        } else {
+            format!("{passed}/{} pass; {errors} ERROR", runs_of.len())
+        };
         let mean_tools = runs_of
             .iter()
             .map(|r| r.scores.efficiency.tool_calls as f64)
@@ -1335,6 +1456,49 @@ fn write_result(results_dir: &Path, r: &TaskResult) -> Result<()> {
     Ok(())
 }
 
+fn result_artifact_stem(r: &TaskResult) -> String {
+    if r.run_index > 0 {
+        format!("{}__{}__run{}", r.task_id, r.prompt_id, r.run_index)
+    } else {
+        format!("{}__{}", r.task_id, r.prompt_id)
+    }
+}
+
+fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
+    let transcript_dir = results_dir.join("transcripts");
+    fs::create_dir_all(&transcript_dir)?;
+
+    let header = json!({
+        "type": "eval_transcript",
+        "task_id": r.task_id,
+        "prompt_id": r.prompt_id,
+        "run_index": r.run_index,
+        "model": r.model,
+        "routed_model": r.routed_model,
+        "routed_models": r.routed_models,
+        "timestamp": r.timestamp,
+        "heddle_commit": r.heddle_commit,
+        "evals_version": r.evals_version,
+    });
+    let mut lines = vec![serde_json::to_string(&header)?];
+    lines.extend(
+        r.transcript
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    fs::write(
+        transcript_dir.join(format!("{}.jsonl", result_artifact_stem(r))),
+        format!("{}\n", lines.join("\n")),
+    )?;
+    Ok(())
+}
+
+fn write_result_artifacts(results_dir: &Path, r: &TaskResult) -> Result<()> {
+    write_result(results_dir, r)?;
+    write_transcript(results_dir, r)
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -1361,6 +1525,7 @@ async fn main() -> Result<()> {
             record_all_text,
             cache_prewarm,
             cache_ttl_1h,
+            static_context_only,
         } => {
             cmd_run(
                 &evals,
@@ -1377,6 +1542,7 @@ async fn main() -> Result<()> {
                 record_all_text,
                 cache_prewarm,
                 cache_ttl_1h,
+                static_context_only,
             )
             .await
         }
@@ -1434,6 +1600,63 @@ where
     Ok(out)
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct StaticContextExclusion {
+    prompt_id: String,
+    dynamic_features: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StaticContextSelection {
+    enabled: bool,
+    excluded_prompts: Vec<StaticContextExclusion>,
+}
+
+fn apply_static_context_selection(
+    prompts: &mut Vec<&Prompt>,
+    prompts_arg: &str,
+    enabled: bool,
+) -> Result<StaticContextSelection> {
+    if !enabled {
+        return Ok(StaticContextSelection {
+            enabled: false,
+            excluded_prompts: Vec::new(),
+        });
+    }
+
+    let dynamic: Vec<StaticContextExclusion> = prompts
+        .iter()
+        .filter_map(|prompt| {
+            let dynamic_features = prompt.front.context.dynamic_features();
+            (!dynamic_features.is_empty()).then(|| StaticContextExclusion {
+                prompt_id: prompt.id.clone(),
+                dynamic_features: dynamic_features.into_iter().map(str::to_string).collect(),
+            })
+        })
+        .collect();
+
+    if prompts_arg != "all" && !dynamic.is_empty() {
+        let details = dynamic
+            .iter()
+            .map(|excluded| {
+                format!(
+                    "{} ({})",
+                    excluded.prompt_id,
+                    excluded.dynamic_features.join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("--static-context-only excludes explicitly selected dynamic prompt(s): {details}");
+    }
+
+    prompts.retain(|prompt| prompt.front.context.dynamic_features().is_empty());
+    Ok(StaticContextSelection {
+        enabled: true,
+        excluded_prompts: dynamic,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1448,6 +1671,7 @@ mod tests {
             prompt_id: "prompt-1".into(),
             model: "openrouter/auto".into(),
             routed_model: routed_model.map(str::to_string),
+            routed_models: Vec::new(),
             heddle_commit: "abc123".into(),
             evals_version: "0.1.0".into(),
             timestamp: "2026-07-22T00:00:00Z".into(),
@@ -1477,6 +1701,7 @@ mod tests {
             tool_sequence: Vec::new(),
             finish_reasons: Vec::new(),
             assistant_messages: Vec::new(),
+            transcript: Vec::new(),
         }
     }
 
@@ -1487,6 +1712,65 @@ mod tests {
         assert_eq!(value["routed_model"], "anthropic/claude-sonnet-4");
         assert_eq!(value["scores"]["cost"]["cached_tokens"], 75);
         assert_eq!(value["scores"]["cost"]["cache_write_tokens"], 25);
+    }
+
+    #[test]
+    fn summary_marks_runs_that_switched_routed_models() {
+        let mut result = result(0, 0, Some("openai/gpt-oss-120b"));
+        result.routed_models = vec![
+            RoutedModelObservation {
+                assistant_turn: 1,
+                model: "openai/gpt-oss-120b".into(),
+            },
+            RoutedModelObservation {
+                assistant_turn: 2,
+                model: "qwen/qwen3-coder".into(),
+            },
+        ];
+
+        assert!(format_summary(&[result]).contains("mixed (2 models; final qwen/qwen3-coder)"));
+    }
+
+    #[test]
+    fn summaries_label_execution_errors_separately_from_scored_failures() {
+        let mut result = result(0, 0, None);
+        result.scores.outcome.passed = false;
+        result.scores.error = Some("OpenRouter API error (429 Too Many Requests)".into());
+
+        let summary = format_summary(std::slice::from_ref(&result));
+        assert!(summary.contains("ERROR"));
+        assert!(summary.contains("0 failed, 1 errored"));
+        let aggregated = format_aggregated_summary(std::slice::from_ref(&result), 1);
+        assert!(aggregated.contains("0/1 pass; 1 ERROR"));
+    }
+
+    #[test]
+    fn transcript_artifact_preserves_model_facing_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut result = result(0, 0, None);
+        result.task_id = "task".into();
+        result.prompt_id = "prompt".into();
+        result.transcript = vec![
+            Message::System(SystemMessage {
+                content: "system instructions".into(),
+            }),
+            Message::User(UserMessage {
+                content: "complete the task".into(),
+            }),
+        ];
+
+        write_transcript(dir.path(), &result).unwrap();
+
+        let lines: Vec<serde_json::Value> =
+            std::fs::read_to_string(dir.path().join("transcripts/task__prompt.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        assert_eq!(lines[0]["type"], "eval_transcript");
+        assert_eq!(lines[0]["task_id"], "task");
+        assert_eq!(lines[1]["role"], "system");
+        assert_eq!(lines[2]["content"], "complete the task");
     }
 
     #[test]
@@ -1526,6 +1810,7 @@ mod tests {
         };
         write_run_artifacts(
             dir.path(),
+            dir.path(),
             "openrouter/auto",
             &["prompt-1".into()],
             &["task-1".into()],
@@ -1538,6 +1823,13 @@ mod tests {
             "summary",
             "",
             Some(&prewarm),
+            &StaticContextSelection {
+                enabled: true,
+                excluded_prompts: vec![StaticContextExclusion {
+                    prompt_id: "dynamic".into(),
+                    dynamic_features: vec!["cwd".into(), "file_tree".into()],
+                }],
+            },
         )
         .unwrap();
 
@@ -1547,6 +1839,10 @@ mod tests {
         .unwrap();
         assert_eq!(meta["cache_tokens"]["cached_tokens"], 80);
         assert_eq!(meta["cache_tokens"]["cache_write_tokens"], 35);
+        assert!(meta["heddle_commit"].is_string());
+        assert!(meta["heddle_dirty"].is_boolean());
+        assert_eq!(meta["evals_commit"], "unknown");
+        assert!(meta["evals_dirty"].is_null());
         assert_eq!(
             meta["cache_prewarm"]["session_id"],
             "heddle-eval-cache-test"
@@ -1554,6 +1850,11 @@ mod tests {
         assert_eq!(
             meta["cache_prewarm"]["prewarms"][0]["cache_write_tokens"],
             50
+        );
+        assert_eq!(meta["static_context_selection"]["enabled"], true);
+        assert_eq!(
+            meta["static_context_selection"]["excluded_prompts"][0]["dynamic_features"],
+            json!(["cwd", "file_tree"])
         );
     }
 
@@ -1589,8 +1890,64 @@ mod tests {
         assert!(validate_cache_model("openrouter/free", false).is_err());
         assert!(validate_cache_model("openrouter/auto", false).is_err());
         assert!(validate_cache_model("example/model:free", false).is_err());
-        assert!(validate_cache_model("openai/gpt-5", true).is_err());
+        assert!(validate_cache_model("openai/gpt-5", false).is_err());
         assert!(validate_cache_model("anthropic/claude-sonnet-4", true).is_ok());
+    }
+
+    #[test]
+    fn static_context_only_excludes_dynamic_prompts_from_matrix_selection() {
+        let static_prompt = Prompt {
+            id: "static".into(),
+            front: PromptFrontMatter::default(),
+            body: "instructions".into(),
+        };
+        let dynamic_prompt = Prompt {
+            id: "dynamic".into(),
+            front: PromptFrontMatter {
+                context: ContextConfig {
+                    cwd: true,
+                    date: true,
+                    ..ContextConfig::default()
+                },
+                ..PromptFrontMatter::default()
+            },
+            body: "instructions".into(),
+        };
+        let mut selected = vec![&static_prompt, &dynamic_prompt];
+
+        let selection = apply_static_context_selection(&mut selected, "all", true).unwrap();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "static");
+        assert_eq!(selection.excluded_prompts.len(), 1);
+        assert_eq!(selection.excluded_prompts[0].prompt_id, "dynamic");
+        assert_eq!(
+            selection.excluded_prompts[0].dynamic_features,
+            vec!["cwd".to_string(), "date".to_string()]
+        );
+    }
+
+    #[test]
+    fn static_context_only_rejects_explicit_dynamic_prompt_selection() {
+        let dynamic_prompt = Prompt {
+            id: "dynamic".into(),
+            front: PromptFrontMatter {
+                context: ContextConfig {
+                    git: Some(GitConfig {
+                        branch: true,
+                        status: false,
+                    }),
+                    ..ContextConfig::default()
+                },
+                ..PromptFrontMatter::default()
+            },
+            body: "instructions".into(),
+        };
+        let mut selected = vec![&dynamic_prompt];
+
+        let error = apply_static_context_selection(&mut selected, "dynamic", true).unwrap_err();
+
+        assert!(error.to_string().contains("dynamic (git)"));
     }
 }
 
@@ -1610,6 +1967,7 @@ async fn cmd_run(
     record_all_text: bool,
     cache_prewarm: bool,
     cache_ttl_1h: bool,
+    static_context_only: bool,
 ) -> Result<()> {
     let manifest = load_manifest(evals)?;
     let model = model_flag
@@ -1638,6 +1996,22 @@ async fn cmd_run(
         let excluded = before - chosen_prompts.len();
         if excluded > 0 {
             println!("(excluded {excluded} prompt(s) marked matrix_exclude)");
+        }
+    }
+
+    let static_context =
+        apply_static_context_selection(&mut chosen_prompts, prompts, static_context_only)?;
+    if !static_context.excluded_prompts.is_empty() {
+        println!(
+            "(excluded {} prompt(s) with dynamic context)",
+            static_context.excluded_prompts.len()
+        );
+        for excluded in &static_context.excluded_prompts {
+            println!(
+                "  - {} ({})",
+                excluded.prompt_id,
+                excluded.dynamic_features.join(", ")
+            );
         }
     }
 
@@ -1761,14 +2135,7 @@ async fn cmd_run(
             task.spec.id, prompt.id
         );
         let r = run_one(task, prompt, &model, &api_key, &run_options).await;
-        let outcome = match (
-            r.scores.outcome.passed,
-            r.scores.efficiency.tokens_in_budget,
-        ) {
-            (true, true) => "pass",
-            (true, false) => "pass*",
-            (false, _) => "FAIL",
-        };
+        let outcome = outcome_label(&r);
         println!(
             "      {outcome} (tools={}, turns={}, tokens={}/{}, usd=${:.6}, {}ms)",
             r.scores.efficiency.tool_calls,
@@ -1819,7 +2186,7 @@ async fn cmd_run(
     }
 
     for r in &results {
-        write_result(&results_dir, r)?;
+        write_result_artifacts(&results_dir, r)?;
     }
 
     if budget_stopped {
@@ -1849,14 +2216,7 @@ async fn cmd_run(
                 if runs > 1 {
                     r.run_index = run_n;
                 }
-                let outcome = match (
-                    r.scores.outcome.passed,
-                    r.scores.efficiency.tokens_in_budget,
-                ) {
-                    (true, true) => "pass",
-                    (true, false) => "pass*",
-                    (false, _) => "FAIL",
-                };
+                let outcome = outcome_label(&r);
                 println!(
                     "      {outcome} (tools={}, turns={}, tokens={}/{}, usd=${:.6}, {}ms)",
                     r.scores.efficiency.tool_calls,
@@ -1866,7 +2226,7 @@ async fn cmd_run(
                     r.scores.cost.usd,
                     r.duration_ms,
                 );
-                write_result(&results_dir, &r)?;
+                write_result_artifacts(&results_dir, &r)?;
                 cumulative_usd += r.scores.cost.usd;
                 if cumulative_usd > budget_stop_usd {
                     budget_stopped = true;
@@ -1895,6 +2255,7 @@ async fn cmd_run(
 
     write_run_artifacts(
         &results_dir,
+        evals,
         &model,
         &chosen_prompts
             .iter()
@@ -1913,6 +2274,7 @@ async fn cmd_run(
         &summary,
         &failures,
         cache_prewarm_run.as_ref(),
+        &static_context,
     )?;
     println!(
         "Wrote summary.md, summary.json, run_meta.json -> {}",
@@ -1925,6 +2287,9 @@ async fn cmd_run(
 struct RunMeta {
     timestamp: String,
     heddle_commit: String,
+    heddle_dirty: Option<bool>,
+    evals_commit: String,
+    evals_dirty: Option<bool>,
     evals_version: String,
     model: String,
     prompts: Vec<String>,
@@ -1938,6 +2303,7 @@ struct RunMeta {
     cache_tokens: CacheTokenTotals,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_prewarm: Option<CachePrewarmRun>,
+    static_context_selection: StaticContextSelection,
 }
 
 #[derive(Debug, Serialize)]
@@ -1946,6 +2312,7 @@ struct RunCounts {
     passed: usize,
     passed_over_budget: usize,
     failed: usize,
+    errored: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1954,9 +2321,18 @@ struct CacheTokenTotals {
     cache_write_tokens: u64,
 }
 
+fn format_dirty(dirty: Option<bool>) -> &'static str {
+    match dirty {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_run_artifacts(
     results_dir: &Path,
+    evals_dir: &Path,
     model: &str,
     prompts: &[String],
     tasks: &[String],
@@ -1969,6 +2345,7 @@ fn write_run_artifacts(
     summary_md: &str,
     failures_md: &str,
     cache_prewarm: Option<&CachePrewarmRun>,
+    static_context_selection: &StaticContextSelection,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
 
@@ -1977,6 +2354,10 @@ fn write_run_artifacts(
         .iter()
         .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
         .count();
+    let errored = results
+        .iter()
+        .filter(|r| !r.scores.outcome.passed && r.scores.error.is_some())
+        .count();
     let cache_tokens = CacheTokenTotals {
         cached_tokens: results.iter().map(|r| r.scores.cost.cached_tokens).sum(),
         cache_write_tokens: results
@@ -1984,9 +2365,14 @@ fn write_run_artifacts(
             .map(|r| r.scores.cost.cache_write_tokens)
             .sum(),
     };
+    let heddle_git = heddle_git_info();
+    let evals_git = git_info(evals_dir);
     let meta = RunMeta {
         timestamp: Utc::now().to_rfc3339(),
-        heddle_commit: git_short_sha().unwrap_or_else(|| "unknown".into()),
+        heddle_commit: heddle_git.commit,
+        heddle_dirty: heddle_git.dirty,
+        evals_commit: evals_git.commit,
+        evals_dirty: evals_git.dirty,
         evals_version: "0.1.0".into(),
         model: model.to_string(),
         prompts: prompts.to_vec(),
@@ -2000,10 +2386,12 @@ fn write_run_artifacts(
             total: results.len(),
             passed,
             passed_over_budget,
-            failed: results.len() - passed,
+            failed: results.len() - passed - errored,
+            errored,
         },
         cache_tokens,
         cache_prewarm: cache_prewarm.cloned(),
+        static_context_selection: static_context_selection.clone(),
     };
 
     fs::write(
@@ -2019,7 +2407,16 @@ fn write_run_artifacts(
     let mut md = String::new();
     md.push_str(&format!("# Eval run — {}\n\n", meta.timestamp));
     md.push_str(&format!("- model: `{}`\n", meta.model));
-    md.push_str(&format!("- heddle: `{}`\n", meta.heddle_commit));
+    md.push_str(&format!(
+        "- heddle: `{}` (dirty: `{}`)\n",
+        meta.heddle_commit,
+        format_dirty(meta.heddle_dirty)
+    ));
+    md.push_str(&format!(
+        "- evals: `{}` (dirty: `{}`)\n",
+        meta.evals_commit,
+        format_dirty(meta.evals_dirty)
+    ));
     md.push_str(&format!("- evals_version: `{}`\n", meta.evals_version));
     md.push_str(&format!("- prompts: {}\n", meta.prompts.join(", ")));
     md.push_str(&format!("- tasks: {}\n", meta.tasks.join(", ")));
@@ -2042,6 +2439,26 @@ fn write_run_artifacts(
             cache.prewarms.len()
         ));
     }
+    md.push_str(&format!(
+        "- static_context_only: `{}`; excluded_prompts: {}\n",
+        meta.static_context_selection.enabled,
+        if meta.static_context_selection.excluded_prompts.is_empty() {
+            "none".to_string()
+        } else {
+            meta.static_context_selection
+                .excluded_prompts
+                .iter()
+                .map(|excluded| {
+                    format!(
+                        "{} ({})",
+                        excluded.prompt_id,
+                        excluded.dynamic_features.join(", ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ));
     md.push_str(summary_md);
     md.push_str(failures_md);
     fs::write(results_dir.join("summary.md"), md)?;

@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::types::Message;
 
 pub const CONTEXT_RESET_MARKER_TYPE: &str = "context_reset";
+pub const ROUTED_MODEL_MARKER_TYPE: &str = "routed_model";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -57,6 +58,20 @@ pub fn append_message(path: &Path, message: &Message) -> Result<()> {
 
 pub fn append_context_marker(path: &Path, marker: &Value) -> Result<()> {
     append_line(path, marker)
+}
+
+/// Records the provider-reported model immediately before its assistant reply.
+/// This is transcript metadata, not a model message, so it is ignored when a
+/// session is resumed and never sent back to the provider.
+pub fn append_routed_model_marker(path: &Path, model: &str) -> Result<()> {
+    append_context_marker(
+        path,
+        &serde_json::json!({
+            "type": ROUTED_MODEL_MARKER_TYPE,
+            "model": model,
+            "timestamp": Utc::now().to_rfc3339(),
+        }),
+    )
 }
 
 pub fn load_session(path: &Path) -> Vec<Message> {

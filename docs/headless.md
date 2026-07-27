@@ -121,6 +121,10 @@ the default mode when only the transcript destination should change.
 The runtime policy is per init request. Heddle does not mutate process-wide
 environment variables such as `HEDDLE_HOME` to implement it.
 
+The eval runner uses fresh temporary task workspaces and writes explicit result
+artifacts, but it is not a substitute for this runtime policy. Use isolated
+headless mode for benchmark workers that need session/state/transcript isolation.
+
 ### send
 
 Send a user message and start the agent loop.

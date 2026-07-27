@@ -18,7 +18,9 @@ use crate::agent::loop_::{
 };
 use crate::agent::types::AgentEvent;
 use crate::ipc::errors::normalize_error;
-use crate::session::jsonl::{append_context_marker, append_message, CONTEXT_RESET_MARKER_TYPE};
+use crate::session::jsonl::{
+    append_context_marker, append_message, append_routed_model_marker, CONTEXT_RESET_MARKER_TYPE,
+};
 use crate::session::setup::{create_session, fresh_system_message, SessionContext, SessionOptions};
 use crate::types::{AssistantMessage, Message, ToolCall, Usage, UserMessage};
 
@@ -295,6 +297,8 @@ impl HeddleRuntime {
         let mut error: Option<RuntimeError> = None;
         let mut tool_latency_ms: u64 = 0;
         let mut tool_start: Option<Instant> = None;
+        let mut pending_routed_model: Option<String> = None;
+        let mut routed_models_by_assistant: Vec<Option<String>> = Vec::new();
 
         let loop_opts = AgentLoopOptions {
             permission_checker: self.session.permission_checker.clone(),
@@ -342,6 +346,7 @@ impl HeddleRuntime {
                 }
                 AgentEvent::AssistantMessage { message, .. } => {
                     iterations += 1;
+                    routed_models_by_assistant.push(pending_routed_model.take());
                     if !saw_content_delta {
                         if let Some(c) = message.content {
                             response = Some(c);
@@ -358,6 +363,7 @@ impl HeddleRuntime {
                     total_usage = Some(runtime_usage);
                 }
                 AgentEvent::RoutedModel { model } => {
+                    pending_routed_model = Some(model.clone());
                     self.last_routed_model = Some(model);
                 }
                 AgentEvent::LoopDetected { count } => {
@@ -393,7 +399,13 @@ impl HeddleRuntime {
             return self.cancelled_outcome(start, tool_calls_made, iterations, tool_latency_ms);
         }
 
+        let mut routed_models = routed_models_by_assistant.into_iter();
         for msg in self.session.messages.iter().skip(persisted_through + 1) {
+            if matches!(msg, Message::Assistant(_)) {
+                if let Some(Some(model)) = routed_models.next() {
+                    let _ = append_routed_model_marker(&self.session.session_file, &model);
+                }
+            }
             let _ = append_message(&self.session.session_file, msg);
         }
 

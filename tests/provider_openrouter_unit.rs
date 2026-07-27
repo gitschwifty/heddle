@@ -28,6 +28,7 @@ fn default_retry() -> RetryConfig {
     RetryConfig {
         max_retries: 3,
         base_delay_ms: 10,
+        max_delay_ms: 10,
     }
 }
 

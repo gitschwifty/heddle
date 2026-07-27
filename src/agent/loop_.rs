@@ -77,6 +77,25 @@ fn hash_tool_calls(tool_calls: &[ToolCall]) -> String {
         .join("|")
 }
 
+fn tool_calls_for_provider_history(tool_calls: &[ToolCall]) -> Vec<ToolCall> {
+    tool_calls
+        .iter()
+        .cloned()
+        .map(|mut call| {
+            let valid_object = serde_json::from_str::<Value>(&call.function.arguments)
+                .is_ok_and(|value| value.is_object());
+            if !valid_object {
+                // Some providers reject the next request before the model can
+                // see our Invalid JSON arguments tool result. Keep executing
+                // against the original call, but make persisted provider
+                // history syntactically valid so the model can repair it.
+                call.function.arguments = "{}".into();
+            }
+            call
+        })
+        .collect()
+}
+
 fn is_doom_loop(hashes: &[String], threshold: u32) -> bool {
     if (hashes.len() as u32) < threshold {
         return false;
@@ -230,9 +249,12 @@ pub fn run_agent_loop<'a>(
                     return;
                 }
             };
+            let tool_calls = choice.message.tool_calls.clone().filter(|tcs| !tcs.is_empty());
             let assistant_msg = AssistantMessage {
                 content: choice.message.content.clone(),
-                tool_calls: choice.message.tool_calls.clone().filter(|tcs| !tcs.is_empty()),
+                tool_calls: tool_calls
+                    .as_ref()
+                    .map(|calls| tool_calls_for_provider_history(calls)),
             };
             if assistant_msg
                 .content
@@ -278,8 +300,8 @@ pub fn run_agent_loop<'a>(
             messages.push(Message::Assistant(assistant_msg.clone()));
             last_assistant_content = assistant_msg.content.clone();
 
-            let tool_calls = match choice.message.tool_calls {
-                Some(tcs) if !tcs.is_empty() => tcs,
+            let tool_calls = match tool_calls {
+                Some(tcs) => tcs,
                 _ => {
                     if options.plan_mode {
                         if let Some(c) = last_assistant_content {
@@ -488,7 +510,11 @@ pub fn run_agent_loop_streaming<'a>(
 
             let assistant_msg = AssistantMessage {
                 content: if content_parts.is_empty() { None } else { Some(content_parts) },
-                tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls.clone()) },
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls_for_provider_history(&tool_calls))
+                },
             };
             if assistant_msg
                 .content
@@ -637,4 +663,32 @@ pub fn run_agent_loop_streaming<'a>(
             message: format!("Max iterations ({max_iterations}) reached — possible infinite loop"),
         };
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool_call(arguments: &str) -> ToolCall {
+        ToolCall {
+            id: "call_1".into(),
+            kind: ToolCallKind::Function,
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: arguments.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn provider_history_sanitizes_malformed_tool_arguments() {
+        let calls = tool_calls_for_provider_history(&[tool_call(r#"{"path":"unterminated}"#)]);
+        assert_eq!(calls[0].function.arguments, "{}");
+    }
+
+    #[test]
+    fn provider_history_preserves_valid_object_arguments() {
+        let calls = tool_calls_for_provider_history(&[tool_call(r#"{"path":"README.md"}"#)]);
+        assert_eq!(calls[0].function.arguments, r#"{"path":"README.md"}"#);
+    }
 }

@@ -34,7 +34,7 @@ use crate::context::pruning::{prune_tool_results, PruningOptions};
 use crate::history::writer::{append_history_entry, ContentType, HistoryEntry};
 use crate::hooks::types::{HookContext, HookEvent};
 use crate::permissions::checker::read_only_tool_filter;
-use crate::session::jsonl::{append_context_marker, append_message};
+use crate::session::jsonl::{append_context_marker, append_message, append_routed_model_marker};
 use crate::session::setup::{create_session, SessionOptions};
 use crate::tools::ask_user::create_ask_user_tool;
 use crate::types::{Message, ToolCall, ToolMessage, UserMessage};
@@ -526,6 +526,7 @@ pub async fn start_cli() -> Result<()> {
                     );
                 }
                 AgentEvent::RoutedModel { model } => {
+                    let _ = append_routed_model_marker(&ctx.session_file, &model);
                     if model != ctx.config.model {
                         println!("  [model: {model}]");
                     }
