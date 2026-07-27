@@ -229,6 +229,15 @@ fn build_session_options(
     if matches!(mode, RuntimeMode::Isolated) && state_root.is_none() {
         return Err("runtime.state_root is required when runtime.mode is isolated".into());
     }
+    if state_root.as_ref().is_some_and(|path| !path.is_absolute()) {
+        return Err("runtime.state_root must be an absolute path".into());
+    }
+    if transcript_path
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err("runtime.transcript_path must be an absolute path".into());
+    }
     let suppress_ambient_context = matches!(mode, RuntimeMode::Isolated)
         && !runtime
             .and_then(|r| r.inherit_ambient_config)

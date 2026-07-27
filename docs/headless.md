@@ -89,7 +89,7 @@ Initialize a session. Must be sent before any other request.
 | `protocol_version` | string | no | Expected protocol version |
 | `config.model` | string | yes | LLM model identifier |
 | `config.system_prompt` | string | yes | System prompt |
-| `config.tools` | string[] | yes | Tools to enable |
+| `config.tools` | string[] | yes | Tools to enable; an empty list deliberately enables no default tools |
 | `config.max_iterations` | number | no | Max agent loop iterations |
 | `config.task_id` | string | no | Task ID for correlation (echoed in events/results) |
 | `config.worker_id` | string | no | Worker ID for correlation |
@@ -97,8 +97,8 @@ Initialize a session. Must be sent before any other request.
 | `config.app_attribution.title` | string | no | OpenRouter app attribution display name; only used when `referer` is also set |
 | `config.app_attribution.categories` | string | no | Optional OpenRouter app attribution categories |
 | `config.runtime.mode` | `"default"` or `"isolated"` | no | Runtime placement policy; omitted preserves current behavior |
-| `config.runtime.state_root` | string | required for isolated | Caller-owned root for isolated mutable state |
-| `config.runtime.transcript_path` | string | no | Exact JSONL transcript/session path for this session |
+| `config.runtime.state_root` | absolute string | required for isolated | Caller-owned absolute root for isolated mutable state |
+| `config.runtime.transcript_path` | absolute string | no | Exact absolute JSONL transcript/session path for this session |
 | `config.runtime.inherit_ambient_config` | boolean | no | In isolated mode, opt back into normal config/discovery; defaults to `false` |
 | `config.routing.gateway` | string | no | Gateway/client identity, e.g. `openrouter` |
 | `config.routing.upstream_provider` | string | no | Requested upstream provider behind a gateway |
@@ -117,6 +117,13 @@ caller-supplied `state_root`; it suppresses ambient config/discovery by default
 and disables stateful features that still rely on global paths. This avoids a
 worker writing into normal user state. `transcript_path` may also be used with
 the default mode when only the transcript destination should change.
+
+Runtime placement paths must be absolute. Heddle rejects relative paths at
+`init` instead of resolving them after a caller has changed the worker cwd.
+For coding workers, send the exact Heddle tool names needed (for example
+`read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `bash`). An empty
+`tools` array is an explicit deny-all allowlist; an attempted unavailable tool
+returns the enabled tool list in its result.
 
 The runtime policy is per init request. Heddle does not mutate process-wide
 environment variables such as `HEDDLE_HOME` to implement it.
