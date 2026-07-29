@@ -1,4 +1,4 @@
-use heddle::config::loader::HeddleConfig;
+use heddle::config::loader::{HeddleConfig, OpenRouterRoutingMode};
 use heddle::provider::factory::create_providers;
 use heddle::types::{Message, UserMessage};
 use serde_json::{json, Value};
@@ -227,6 +227,46 @@ async fn each_provider_sends_its_own_model() {
     assert_eq!(bodies[0]["model"], "main-model");
     assert_eq!(bodies[1]["model"], "weak-model");
     assert_eq!(bodies[2]["model"], "editor-model");
+}
+
+#[tokio::test]
+async fn routing_modes_are_applied_to_provider_requests() {
+    let server = MockServer::start().await;
+    mount_ok(&server).await;
+
+    let nitro = create_providers(&HeddleConfig {
+        base_url: Some(server.uri()),
+        openrouter_routing: OpenRouterRoutingMode::Nitro,
+        ..base_config()
+    })
+    .unwrap();
+    nitro
+        .main
+        .send(&user_msg(), None, &json!({}))
+        .await
+        .unwrap();
+
+    let exacto = create_providers(&HeddleConfig {
+        base_url: Some(server.uri()),
+        openrouter_routing: OpenRouterRoutingMode::Exacto,
+        ..base_config()
+    })
+    .unwrap();
+    exacto
+        .main
+        .send(&user_msg(), None, &json!({}))
+        .await
+        .unwrap();
+
+    let bodies: Vec<Value> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    assert_eq!(bodies[0]["provider"]["sort"], "throughput");
+    assert_eq!(bodies[1]["model"], "main-model:exacto");
 }
 
 #[tokio::test]

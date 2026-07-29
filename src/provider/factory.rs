@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use super::openrouter::create_openrouter_provider;
 use super::types::{Provider, ProviderConfig, RetryConfig};
-use crate::config::loader::HeddleConfig;
+use crate::config::loader::{HeddleConfig, OpenRouterRoutingMode};
 
 #[derive(Clone)]
 pub struct Providers {
@@ -26,6 +26,12 @@ fn base_request_params(config: &HeddleConfig) -> Option<Value> {
             map.insert("temperature".into(), Value::Number(n));
         }
     }
+    if config.openrouter_routing == OpenRouterRoutingMode::Nitro {
+        map.insert(
+            "provider".into(),
+            serde_json::json!({ "sort": "throughput" }),
+        );
+    }
     if map.is_empty() {
         None
     } else {
@@ -41,9 +47,16 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
     let params = base_request_params(config);
 
     let build = |model: &str| -> Arc<dyn Provider> {
+        let model = if config.openrouter_routing == OpenRouterRoutingMode::Exacto
+            && !model.ends_with(":exacto")
+        {
+            format!("{model}:exacto")
+        } else {
+            model.to_string()
+        };
         create_openrouter_provider(ProviderConfig {
             api_key: api_key.clone(),
-            model: model.to_string(),
+            model,
             base_url: config.base_url.clone(),
             request_params: params.clone(),
             app_attribution: config.app_attribution.clone(),

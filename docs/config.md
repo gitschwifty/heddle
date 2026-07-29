@@ -33,6 +33,7 @@ editor_model = "..."           # Model for edit operations
 # ── API Parameters ──────────────────────────────────
 max_tokens = 128000            # Max context window (or HEDDLE_MAX_TOKENS)
 temperature = 0.7              # Sampling temperature (or HEDDLE_TEMPERATURE)
+openrouter_routing = "balanced" # "balanced" | "nitro" | "exacto"
 
 [app_attribution]              # Optional OpenRouter dashboard attribution
 referer = "https://github.com/gitschwifty/heddle"
@@ -88,6 +89,7 @@ matchers = { tool = "bash" }
 | `HEDDLE_BASE_URL` | `base_url` |
 | `HEDDLE_MAX_TOKENS` | `max_tokens` |
 | `HEDDLE_TEMPERATURE` | `temperature` |
+| `HEDDLE_OPENROUTER_ROUTING` | `openrouter_routing` |
 | `HEDDLE_APP_REFERER` + `HEDDLE_APP_TITLE` | `app_attribution.referer` + `app_attribution.title` |
 | `HEDDLE_APP_CATEGORIES` | `app_attribution.categories` |
 | `HEDDLE_APPROVAL_MODE` | `approval_mode` |
@@ -96,6 +98,13 @@ matchers = { tool = "bash" }
 | `HEDDLE_HOME` | Global config directory |
 
 Env vars always win over file config.
+
+`balanced` leaves OpenRouter's default provider routing intact. `nitro` prefers
+highest-throughput providers. `exacto` requests OpenRouter's quality-first
+provider variant, which is useful when tool-call reliability matters more than
+price or speed. Heddle already sends tools for agent turns, so OpenRouter's
+Auto Exacto may apply under `balanced`; use `exacto` to request it explicitly
+for every request, including summaries and compaction.
 
 ## Model Registry UX
 

@@ -28,6 +28,15 @@ pub struct ProviderConfigSchema {
     pub temperature: Option<f64>,
     pub base_url: Option<String>,
     pub app_attribution: Option<AppAttributionSchema>,
+    pub openrouter_routing: Option<OpenRouterRoutingModeWire>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum OpenRouterRoutingModeWire {
+    Balanced,
+    Nitro,
+    Exacto,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -80,6 +89,7 @@ pub struct HeddleConfigSchema {
     pub temperature: Option<f64>,
     pub base_url: Option<String>,
     pub app_attribution: Option<AppAttributionSchema>,
+    pub openrouter_routing: Option<OpenRouterRoutingModeWire>,
     pub system_prompt: Option<String>,
     pub approval_mode: Option<ApprovalModeWire>,
     pub instructions: Option<Vec<String>>,
