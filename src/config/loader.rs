@@ -23,6 +23,28 @@ pub enum ApprovalMode {
     Yolo,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OpenRouterRoutingMode {
+    #[default]
+    Balanced,
+    Nitro,
+    Exacto,
+}
+
+impl std::str::FromStr for OpenRouterRoutingMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "balanced" => Ok(Self::Balanced),
+            "nitro" => Ok(Self::Nitro),
+            "exacto" => Ok(Self::Exacto),
+            _ => Err(()),
+        }
+    }
+}
+
 impl std::str::FromStr for ApprovalMode {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, ()> {
@@ -67,6 +89,7 @@ pub struct HeddleConfig {
     pub temperature: Option<f64>,
     pub base_url: Option<String>,
     pub app_attribution: Option<AppAttribution>,
+    pub openrouter_routing: OpenRouterRoutingMode,
 
     pub system_prompt: Option<String>,
     pub approval_mode: Option<ApprovalMode>,
@@ -96,6 +119,7 @@ impl Default for HeddleConfig {
             temperature: None,
             base_url: None,
             app_attribution: None,
+            openrouter_routing: OpenRouterRoutingMode::Balanced,
             system_prompt: None,
             approval_mode: None,
             instructions: None,
@@ -182,6 +206,13 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(s) = table.get("base_url").and_then(as_str) {
         config.base_url = Some(s.to_string());
+    }
+    if let Some(mode) = table
+        .get("openrouter_routing")
+        .and_then(as_str)
+        .and_then(|s| s.parse::<OpenRouterRoutingMode>().ok())
+    {
+        config.openrouter_routing = mode;
     }
     if let Some(t) = table.get("app_attribution").and_then(|v| v.as_table()) {
         let referer = t.get("referer").and_then(as_str).map(str::to_string);
@@ -334,6 +365,11 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);
     }
+    if let Ok(v) = std::env::var("HEDDLE_OPENROUTER_ROUTING") {
+        if let Ok(mode) = v.parse::<OpenRouterRoutingMode>() {
+            merged.openrouter_routing = mode;
+        }
+    }
     if let (Ok(referer), Ok(title)) = (
         std::env::var("HEDDLE_APP_REFERER"),
         std::env::var("HEDDLE_APP_TITLE"),
@@ -394,6 +430,11 @@ pub fn load_config_without_files() -> HeddleConfig {
     }
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);
+    }
+    if let Ok(v) = std::env::var("HEDDLE_OPENROUTER_ROUTING") {
+        if let Ok(mode) = v.parse::<OpenRouterRoutingMode>() {
+            merged.openrouter_routing = mode;
+        }
     }
     if let (Ok(referer), Ok(title)) = (
         std::env::var("HEDDLE_APP_REFERER"),

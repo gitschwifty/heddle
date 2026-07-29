@@ -113,6 +113,16 @@
         "null"
       ]
     },
+    "openrouter_routing": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/OpenRouterRoutingModeWire"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "permissions": {
       "anyOf": [
         {
@@ -346,6 +356,14 @@
         "interactive",
         "headless",
         "both"
+      ]
+    },
+    "OpenRouterRoutingModeWire": {
+      "type": "string",
+      "enum": [
+        "balanced",
+        "nitro",
+        "exacto"
       ]
     },
     "PermissionsConfigSchema": {
