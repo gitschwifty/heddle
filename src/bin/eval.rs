@@ -1597,9 +1597,39 @@ fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
     Ok(())
 }
 
+fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
+    let Some(error) = &r.scores.error else {
+        return Ok(());
+    };
+
+    let error_dir = results_dir.join("errors");
+    fs::create_dir_all(&error_dir)?;
+    let stem = result_artifact_stem(r);
+    let contents = format!(
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_model: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        r.task_id,
+        r.prompt_id,
+        r.run_index,
+        r.model,
+        r.routed_model.as_deref().unwrap_or("unknown"),
+        r.scores.efficiency.turns,
+        r.scores.efficiency.tool_calls,
+        r.scores.cost.tokens_in,
+        r.scores.cost.tokens_out,
+        r.scores.cost.usd,
+        r.tool_sequence.join(" -> "),
+        stem,
+        stem,
+        error,
+    );
+    fs::write(error_dir.join(format!("{stem}.log")), contents)?;
+    Ok(())
+}
+
 fn write_result_artifacts(results_dir: &Path, r: &TaskResult) -> Result<()> {
     write_result(results_dir, r)?;
-    write_transcript(results_dir, r)
+    write_transcript(results_dir, r)?;
+    write_error_artifact(results_dir, r)
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
@@ -1929,6 +1959,21 @@ mod tests {
         assert_eq!(lines[0]["task_id"], "task");
         assert_eq!(lines[1]["role"], "system");
         assert_eq!(lines[2]["content"], "complete the task");
+    }
+
+    #[test]
+    fn execution_errors_write_a_readable_error_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut result = result(0, 0, Some("nvidia/nemotron:free"));
+        result.scores.outcome.passed = false;
+        result.scores.error = Some("error decoding provider JSON response".into());
+
+        write_result_artifacts(dir.path(), &result).unwrap();
+
+        let log = std::fs::read_to_string(dir.path().join("errors/task-1__prompt-1.log")).unwrap();
+        assert!(log.contains("routed_model: nvidia/nemotron:free"));
+        assert!(log.contains("error decoding provider JSON response"));
+        assert!(log.contains("result: ../task-1__prompt-1.json"));
     }
 
     #[test]
