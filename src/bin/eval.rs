@@ -1721,6 +1721,13 @@ fn result_name_component(value: &str, fallback: &str) -> String {
     }
 }
 
+fn model_result_dir_name(model: &str) -> String {
+    if model == "openrouter/free" {
+        return "openrouter-free".to_string();
+    }
+    result_name_component(model.rsplit('/').next().unwrap_or(model), "model")
+}
+
 fn default_result_dir_name(timestamp: &str, _model: &str, tag: Option<&str>) -> String {
     let mut name = timestamp.to_string();
     if let Some(tag) = tag {
@@ -1800,6 +1807,15 @@ mod tests {
         assert_eq!(
             default_result_dir_name("20260728T010203", "openrouter/free", None),
             "20260728T010203"
+        );
+    }
+
+    #[test]
+    fn openrouter_free_uses_a_distinct_result_directory() {
+        assert_eq!(model_result_dir_name("openrouter/free"), "openrouter-free");
+        assert_eq!(
+            model_result_dir_name("inclusionai/ling-3.0-flash:free"),
+            "ling-3.0-flash-free"
         );
     }
 
@@ -2219,10 +2235,7 @@ async fn cmd_run(
     let results_dir = results_dir.unwrap_or_else(|| {
         evals
             .join("results")
-            .join(result_name_component(
-                model.rsplit('/').next().unwrap_or(&model),
-                "model",
-            ))
+            .join(model_result_dir_name(&model))
             .join(default_result_dir_name(&ts, &model, tag))
     });
     let total_pairs = smoke_pairs.len() + matrix_pairs.len();
