@@ -38,7 +38,9 @@ The binaries auto-load `.env.local` then `.env` at startup via `dotenvy`. Put `O
 The eval runner executes every task in a fresh temporary workspace copied from
 the fixture's `before/` directory. It bypasses normal session setup, so eval
 runs do not create or reuse the interactive session/history/memory state under
-`~/.heddle`. Preserve results explicitly with `--results-dir`; each directory
+`~/.heddle`. By default, results go to
+`<evals>/results/<short-model>/<timestamp>[_<tag>]`; use `--tag` to label a
+generated directory or `--results-dir` to choose an exact path. Each directory
 contains per-task JSON, per-run JSONL transcripts under `transcripts/`,
 `summary.md`, `summary.json`, and `run_meta.json`. Eval transcripts preserve
 the model-facing system/user/assistant/tool-message sequence for qualitative
@@ -57,9 +59,9 @@ using exponential backoff with bounded jitter. Eval permits up to 90 seconds
 for an individual wait; REPL/headless clients use the shared 15-second cap.
 
 ```bash
-cargo run --bin eval -- run --evals ./evals --results-dir ./artifacts/eval-baseline
+cargo run --bin eval -- run --evals ./evals --tag baseline
 cargo run --bin eval -- run --evals ./evals --static-context-only \
-  --results-dir ./artifacts/eval-static
+  --tag static
 ```
 
 `--static-context-only` excludes prompts that inject cwd, date, git, or file

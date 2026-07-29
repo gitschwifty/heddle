@@ -82,9 +82,12 @@ enum Cmd {
         /// Abort the sweep if cumulative cost crosses this USD value.
         #[arg(long)]
         budget_stop_usd: Option<f64>,
-        /// Write results under this directory (default <evals>/results/<ts>/).
+        /// Write results under this directory. Overrides the generated result name.
         #[arg(long)]
         results_dir: Option<PathBuf>,
+        /// Optional label appended to the generated result directory name.
+        #[arg(long, conflicts_with = "results_dir")]
+        tag: Option<String>,
         /// Number of times to run each (task, prompt) pair. When >1, the
         /// summary aggregates with mean ± stddev per pair. Useful for
         /// averaging out LLM stochastic variance.
@@ -1521,6 +1524,7 @@ async fn main() -> Result<()> {
             task_timeout_secs,
             budget_stop_usd,
             results_dir,
+            tag,
             runs,
             record_all_text,
             cache_prewarm,
@@ -1538,6 +1542,7 @@ async fn main() -> Result<()> {
                 task_timeout_secs,
                 budget_stop_usd,
                 results_dir,
+                tag.as_deref(),
                 runs.max(1),
                 record_all_text,
                 cache_prewarm,
@@ -1600,6 +1605,31 @@ where
     Ok(out)
 }
 
+fn result_name_component(value: &str, fallback: &str) -> String {
+    let component: String = value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
+            _ => '-',
+        })
+        .collect();
+    let component = component.trim_matches(['.', '-', '_']);
+    if component.is_empty() || component == "." || component == ".." {
+        fallback.to_string()
+    } else {
+        component.to_string()
+    }
+}
+
+fn default_result_dir_name(timestamp: &str, _model: &str, tag: Option<&str>) -> String {
+    let mut name = timestamp.to_string();
+    if let Some(tag) = tag {
+        name.push('_');
+        name.push_str(&result_name_component(tag, "tag"));
+    }
+    name
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct StaticContextExclusion {
     prompt_id: String,
@@ -1660,6 +1690,18 @@ fn apply_static_context_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_result_name_includes_optional_tag() {
+        assert_eq!(
+            default_result_dir_name("20260728T010203", "z-ai/glm-4.7-flash", Some("cache trial"),),
+            "20260728T010203_cache-trial"
+        );
+        assert_eq!(
+            default_result_dir_name("20260728T010203", "openrouter/free", None),
+            "20260728T010203"
+        );
+    }
 
     fn result(
         cached_tokens: u64,
@@ -1963,6 +2005,7 @@ async fn cmd_run(
     task_timeout_secs: u64,
     budget_stop_usd_flag: Option<f64>,
     results_dir: Option<PathBuf>,
+    tag: Option<&str>,
     runs: u32,
     record_all_text: bool,
     cache_prewarm: bool,
@@ -2068,7 +2111,15 @@ async fn cmd_run(
     let smoke_count = chosen_tasks.iter().filter(|t| t.spec.smoke).count();
 
     let ts = Utc::now().format("%Y%m%dT%H%M%S").to_string();
-    let results_dir = results_dir.unwrap_or_else(|| evals.join("results").join(ts));
+    let results_dir = results_dir.unwrap_or_else(|| {
+        evals
+            .join("results")
+            .join(result_name_component(
+                model.rsplit('/').next().unwrap_or(&model),
+                "model",
+            ))
+            .join(default_result_dir_name(&ts, &model, tag))
+    });
     let total_pairs = smoke_pairs.len() + matrix_pairs.len();
     println!("Running {total_pairs} (task, prompt) pairs against {model}");
     let cache_prewarm_run = if let Some(cache) = &cache {
