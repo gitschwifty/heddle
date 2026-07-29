@@ -33,7 +33,8 @@ use heddle::tools::write::create_write_tool;
 use heddle::types::{Message, SystemMessage, UserMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::time::timeout;
+use tokio::sync::Mutex;
+use tokio::time::{sleep, timeout};
 use walkdir::WalkDir;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────
@@ -708,6 +709,75 @@ const FREE_FALLBACK: &[&str] = &[
     "openrouter/free",
 ];
 
+const FREE_MODEL_REQUEST_INTERVAL: Duration = Duration::from_millis(3_200);
+
+fn is_free_model(model: &str) -> bool {
+    model == "openrouter/free" || model.ends_with(":free")
+}
+
+struct PacedProvider {
+    inner: Arc<dyn Provider>,
+    interval: Duration,
+    next_request: Arc<Mutex<Instant>>,
+}
+
+impl PacedProvider {
+    async fn wait_for_turn(&self) {
+        let mut next = self.next_request.lock().await;
+        let now = Instant::now();
+        let wait = next.saturating_duration_since(now);
+        *next = now.max(*next) + self.interval;
+        drop(next);
+        if !wait.is_zero() {
+            sleep(wait).await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PacedProvider {
+    async fn send(
+        &self,
+        messages: &[Message],
+        tools: Option<&[heddle::types::ToolDefinition]>,
+        overrides: &serde_json::Value,
+    ) -> Result<heddle::types::ChatCompletionResponse> {
+        self.wait_for_turn().await;
+        self.inner.send(messages, tools, overrides).await
+    }
+
+    fn stream(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<heddle::types::ToolDefinition>>,
+        overrides: serde_json::Value,
+    ) -> heddle::provider::types::ChunkStream {
+        let inner = self.inner.clone();
+        let interval = self.interval;
+        let next_request = self.next_request.clone();
+        Box::pin(
+            futures::stream::once(async move {
+                let pacer = PacedProvider {
+                    inner: inner.clone(),
+                    interval,
+                    next_request,
+                };
+                pacer.wait_for_turn().await;
+                inner.stream(messages, tools, overrides)
+            })
+            .flatten(),
+        )
+    }
+
+    fn with(&self, overrides: serde_json::Value) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            inner: self.inner.with(overrides),
+            interval: self.interval,
+            next_request: self.next_request.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CachePrewarmConfig {
     session_id: String,
@@ -780,7 +850,7 @@ fn make_provider(
         // different upstream provider mid-sweep.
         params.insert("provider".into(), json!({ "allow_fallbacks": false }));
     }
-    create_openrouter_provider(ProviderConfig {
+    let provider = create_openrouter_provider(ProviderConfig {
         api_key,
         model: model.to_string(),
         base_url: None,
@@ -793,7 +863,16 @@ fn make_provider(
             // REPL/headless clients retain the shorter provider default.
             max_delay_ms: 90_000,
         }),
-    })
+    });
+    if is_free_model(model) {
+        Arc::new(PacedProvider {
+            inner: provider,
+            interval: FREE_MODEL_REQUEST_INTERVAL,
+            next_request: Arc::new(Mutex::new(Instant::now())),
+        })
+    } else {
+        provider
+    }
 }
 
 async fn prewarm_prompt(
@@ -2376,6 +2455,9 @@ struct RunMeta {
     max_turns: u32,
     task_timeout_secs: u64,
     budget_stop_usd: f64,
+    free_model: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_pacing_ms: Option<u64>,
     counts: RunCounts,
     totals: RunTotals,
     cache_tokens: CacheTokenTotals,
@@ -2469,6 +2551,9 @@ fn write_run_artifacts(
         max_turns,
         task_timeout_secs,
         budget_stop_usd,
+        free_model: is_free_model(model),
+        request_pacing_ms: is_free_model(model)
+            .then_some(FREE_MODEL_REQUEST_INTERVAL.as_millis() as u64),
         counts: RunCounts {
             total: results.len(),
             passed,
@@ -2519,6 +2604,12 @@ fn write_run_artifacts(
         "- budget_stop_usd: `${:.4}`\n",
         meta.budget_stop_usd
     ));
+    if meta.free_model {
+        md.push_str(&format!(
+            "- free_model: `true`; request_pacing_ms: `{}`\n",
+            meta.request_pacing_ms.unwrap_or_default()
+        ));
+    }
     md.push_str(&format!(
         "- totals: {} prompt + {} completion = {} tokens, `${:.6}`\n",
         meta.totals.prompt_tokens,
