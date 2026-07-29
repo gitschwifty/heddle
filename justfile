@@ -38,17 +38,16 @@ test-multi-turn-live:
 test-live:
 	HEDDLE_INTEGRATION_TESTS=1 HEDDLE_SLOW_TESTS=1 cargo test --test provider_openrouter_integration --test multi_turn_integration -- --nocapture
 
-eval evals="evals" prompts="all" tasks="all" model="openrouter/free": build-eval
-	./target/release/eval run --evals {{evals}} --prompts {{prompts}} --tasks {{tasks}} --model {{model}}
+eval model="openrouter/free" evals="evals" prompts="all" tasks="all" tag="": build-eval
+	./target/release/eval run --evals {{evals}} --prompts {{prompts}} --tasks {{tasks}} --model {{model}}{{ if tag != "" { " --tag " + tag } else { "" } }}
 
-# Run all tasks for a prompt selection. Use `just eval` for a custom eval path
-# or explicit task IDs; eval fixtures do not have grouping/category filters yet.
-run-evals prompts="all" model="openrouter/free": build-eval
-	./target/release/eval run --prompts {{prompts}} --tasks all --model {{model}}
+# Run the full prompt/task matrix. Example: `just run-evals z-ai/glm-4.7-flash cache-check`.
+run-evals model="openrouter/free" tag="": build-eval
+	./target/release/eval run --prompts all --tasks all --model {{model}}{{ if tag != "" { " --tag " + tag } else { "" } }}
 
-# Instruction-only matrix: excludes cwd/date/git/file-tree prompt context.
-run-evals-static prompts="all" model="openrouter/free": build-eval
-	./target/release/eval run --prompts {{prompts}} --tasks all --model {{model}} --static-context-only
+# Instruction-only matrix. Example: `just run-evals-static z-ai/glm-4.7-flash cache-check`.
+run-evals-static model="openrouter/free" tag="": build-eval
+	./target/release/eval run --prompts all --tasks all --model {{model}} --static-context-only{{ if tag != "" { " --tag " + tag } else { "" } }}
 
 clippy:
 	cargo clippy --all-targets

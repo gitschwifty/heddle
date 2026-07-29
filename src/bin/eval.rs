@@ -1271,8 +1271,24 @@ fn format_summary(results: &[TaskResult]) -> String {
     out.push_str(&format!(
         "cache tokens: {cached_total} read, {cache_write_total} written\n"
     ));
+    let totals = run_totals(results);
+    out.push_str(&format!(
+        "totals: {} prompt + {} completion = {} tokens, ${:.6}\n",
+        totals.prompt_tokens, totals.completion_tokens, totals.total_tokens, totals.usd
+    ));
     out.push('\n');
     out
+}
+
+fn run_totals(results: &[TaskResult]) -> RunTotals {
+    let prompt_tokens = results.iter().map(|r| r.scores.cost.tokens_in).sum();
+    let completion_tokens = results.iter().map(|r| r.scores.cost.tokens_out).sum();
+    RunTotals {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        usd: results.iter().map(|r| r.scores.cost.usd).sum(),
+    }
 }
 
 fn routed_model_summary(r: &TaskResult) -> String {
@@ -1415,6 +1431,11 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         out.push_str(&render(row));
         out.push('\n');
     }
+    let totals = run_totals(results);
+    out.push_str(&format!(
+        "totals: {} prompt + {} completion = {} tokens, ${:.6}\n",
+        totals.prompt_tokens, totals.completion_tokens, totals.total_tokens, totals.usd
+    ));
     out.push('\n');
     out
 }
@@ -1826,6 +1847,7 @@ mod tests {
         assert!(summary.contains("75/25"));
         assert!(summary.contains("0/0"));
         assert!(summary.contains("cache tokens: 75 read, 25 written"));
+        assert!(summary.contains("totals: 200 prompt + 40 completion = 240 tokens, $0.020000"));
 
         let aggregated = format_aggregated_summary(&results, 2);
         assert!(aggregated.contains("cache read (avg)"));
@@ -1881,6 +1903,10 @@ mod tests {
         .unwrap();
         assert_eq!(meta["cache_tokens"]["cached_tokens"], 80);
         assert_eq!(meta["cache_tokens"]["cache_write_tokens"], 35);
+        assert_eq!(meta["totals"]["prompt_tokens"], 200);
+        assert_eq!(meta["totals"]["completion_tokens"], 40);
+        assert_eq!(meta["totals"]["total_tokens"], 240);
+        assert_eq!(meta["totals"]["usd"], 0.02);
         assert!(meta["heddle_commit"].is_string());
         assert!(meta["heddle_dirty"].is_boolean());
         assert_eq!(meta["evals_commit"], "unknown");
@@ -2351,6 +2377,7 @@ struct RunMeta {
     task_timeout_secs: u64,
     budget_stop_usd: f64,
     counts: RunCounts,
+    totals: RunTotals,
     cache_tokens: CacheTokenTotals,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_prewarm: Option<CachePrewarmRun>,
@@ -2364,6 +2391,14 @@ struct RunCounts {
     passed_over_budget: usize,
     failed: usize,
     errored: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct RunTotals {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    usd: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -2416,6 +2451,7 @@ fn write_run_artifacts(
             .map(|r| r.scores.cost.cache_write_tokens)
             .sum(),
     };
+    let totals = run_totals(results);
     let heddle_git = heddle_git_info();
     let evals_git = git_info(evals_dir);
     let meta = RunMeta {
@@ -2440,6 +2476,7 @@ fn write_run_artifacts(
             failed: results.len() - passed - errored,
             errored,
         },
+        totals,
         cache_tokens,
         cache_prewarm: cache_prewarm.cloned(),
         static_context_selection: static_context_selection.clone(),
@@ -2481,6 +2518,13 @@ fn write_run_artifacts(
     md.push_str(&format!(
         "- budget_stop_usd: `${:.4}`\n",
         meta.budget_stop_usd
+    ));
+    md.push_str(&format!(
+        "- totals: {} prompt + {} completion = {} tokens, `${:.6}`\n",
+        meta.totals.prompt_tokens,
+        meta.totals.completion_tokens,
+        meta.totals.total_tokens,
+        meta.totals.usd
     ));
     if let Some(cache) = &meta.cache_prewarm {
         md.push_str(&format!(
