@@ -389,8 +389,10 @@ struct CostScore {
     tokens_in: u64,
     tokens_out: u64,
     /// Prompt tokens served from a provider cache. Zero when unavailable.
+    #[serde(default)]
     cached_tokens: u64,
     /// Prompt tokens written to a provider cache. Zero when unavailable.
+    #[serde(default)]
     cache_write_tokens: u64,
     // USD lookup is best-effort; 0.0 if pricing isn't loaded.
     usd: f64,
@@ -1948,6 +1950,24 @@ mod tests {
     }
 
     #[test]
+    fn older_result_artifacts_default_missing_cache_metrics_to_zero() {
+        let mut value = serde_json::to_value(result(75, 25, None)).unwrap();
+        value["scores"]["cost"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cached_tokens");
+        value["scores"]["cost"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cache_write_tokens");
+
+        let parsed: TaskResult = serde_json::from_value(value).unwrap();
+
+        assert_eq!(parsed.scores.cost.cached_tokens, 0);
+        assert_eq!(parsed.scores.cost.cache_write_tokens, 0);
+    }
+
+    #[test]
     fn summary_marks_runs_that_switched_routed_models() {
         let mut result = result(0, 0, Some("openai/gpt-oss-120b"));
         result.routed_models = vec![
@@ -2082,7 +2102,6 @@ mod tests {
             ComparisonConfig {
                 prompts: vec!["prompt-1".into()],
                 tasks: vec!["task-1".into()],
-                runs_per_case: 1,
                 max_tokens_per_task: 1_000,
                 max_tokens_per_response: 500,
                 max_turns: 4,
@@ -2099,6 +2118,7 @@ mod tests {
             },
             false,
             2,
+            1,
         )
         .unwrap();
 
@@ -2140,7 +2160,6 @@ mod tests {
         let comparison = ComparisonConfig {
             prompts: vec!["prompt-1".into()],
             tasks: vec!["task-1".into()],
-            runs_per_case: 1,
             max_tokens_per_task: 1_000,
             max_tokens_per_response: 500,
             max_turns: 4,
@@ -2183,6 +2202,7 @@ mod tests {
                 suite.clone(),
                 budget_stopped,
                 if budget_stopped { 2 } else { 1 },
+                1,
             )
             .unwrap();
         }
@@ -2193,11 +2213,11 @@ mod tests {
             &[],
             "fixture-suite",
             "quality",
-            None,
+            Some(&dir.path().join("aggregate-output")),
         )
         .unwrap();
 
-        let snapshot_path = WalkDir::new(results_root.join("aggregate"))
+        let snapshot_path = WalkDir::new(dir.path().join("aggregate-output"))
             .into_iter()
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.into_path())
@@ -2633,7 +2653,6 @@ async fn cmd_run(
         &chosen_prompts,
         &chosen_tasks,
         ComparisonSettings {
-            runs_per_case: runs,
             max_tokens_per_task,
             max_tokens_per_response,
             max_turns,
@@ -2671,6 +2690,7 @@ async fn cmd_run(
         suite,
         budget_stopped,
         total_pairs * runs as usize,
+        runs,
     )?;
     println!(
         "Wrote summary.md, summary.json, run_meta.json -> {}",
@@ -2689,6 +2709,7 @@ struct RunMeta {
     evals_version: String,
     model: String,
     openrouter_routing: String,
+    runs_per_case: u32,
     prompts: Vec<String>,
     tasks: Vec<String>,
     max_tokens_per_task: u64,
@@ -2715,7 +2736,6 @@ struct RunMeta {
 struct ComparisonConfig {
     prompts: Vec<String>,
     tasks: Vec<String>,
-    runs_per_case: u32,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
@@ -2776,7 +2796,6 @@ fn suite_identity(evals: &Path, prompts: &[&Prompt], tasks: &[&Task]) -> Result<
 }
 
 struct ComparisonSettings<'a> {
-    runs_per_case: u32,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
     max_turns: u32,
@@ -2805,7 +2824,6 @@ fn comparison_config(
     ComparisonConfig {
         prompts: prompt_ids,
         tasks: task_ids,
-        runs_per_case: settings.runs_per_case,
         max_tokens_per_task: settings.max_tokens_per_task,
         max_tokens_per_response: settings.max_tokens_per_response,
         max_turns: settings.max_turns,
@@ -2870,6 +2888,7 @@ fn write_run_artifacts(
     suite: SuiteIdentity,
     budget_stopped: bool,
     planned_results: usize,
+    runs_per_case: u32,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
 
@@ -2901,6 +2920,7 @@ fn write_run_artifacts(
         evals_version: "0.1.0".into(),
         model: model.to_string(),
         openrouter_routing: "balanced".into(),
+        runs_per_case,
         prompts: prompts.to_vec(),
         tasks: tasks.to_vec(),
         max_tokens_per_task,

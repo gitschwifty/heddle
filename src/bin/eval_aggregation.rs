@@ -113,7 +113,6 @@ fn legacy_comparison(meta: &StoredRunMeta) -> ComparisonConfig {
     ComparisonConfig {
         prompts,
         tasks,
-        runs_per_case: 1,
         max_tokens_per_task: meta.max_tokens_per_task,
         max_tokens_per_response: meta.max_tokens_per_response,
         max_turns: meta.max_turns,
@@ -282,6 +281,60 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
     Ok(())
 }
 
+fn existing_target(
+    evals: &Path,
+    suite_label: &str,
+    profile_label: &str,
+) -> Result<Option<(String, String, PathBuf)>> {
+    let root = evals.join("aggregates");
+    if !root.exists() {
+        return Ok(None);
+    }
+    let suite_prefix = format!("{}__s-", result_name_component(suite_label, "suite"));
+    let profile_prefix = format!("{}__c-", result_name_component(profile_label, "profile"));
+    let mut matches = Vec::new();
+    for suite_dir in fs::read_dir(&root)?.flatten().map(|entry| entry.path()) {
+        if !suite_dir.is_dir()
+            || !suite_dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(&suite_prefix))
+        {
+            continue;
+        }
+        for profile_dir in fs::read_dir(&suite_dir)?
+            .flatten()
+            .map(|entry| entry.path())
+        {
+            if !profile_dir.is_dir()
+                || !profile_dir
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&profile_prefix))
+            {
+                continue;
+            }
+            let snapshot_path = profile_dir.join("runs.json");
+            let snapshot: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(&snapshot_path)
+                    .with_context(|| format!("reading {}", snapshot_path.display()))?,
+            )?;
+            let suite = snapshot["suite"]["fingerprint"].as_str().ok_or_else(|| {
+                anyhow::anyhow!("missing suite fingerprint in {}", snapshot_path.display())
+            })?;
+            let profile = snapshot["profile"]["fingerprint"].as_str().ok_or_else(|| {
+                anyhow::anyhow!("missing profile fingerprint in {}", snapshot_path.display())
+            })?;
+            matches.push((suite.to_string(), profile.to_string(), profile_dir));
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => bail!(
+            "multiple aggregates match suite label {suite_label:?} and profile label {profile_label:?}; use explicit --run paths or give each suite/profile a distinct label"
+        ),
+    }
+}
+
 pub(super) fn cmd_aggregate(
     evals: &Path,
     results_root: Option<&Path>,
@@ -292,6 +345,16 @@ pub(super) fn cmd_aggregate(
 ) -> Result<()> {
     let default_root = evals.join("results");
     let root = results_root.unwrap_or(&default_root);
+    let target = if explicit_runs.is_empty() && output_dir.is_none() {
+        existing_target(evals, suite_label, profile_label)?
+    } else {
+        None
+    };
+    if explicit_runs.is_empty() && output_dir.is_none() && target.is_none() {
+        bail!(
+            "no existing aggregate named suite {suite_label:?}, profile {profile_label:?}; create one from an explicit --run first"
+        );
+    }
     let run_dirs = if explicit_runs.is_empty() {
         find_run_dirs(root)?
     } else {
@@ -352,12 +415,21 @@ pub(super) fn cmd_aggregate(
             .2
             .push(run);
     }
+    if let Some((suite_fingerprint, profile_fingerprint, _)) = &target {
+        groups.retain(|(suite, profile), _| {
+            suite == suite_fingerprint && profile == profile_fingerprint
+        });
+        if groups.is_empty() {
+            bail!("no retained runs match the existing aggregate target");
+        }
+    }
     if output_dir.is_some() && groups.len() > 1 {
         bail!("--output-dir requires runs from exactly one suite/profile group");
     }
     for ((suite_fingerprint, profile_fingerprint), (suite, comparison, runs)) in groups {
         let output = output_dir.map(Path::to_path_buf).unwrap_or_else(|| {
-            root.join("aggregate")
+            evals
+                .join("aggregates")
                 .join(format!(
                     "{}__s-{}",
                     result_name_component(suite_label, "suite"),
