@@ -33,9 +33,13 @@ use heddle::tools::write::create_write_tool;
 use heddle::types::{Message, SystemMessage, UserMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 use walkdir::WalkDir;
+
+mod eval_aggregation;
+use eval_aggregation::cmd_aggregate;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────
 
@@ -110,6 +114,30 @@ enum Cmd {
         /// Explicitly selected dynamic prompts fail instead of being skipped.
         #[arg(long, default_value_t = false)]
         static_context_only: bool,
+    },
+    /// Rebuild cross-run reports from completed eval artifacts.
+    Aggregate {
+        /// Eval fixture directory, used only to identify legacy runs that
+        /// predate suite fingerprints.
+        #[arg(long, default_value = "evals")]
+        evals: PathBuf,
+        /// Results root to scan when --run is omitted.
+        #[arg(long)]
+        results_root: Option<PathBuf>,
+        /// Completed run directory to include. Repeat to select runs
+        /// explicitly; otherwise all completed runs beneath --results-root
+        /// are considered.
+        #[arg(long = "run")]
+        runs: Vec<PathBuf>,
+        /// Human-readable suite label used in the aggregate directory.
+        #[arg(long, default_value = "suite")]
+        suite_label: String,
+        /// Human-readable comparison-profile label used in the aggregate directory.
+        #[arg(long, default_value = "default")]
+        profile_label: String,
+        /// Override the generated aggregate output directory.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
 }
 
@@ -210,6 +238,7 @@ fn default_tree_entries() -> usize {
 #[derive(Debug, Clone)]
 struct Prompt {
     id: String,
+    source_path: PathBuf,
     front: PromptFrontMatter,
     body: String,
 }
@@ -272,7 +301,7 @@ struct Task {
 
 // ─── Result schema ───────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TaskResult {
     task_id: String,
     prompt_id: String,
@@ -305,11 +334,11 @@ struct TaskResult {
     assistant_messages: Vec<AssistantTrace>,
     /// Complete model-facing conversation retained only in the per-run
     /// transcript artifact, not duplicated in the result JSON.
-    #[serde(skip)]
+    #[serde(skip, default)]
     transcript: Vec<Message>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AssistantTrace {
     turn: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,13 +346,13 @@ struct AssistantTrace {
     text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RoutedModelObservation {
     assistant_turn: u32,
     model: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Scores {
     outcome: OutcomeScore,
     efficiency: EfficiencyScore,
@@ -331,19 +360,19 @@ struct Scores {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct OutcomeScore {
     passed: bool,
     diff_files: Vec<DirDiffEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct DirDiffEntry {
     path: String,
     kind: String, // "missing" | "unexpected" | "differs"
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct EfficiencyScore {
     tool_calls: u32,
     turns: u32,
@@ -355,7 +384,7 @@ struct EfficiencyScore {
     tokens_in_budget: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct CostScore {
     tokens_in: u64,
     tokens_out: u64,
@@ -406,6 +435,7 @@ fn load_prompt(path: &Path) -> Result<Prompt> {
     }
     Ok(Prompt {
         id: front.id.clone().unwrap_or(stem),
+        source_path: path.to_path_buf(),
         front,
         body: body.to_string(),
     })
@@ -1643,6 +1673,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::List { evals } => cmd_list(&evals),
+        Cmd::Aggregate {
+            evals,
+            results_root,
+            runs,
+            suite_label,
+            profile_label,
+            output_dir,
+        } => cmd_aggregate(
+            &evals,
+            results_root.as_deref(),
+            &runs,
+            &suite_label,
+            &profile_label,
+            output_dir.as_deref(),
+        ),
         Cmd::Run {
             evals,
             prompts,
@@ -2034,6 +2079,26 @@ mod tests {
                     dynamic_features: vec!["cwd".into(), "file_tree".into()],
                 }],
             },
+            ComparisonConfig {
+                prompts: vec!["prompt-1".into()],
+                tasks: vec!["task-1".into()],
+                runs_per_case: 1,
+                max_tokens_per_task: 1_000,
+                max_tokens_per_response: 500,
+                max_turns: 4,
+                task_timeout_secs: 60,
+                static_context_only: true,
+                excluded_dynamic_prompts: vec!["dynamic".into()],
+                cache_prewarm: true,
+                cache_ttl: Some("provider_default".into()),
+                openrouter_routing: "balanced".into(),
+            },
+            SuiteIdentity {
+                fingerprint: "suite-fingerprint".into(),
+                source: "test".into(),
+            },
+            false,
+            2,
         )
         .unwrap();
 
@@ -2064,6 +2129,99 @@ mod tests {
             meta["static_context_selection"]["excluded_prompts"][0]["dynamic_features"],
             json!(["cwd", "file_tree"])
         );
+        assert_eq!(meta["comparison"]["static_context_only"], true);
+        assert_eq!(meta["suite"]["fingerprint"], "suite-fingerprint");
+    }
+
+    #[test]
+    fn aggregate_writes_portable_snapshot_and_excludes_budget_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let results_root = dir.path().join("results");
+        let comparison = ComparisonConfig {
+            prompts: vec!["prompt-1".into()],
+            tasks: vec!["task-1".into()],
+            runs_per_case: 1,
+            max_tokens_per_task: 1_000,
+            max_tokens_per_response: 500,
+            max_turns: 4,
+            task_timeout_secs: 60,
+            static_context_only: false,
+            excluded_dynamic_prompts: Vec::new(),
+            cache_prewarm: false,
+            cache_ttl: None,
+            openrouter_routing: "balanced".into(),
+        };
+        let suite = SuiteIdentity {
+            fingerprint: "suite-fingerprint-for-test".into(),
+            source: "test".into(),
+        };
+        for (name, model, budget_stopped) in
+            [("first", "model/a", false), ("stopped", "model/b", true)]
+        {
+            let run_dir = results_root.join(name);
+            let results = vec![result(0, 0, None)];
+            write_run_artifacts(
+                &run_dir,
+                dir.path(),
+                model,
+                &["prompt-1".into()],
+                &["task-1".into()],
+                1_000,
+                500,
+                4,
+                60,
+                1.0,
+                &results,
+                "summary",
+                "",
+                None,
+                &StaticContextSelection {
+                    enabled: false,
+                    excluded_prompts: Vec::new(),
+                },
+                comparison.clone(),
+                suite.clone(),
+                budget_stopped,
+                if budget_stopped { 2 } else { 1 },
+            )
+            .unwrap();
+        }
+
+        cmd_aggregate(
+            dir.path(),
+            Some(&results_root),
+            &[],
+            "fixture-suite",
+            "quality",
+            None,
+        )
+        .unwrap();
+
+        let snapshot_path = WalkDir::new(results_root.join("aggregate"))
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.into_path())
+            .find(|path| path.file_name().is_some_and(|name| name == "runs.json"))
+            .expect("aggregate runs.json");
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&snapshot_path).unwrap()).unwrap();
+        assert_eq!(snapshot["suite"]["label"], "fixture-suite");
+        assert_eq!(snapshot["profile"]["label"], "quality");
+        assert_eq!(snapshot["runs"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            snapshot["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|run| run["included_in_quality_metrics"] == true)
+                .count(),
+            1
+        );
+        let aggregate_dir = snapshot_path.parent().unwrap();
+        assert!(aggregate_dir.join("profile.json").exists());
+        assert!(aggregate_dir.join("by-model.md").exists());
+        assert!(aggregate_dir.join("by-prompt.md").exists());
+        assert!(aggregate_dir.join("by-heddle-revision.md").exists());
     }
 
     #[test]
@@ -2071,6 +2229,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prompt = Prompt {
             id: "dynamic".into(),
+            source_path: dir.path().join("dynamic.md"),
             front: PromptFrontMatter {
                 context: ContextConfig {
                     cwd: true,
@@ -2106,11 +2265,13 @@ mod tests {
     fn static_context_only_excludes_dynamic_prompts_from_matrix_selection() {
         let static_prompt = Prompt {
             id: "static".into(),
+            source_path: PathBuf::from("static.md"),
             front: PromptFrontMatter::default(),
             body: "instructions".into(),
         };
         let dynamic_prompt = Prompt {
             id: "dynamic".into(),
+            source_path: PathBuf::from("dynamic.md"),
             front: PromptFrontMatter {
                 context: ContextConfig {
                     cwd: true,
@@ -2139,6 +2300,7 @@ mod tests {
     fn static_context_only_rejects_explicit_dynamic_prompt_selection() {
         let dynamic_prompt = Prompt {
             id: "dynamic".into(),
+            source_path: PathBuf::from("dynamic.md"),
             front: PromptFrontMatter {
                 context: ContextConfig {
                     git: Some(GitConfig {
@@ -2467,6 +2629,22 @@ async fn cmd_run(
     print!("{summary}");
     print!("{failures}");
 
+    let comparison = comparison_config(
+        &chosen_prompts,
+        &chosen_tasks,
+        ComparisonSettings {
+            runs_per_case: runs,
+            max_tokens_per_task,
+            max_tokens_per_response,
+            max_turns,
+            task_timeout_secs,
+            static_context_selection: &static_context,
+            cache_prewarm: cache_prewarm_run.as_ref(),
+            openrouter_routing: "balanced",
+        },
+    );
+    let suite = suite_identity(evals, &chosen_prompts, &chosen_tasks)?;
+
     write_run_artifacts(
         &results_dir,
         evals,
@@ -2489,6 +2667,10 @@ async fn cmd_run(
         &failures,
         cache_prewarm_run.as_ref(),
         &static_context,
+        comparison,
+        suite,
+        budget_stopped,
+        total_pairs * runs as usize,
     )?;
     println!(
         "Wrote summary.md, summary.json, run_meta.json -> {}",
@@ -2506,6 +2688,7 @@ struct RunMeta {
     evals_dirty: Option<bool>,
     evals_version: String,
     model: String,
+    openrouter_routing: String,
     prompts: Vec<String>,
     tasks: Vec<String>,
     max_tokens_per_task: u64,
@@ -2522,6 +2705,117 @@ struct RunMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_prewarm: Option<CachePrewarmRun>,
     static_context_selection: StaticContextSelection,
+    comparison: ComparisonConfig,
+    suite: SuiteIdentity,
+    budget_stopped: bool,
+    planned_results: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ComparisonConfig {
+    prompts: Vec<String>,
+    tasks: Vec<String>,
+    runs_per_case: u32,
+    max_tokens_per_task: u64,
+    max_tokens_per_response: u32,
+    max_turns: u32,
+    task_timeout_secs: u64,
+    static_context_only: bool,
+    excluded_dynamic_prompts: Vec<String>,
+    cache_prewarm: bool,
+    cache_ttl: Option<String>,
+    openrouter_routing: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SuiteIdentity {
+    fingerprint: String,
+    source: String,
+}
+
+fn hash_file(hasher: &mut Sha256, label: &str, path: &Path) -> Result<()> {
+    hasher.update(label.as_bytes());
+    hasher.update([0]);
+    hasher.update(fs::read(path).with_context(|| format!("reading {}", path.display()))?);
+    hasher.update([0]);
+    Ok(())
+}
+
+fn suite_identity(evals: &Path, prompts: &[&Prompt], tasks: &[&Task]) -> Result<SuiteIdentity> {
+    let mut hasher = Sha256::new();
+    hash_file(&mut hasher, "manifest.toml", &evals.join("manifest.toml"))?;
+
+    let mut prompt_paths: Vec<&PathBuf> =
+        prompts.iter().map(|prompt| &prompt.source_path).collect();
+    prompt_paths.sort();
+    for path in prompt_paths {
+        let relative = path.strip_prefix(evals).unwrap_or(path).to_string_lossy();
+        hash_file(&mut hasher, &relative, path)?;
+    }
+
+    let mut task_dirs: Vec<&PathBuf> = tasks.iter().map(|task| &task.dir).collect();
+    task_dirs.sort();
+    for task_dir in task_dirs {
+        let mut files: Vec<PathBuf> = WalkDir::new(task_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .collect();
+        files.sort();
+        for path in files {
+            let relative = path.strip_prefix(evals).unwrap_or(&path).to_string_lossy();
+            hash_file(&mut hasher, &relative, &path)?;
+        }
+    }
+
+    Ok(SuiteIdentity {
+        fingerprint: hex::encode(hasher.finalize()),
+        source: "selected_eval_inputs_v1".into(),
+    })
+}
+
+struct ComparisonSettings<'a> {
+    runs_per_case: u32,
+    max_tokens_per_task: u64,
+    max_tokens_per_response: u32,
+    max_turns: u32,
+    task_timeout_secs: u64,
+    static_context_selection: &'a StaticContextSelection,
+    cache_prewarm: Option<&'a CachePrewarmRun>,
+    openrouter_routing: &'a str,
+}
+
+fn comparison_config(
+    prompts: &[&Prompt],
+    tasks: &[&Task],
+    settings: ComparisonSettings<'_>,
+) -> ComparisonConfig {
+    let mut prompt_ids: Vec<String> = prompts.iter().map(|prompt| prompt.id.clone()).collect();
+    let mut task_ids: Vec<String> = tasks.iter().map(|task| task.spec.id.clone()).collect();
+    let mut excluded_dynamic_prompts: Vec<String> = settings
+        .static_context_selection
+        .excluded_prompts
+        .iter()
+        .map(|excluded| excluded.prompt_id.clone())
+        .collect();
+    prompt_ids.sort();
+    task_ids.sort();
+    excluded_dynamic_prompts.sort();
+    ComparisonConfig {
+        prompts: prompt_ids,
+        tasks: task_ids,
+        runs_per_case: settings.runs_per_case,
+        max_tokens_per_task: settings.max_tokens_per_task,
+        max_tokens_per_response: settings.max_tokens_per_response,
+        max_turns: settings.max_turns,
+        task_timeout_secs: settings.task_timeout_secs,
+        static_context_only: settings.static_context_selection.enabled,
+        excluded_dynamic_prompts,
+        cache_prewarm: settings.cache_prewarm.is_some(),
+        cache_ttl: settings.cache_prewarm.map(|cache| cache.ttl.clone()),
+        openrouter_routing: settings.openrouter_routing.to_string(),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2572,6 +2866,10 @@ fn write_run_artifacts(
     failures_md: &str,
     cache_prewarm: Option<&CachePrewarmRun>,
     static_context_selection: &StaticContextSelection,
+    comparison: ComparisonConfig,
+    suite: SuiteIdentity,
+    budget_stopped: bool,
+    planned_results: usize,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
 
@@ -2602,6 +2900,7 @@ fn write_run_artifacts(
         evals_dirty: evals_git.dirty,
         evals_version: "0.1.0".into(),
         model: model.to_string(),
+        openrouter_routing: "balanced".into(),
         prompts: prompts.to_vec(),
         tasks: tasks.to_vec(),
         max_tokens_per_task,
@@ -2623,6 +2922,10 @@ fn write_run_artifacts(
         cache_tokens,
         cache_prewarm: cache_prewarm.cloned(),
         static_context_selection: static_context_selection.clone(),
+        comparison,
+        suite,
+        budget_stopped,
+        planned_results,
     };
 
     fs::write(
@@ -2638,6 +2941,10 @@ fn write_run_artifacts(
     let mut md = String::new();
     md.push_str(&format!("# Eval run — {}\n\n", meta.timestamp));
     md.push_str(&format!("- model: `{}`\n", meta.model));
+    md.push_str(&format!(
+        "- openrouter_routing: `{}`\n",
+        meta.openrouter_routing
+    ));
     md.push_str(&format!(
         "- heddle: `{}` (dirty: `{}`)\n",
         meta.heddle_commit,

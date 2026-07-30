@@ -49,6 +49,10 @@ run-evals model="openrouter/free" tag="": build-eval
 run-evals-static model="openrouter/free" tag="": build-eval
 	./target/release/eval run --prompts all --tasks all --model {{model}} --static-context-only{{ if tag != "" { " --tag " + tag } else { "" } }}
 
+# Rebuild aggregate reports from completed runs. Example: `just aggregate-evals default-suite quality`.
+aggregate-evals suite="suite" profile="default": build-eval
+	./target/release/eval aggregate --suite-label {{suite}} --profile-label {{profile}}
+
 clippy:
 	cargo clippy --all-targets
 
