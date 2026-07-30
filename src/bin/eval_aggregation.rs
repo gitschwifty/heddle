@@ -281,11 +281,18 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
     Ok(())
 }
 
+struct ExistingTarget {
+    suite_fingerprint: String,
+    comparison_fingerprint: String,
+    stored_profile_fingerprint: String,
+    output_dir: PathBuf,
+}
+
 fn existing_target(
     evals: &Path,
     suite_label: &str,
     profile_label: &str,
-) -> Result<Option<(String, String, PathBuf)>> {
+) -> Result<Option<ExistingTarget>> {
     let root = evals.join("aggregates");
     if !root.exists() {
         return Ok(None);
@@ -323,7 +330,16 @@ fn existing_target(
             let profile = snapshot["profile"]["fingerprint"].as_str().ok_or_else(|| {
                 anyhow::anyhow!("missing profile fingerprint in {}", snapshot_path.display())
             })?;
-            matches.push((suite.to_string(), profile.to_string(), profile_dir));
+            let comparison: ComparisonConfig = serde_json::from_value(
+                snapshot["profile"]["comparison"].clone(),
+            )
+            .with_context(|| format!("parsing comparison in {}", snapshot_path.display()))?;
+            matches.push(ExistingTarget {
+                suite_fingerprint: suite.to_string(),
+                comparison_fingerprint: fingerprint(&comparison)?,
+                stored_profile_fingerprint: profile.to_string(),
+                output_dir: profile_dir,
+            });
         }
     }
     match matches.len() {
@@ -415,9 +431,9 @@ pub(super) fn cmd_aggregate(
             .2
             .push(run);
     }
-    if let Some((suite_fingerprint, profile_fingerprint, _)) = &target {
+    if let Some(target) = &target {
         groups.retain(|(suite, profile), _| {
-            suite == suite_fingerprint && profile == profile_fingerprint
+            suite == &target.suite_fingerprint && profile == &target.comparison_fingerprint
         });
         if groups.is_empty() {
             bail!("no retained runs match the existing aggregate target");
@@ -427,20 +443,27 @@ pub(super) fn cmd_aggregate(
         bail!("--output-dir requires runs from exactly one suite/profile group");
     }
     for ((suite_fingerprint, profile_fingerprint), (suite, comparison, runs)) in groups {
-        let output = output_dir.map(Path::to_path_buf).unwrap_or_else(|| {
-            evals
-                .join("aggregates")
-                .join(format!(
-                    "{}__s-{}",
-                    result_name_component(suite_label, "suite"),
-                    short_hash(&suite_fingerprint)
-                ))
-                .join(format!(
-                    "{}__c-{}",
-                    result_name_component(profile_label, "profile"),
-                    short_hash(&profile_fingerprint)
-                ))
-        });
+        let output = output_dir
+            .map(Path::to_path_buf)
+            .or_else(|| target.as_ref().map(|target| target.output_dir.clone()))
+            .unwrap_or_else(|| {
+                evals
+                    .join("aggregates")
+                    .join(format!(
+                        "{}__s-{}",
+                        result_name_component(suite_label, "suite"),
+                        short_hash(&suite_fingerprint)
+                    ))
+                    .join(format!(
+                        "{}__c-{}",
+                        result_name_component(profile_label, "profile"),
+                        short_hash(&profile_fingerprint)
+                    ))
+            });
+        let stored_profile_fingerprint = target
+            .as_ref()
+            .map(|target| target.stored_profile_fingerprint.clone())
+            .unwrap_or(profile_fingerprint);
         let snapshot = AggregateSnapshot {
             schema_version: 1,
             generated_at: Utc::now().to_rfc3339(),
@@ -451,7 +474,7 @@ pub(super) fn cmd_aggregate(
             },
             profile: AggregateProfile {
                 label: profile_label.into(),
-                fingerprint: profile_fingerprint,
+                fingerprint: stored_profile_fingerprint,
                 comparison,
             },
             runs,

@@ -2533,11 +2533,13 @@ async fn cmd_run(
         let r = run_one(task, prompt, &model, &api_key, &run_options).await;
         let outcome = outcome_label(&r);
         println!(
-            "      {outcome} (tools={}, turns={}, tokens={}/{}, usd=${:.6}, {}ms)",
+            "      {outcome} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
             r.scores.efficiency.tool_calls,
             r.scores.efficiency.turns,
             r.scores.cost.tokens_in,
             r.scores.cost.tokens_out,
+            r.scores.cost.cached_tokens,
+            r.scores.cost.cache_write_tokens,
             r.scores.cost.usd,
             r.duration_ms,
         );
@@ -2614,11 +2616,13 @@ async fn cmd_run(
                 }
                 let outcome = outcome_label(&r);
                 println!(
-                    "      {outcome} (tools={}, turns={}, tokens={}/{}, usd=${:.6}, {}ms)",
+                    "      {outcome} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
                     r.scores.efficiency.tool_calls,
                     r.scores.efficiency.turns,
                     r.scores.cost.tokens_in,
                     r.scores.cost.tokens_out,
+                    r.scores.cost.cached_tokens,
+                    r.scores.cost.cache_write_tokens,
                     r.scores.cost.usd,
                     r.duration_ms,
                 );
