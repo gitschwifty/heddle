@@ -161,7 +161,12 @@ impl OpenRouterProvider {
                 .headers(headers.clone())
                 .json(body)
                 .send()
-                .await?;
+                .await
+                .map_err(|err| {
+                    let detail = format!("{err:#}");
+                    debug("provider", &format!("transport error: {detail}"));
+                    anyhow!("OpenRouter transport error: {detail}")
+                })?;
 
             if resp.status().as_u16() != 429 || retry_cfg.is_none() || attempt == max_retries {
                 return Ok(resp);
