@@ -38,6 +38,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 use walkdir::WalkDir;
 
+#[path = "../eval_aggregation.rs"]
 mod eval_aggregation;
 use eval_aggregation::cmd_aggregate;
 
@@ -117,13 +118,9 @@ enum Cmd {
     },
     /// Rebuild cross-run reports from completed eval artifacts.
     Aggregate {
-        /// Eval fixture directory, used only to identify legacy runs that
-        /// predate suite fingerprints.
-        #[arg(long, default_value = "evals")]
-        evals: PathBuf,
-        /// Results root to scan when --run is omitted.
-        #[arg(long)]
-        results_root: Option<PathBuf>,
+        /// Promoted run root to scan when --run is omitted.
+        #[arg(long, default_value = "eval-results/runs")]
+        results_root: PathBuf,
         /// Completed run directory to include. Repeat to select runs
         /// explicitly; otherwise all completed runs beneath --results-root
         /// are considered.
@@ -135,6 +132,9 @@ enum Cmd {
         /// Human-readable comparison-profile label used in the aggregate directory.
         #[arg(long, default_value = "default")]
         profile_label: String,
+        /// Root directory for managed aggregate reports.
+        #[arg(long, default_value = "eval-results/aggregates")]
+        aggregate_root: PathBuf,
         /// Override the generated aggregate output directory.
         #[arg(long)]
         output_dir: Option<PathBuf>,
@@ -1676,18 +1676,18 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::List { evals } => cmd_list(&evals),
         Cmd::Aggregate {
-            evals,
             results_root,
             runs,
             suite_label,
             profile_label,
+            aggregate_root,
             output_dir,
         } => cmd_aggregate(
-            &evals,
-            results_root.as_deref(),
+            &results_root,
             &runs,
             &suite_label,
             &profile_label,
+            &aggregate_root,
             output_dir.as_deref(),
         ),
         Cmd::Run {
@@ -2208,11 +2208,11 @@ mod tests {
         }
 
         cmd_aggregate(
-            dir.path(),
-            Some(&results_root),
+            &results_root,
             &[],
             "fixture-suite",
             "quality",
+            &dir.path().join("aggregates"),
             Some(&dir.path().join("aggregate-output")),
         )
         .unwrap();

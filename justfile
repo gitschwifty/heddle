@@ -53,7 +53,7 @@ run-evals-static model="openrouter/free" runs="1" tag="": build-eval
 aggregate-evals suite="suite" profile="default": build-eval
 	./target/release/eval aggregate --suite-label {{suite}} --profile-label {{profile}}
 
-# Create an aggregate from one run. Example: `just create-aggregate default-v1 base evals/results/glm-4.7-flash/<run>`.
+# Create an aggregate from one promoted run. Example: `just create-aggregate default-v1 base eval-results/runs/default-v1__s-aa0ce644/glm-4.7-flash/<run>`.
 create-aggregate suite profile run: build-eval
 	./target/release/eval aggregate --suite-label {{suite}} --profile-label {{profile}} --run {{run}}
 

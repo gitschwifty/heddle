@@ -289,18 +289,20 @@ struct ExistingTarget {
 }
 
 fn existing_target(
-    evals: &Path,
+    aggregate_root: &Path,
     suite_label: &str,
     profile_label: &str,
 ) -> Result<Option<ExistingTarget>> {
-    let root = evals.join("aggregates");
-    if !root.exists() {
+    if !aggregate_root.exists() {
         return Ok(None);
     }
     let suite_prefix = format!("{}__s-", result_name_component(suite_label, "suite"));
     let profile_prefix = format!("{}__c-", result_name_component(profile_label, "profile"));
     let mut matches = Vec::new();
-    for suite_dir in fs::read_dir(&root)?.flatten().map(|entry| entry.path()) {
+    for suite_dir in fs::read_dir(aggregate_root)?
+        .flatten()
+        .map(|entry| entry.path())
+    {
         if !suite_dir.is_dir()
             || !suite_dir
                 .file_name()
@@ -352,17 +354,15 @@ fn existing_target(
 }
 
 pub(super) fn cmd_aggregate(
-    evals: &Path,
-    results_root: Option<&Path>,
+    results_root: &Path,
     explicit_runs: &[PathBuf],
     suite_label: &str,
     profile_label: &str,
+    aggregate_root: &Path,
     output_dir: Option<&Path>,
 ) -> Result<()> {
-    let default_root = evals.join("results");
-    let root = results_root.unwrap_or(&default_root);
     let target = if explicit_runs.is_empty() && output_dir.is_none() {
-        existing_target(evals, suite_label, profile_label)?
+        existing_target(aggregate_root, suite_label, profile_label)?
     } else {
         None
     };
@@ -372,7 +372,7 @@ pub(super) fn cmd_aggregate(
         );
     }
     let run_dirs = if explicit_runs.is_empty() {
-        find_run_dirs(root)?
+        find_run_dirs(results_root)?
     } else {
         explicit_runs.to_vec()
     };
@@ -447,8 +447,7 @@ pub(super) fn cmd_aggregate(
             .map(Path::to_path_buf)
             .or_else(|| target.as_ref().map(|target| target.output_dir.clone()))
             .unwrap_or_else(|| {
-                evals
-                    .join("aggregates")
+                aggregate_root
                     .join(format!(
                         "{}__s-{}",
                         result_name_component(suite_label, "suite"),
