@@ -41,6 +41,12 @@ test-live:
 eval model="openrouter/free" evals="evals" prompts="all" tasks="all" tag="": build-eval
 	./target/release/eval run --evals {{evals}} --prompts {{prompts}} --tasks {{tasks}} --model {{model}}{{ if tag != "" { " --tag " + tag } else { "" } }}
 
+# Fast live health check: the default prompt against the two smoke-tagged
+# fixtures (create-file and targeted edit). This validates the provider,
+# tool loop, workspace scoring, and result artifacts; it is not a quality run.
+eval-smoke: build-eval
+	./target/release/eval run --prompts default --tags smoke --model openrouter/free --runs 1 --tag free-smoke
+
 # Run the full prompt/task matrix. Example: `just run-evals z-ai/glm-4.7-flash 3 repeat-3`.
 run-evals model="openrouter/free" runs="1" tag="": build-eval
 	./target/release/eval run --prompts all --tasks all --model {{model}} --runs {{runs}}{{ if tag != "" { " --tag " + tag } else { "" } }}
