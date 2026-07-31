@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::{
-    result_name_component, result_status, ComparisonConfig, ResultStatus, SuiteIdentity, TaskResult,
+    exceeded_max_tool_call_guidance, result_name_component, result_status, ComparisonConfig,
+    ResultStatus, SuiteIdentity, TaskResult,
 };
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +181,10 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
         failed: usize,
         limited: usize,
         errored: usize,
+        tool_calls: u64,
+        max_tool_calls: BTreeSet<u32>,
+        guidance_cases: usize,
+        exceeded_max_tool_calls: usize,
         tokens: u64,
         usd: f64,
     }
@@ -198,6 +203,14 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
             };
             let totals = groups.entry((first, second)).or_default();
             totals.cases += 1;
+            totals.tool_calls += result.scores.efficiency.tool_calls as u64;
+            if let Some(max) = result.scores.efficiency.max_tool_calls {
+                totals.max_tool_calls.insert(max);
+            }
+            if let Some(exceeded) = exceeded_max_tool_call_guidance(result) {
+                totals.guidance_cases += 1;
+                totals.exceeded_max_tool_calls += usize::from(exceeded);
+            }
             totals.tokens += result.scores.cost.tokens_in + result.scores.cost.tokens_out;
             totals.usd += result.scores.cost.usd;
             match result_status(result) {
@@ -211,6 +224,24 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
     groups
         .into_iter()
         .map(|((first, second), totals)| {
+            let max_tool_calls = if totals.max_tool_calls.is_empty() {
+                "—".into()
+            } else {
+                totals
+                    .max_tool_calls
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let exceeded_max_tool_calls = if totals.guidance_cases == 0 {
+                "—".into()
+            } else {
+                format!(
+                    "{}/{}",
+                    totals.exceeded_max_tool_calls, totals.guidance_cases
+                )
+            };
             vec![
                 first,
                 second,
@@ -219,6 +250,9 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
                 totals.failed.to_string(),
                 totals.limited.to_string(),
                 totals.errored.to_string(),
+                format!("{:.1}", totals.tool_calls as f64 / totals.cases as f64),
+                max_tool_calls,
+                exceeded_max_tool_calls,
                 totals.tokens.to_string(),
                 format!("${:.6}", totals.usd),
             ]
@@ -254,6 +288,9 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
         "fail",
         "limit",
         "error",
+        "tools avg",
+        "max tools",
+        "over max",
         "tokens",
         "cost",
     ];

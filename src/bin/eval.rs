@@ -414,6 +414,14 @@ struct EfficiencyScore {
     turns: u32,
     /// Tool-call count fell within task.toml [min, max] range.
     tool_calls_in_range: bool,
+    /// Optional task-level maximum retained so summaries can show when a
+    /// correct result exceeded its tool-call guidance.
+    #[serde(default)]
+    max_tool_calls: Option<u32>,
+    /// Whether the recorded tool-call count exceeded the task-level maximum.
+    /// Absent in artifacts written before this field was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exceeded_max_tool_calls: Option<bool>,
     /// Total tokens stayed under the per-task budget (CLI default or task
     /// override). When false, the task was force-aborted but still scored
     /// on whatever workspace state existed at the time.
@@ -1223,6 +1231,8 @@ async fn run_one(
                 tool_calls,
                 turns,
                 tool_calls_in_range,
+                max_tool_calls: eff_max,
+                exceeded_max_tool_calls: eff_max.map(|max| tool_calls > max),
                 tokens_in_budget: !budget_exceeded,
             },
             cost: CostScore {
@@ -1270,6 +1280,8 @@ fn error_result(
                 tool_calls: 0,
                 turns: 0,
                 tool_calls_in_range: false,
+                max_tool_calls: None,
+                exceeded_max_tool_calls: None,
                 tokens_in_budget: true,
             },
             cost: CostScore {
@@ -1355,6 +1367,20 @@ fn outcome_label(result: &TaskResult) -> &'static str {
     }
 }
 
+fn exceeded_max_tool_call_guidance(result: &TaskResult) -> Option<bool> {
+    result
+        .scores
+        .efficiency
+        .exceeded_max_tool_calls
+        .or_else(|| {
+            result
+                .scores
+                .efficiency
+                .max_tool_calls
+                .map(|max| result.scores.efficiency.tool_calls > max)
+        })
+}
+
 fn format_summary(results: &[TaskResult]) -> String {
     let mut out = String::new();
     if results.is_empty() {
@@ -1378,13 +1404,20 @@ fn format_summary(results: &[TaskResult]) -> String {
     for r in results {
         let err = r.scores.error.as_deref().unwrap_or("");
         let err: String = err.chars().take(50).collect();
+        let tool_calls = r
+            .scores
+            .efficiency
+            .max_tool_calls
+            .filter(|_| exceeded_max_tool_call_guidance(r) == Some(true))
+            .map(|max| format!("{} (max {max})", r.scores.efficiency.tool_calls))
+            .unwrap_or_else(|| r.scores.efficiency.tool_calls.to_string());
         rows.push([
             r.task_id.clone(),
             r.prompt_id.clone(),
             r.model.clone(),
             routed_model_summary(r),
             outcome_label(r).to_string(),
-            r.scores.efficiency.tool_calls.to_string(),
+            tool_calls,
             r.scores.efficiency.turns.to_string(),
             format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
             format!(
@@ -1448,6 +1481,15 @@ fn format_summary(results: &[TaskResult]) -> String {
         out.push_str(
             "(`pass*` = correct outcome but token budget exceeded mid-run; not a failure)\n",
         );
+    }
+    let over_tool_call_guidance = results
+        .iter()
+        .filter(|r| exceeded_max_tool_call_guidance(r) == Some(true))
+        .count();
+    if over_tool_call_guidance > 0 {
+        out.push_str(&format!(
+            "{over_tool_call_guidance} exceeded maximum tool-call guidance (not a failure)\n"
+        ));
     }
     let cached_total = results
         .iter()
@@ -2048,6 +2090,8 @@ mod tests {
                     tool_calls: 1,
                     turns: 1,
                     tool_calls_in_range: true,
+                    max_tool_calls: None,
+                    exceeded_max_tool_calls: None,
                     tokens_in_budget: true,
                 },
                 cost: CostScore {
@@ -2079,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn older_result_artifacts_default_missing_cache_metrics_to_zero() {
+    fn older_result_artifacts_default_missing_optional_metrics() {
         let mut value = serde_json::to_value(result(75, 25, None)).unwrap();
         value["scores"]["cost"]
             .as_object_mut()
@@ -2089,11 +2133,21 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("cache_write_tokens");
+        value["scores"]["efficiency"]
+            .as_object_mut()
+            .unwrap()
+            .remove("max_tool_calls");
+        value["scores"]["efficiency"]
+            .as_object_mut()
+            .unwrap()
+            .remove("exceeded_max_tool_calls");
 
         let parsed: TaskResult = serde_json::from_value(value).unwrap();
 
         assert_eq!(parsed.scores.cost.cached_tokens, 0);
         assert_eq!(parsed.scores.cost.cache_write_tokens, 0);
+        assert_eq!(parsed.scores.efficiency.max_tool_calls, None);
+        assert_eq!(parsed.scores.efficiency.exceeded_max_tool_calls, None);
     }
 
     #[test]
@@ -2206,6 +2260,20 @@ mod tests {
         assert!(aggregated.contains("cache read (avg)"));
         assert!(aggregated.contains("cache write (avg)"));
         assert!(aggregated.contains("38"));
+    }
+
+    #[test]
+    fn summary_surfaces_exceeded_tool_call_guidance_without_failing_result() {
+        let mut result = result(0, 0, None);
+        result.scores.efficiency.tool_calls = 20;
+        result.scores.efficiency.max_tool_calls = Some(12);
+        result.scores.efficiency.tool_calls_in_range = false;
+
+        let summary = format_summary(std::slice::from_ref(&result));
+
+        assert!(summary.contains("20 (max 12)"));
+        assert!(summary.contains("1 exceeded maximum tool-call guidance (not a failure)"));
+        assert!(summary.contains("1 passed (0 over budget)"));
     }
 
     #[test]
@@ -2326,7 +2394,13 @@ mod tests {
             [("first", "model/a", false), ("stopped", "model/b", true)]
         {
             let run_dir = results_root.join(name);
-            let results = vec![result(0, 0, None)];
+            let mut results = vec![result(0, 0, None)];
+            if !budget_stopped {
+                results[0].scores.efficiency.tool_calls = 20;
+                results[0].scores.efficiency.max_tool_calls = Some(12);
+                results[0].scores.efficiency.exceeded_max_tool_calls = Some(true);
+                results[0].scores.efficiency.tool_calls_in_range = false;
+            }
             write_run_artifacts(
                 &run_dir,
                 dir.path(),
@@ -2353,6 +2427,19 @@ mod tests {
                 1,
             )
             .unwrap();
+            if budget_stopped {
+                let summary_path = run_dir.join("summary.json");
+                let mut summary: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&summary_path).unwrap()).unwrap();
+                let efficiency = summary[0]["scores"]["efficiency"].as_object_mut().unwrap();
+                efficiency.remove("max_tool_calls");
+                efficiency.remove("exceeded_max_tool_calls");
+                fs::write(
+                    &summary_path,
+                    serde_json::to_string_pretty(&summary).unwrap(),
+                )
+                .unwrap();
+            }
         }
 
         cmd_aggregate(
@@ -2375,6 +2462,14 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&snapshot_path).unwrap()).unwrap();
         assert_eq!(snapshot["suite"]["label"], "fixture-suite");
         assert_eq!(snapshot["profile"]["label"], "quality");
+        assert_eq!(
+            snapshot["runs"][0]["results"][0]["scores"]["efficiency"]["max_tool_calls"],
+            12
+        );
+        assert_eq!(
+            snapshot["runs"][0]["results"][0]["scores"]["efficiency"]["exceeded_max_tool_calls"],
+            true
+        );
         assert_eq!(snapshot["runs"].as_array().unwrap().len(), 2);
         assert_eq!(
             snapshot["runs"]
@@ -2390,6 +2485,12 @@ mod tests {
         assert!(aggregate_dir.join("by-model.md").exists());
         assert!(aggregate_dir.join("by-prompt.md").exists());
         assert!(aggregate_dir.join("by-heddle-revision.md").exists());
+        let by_model = fs::read_to_string(aggregate_dir.join("by-model.md")).unwrap();
+        assert!(by_model.contains("tools avg"));
+        assert!(by_model.contains("max tools"));
+        assert!(by_model.contains("over max"));
+        assert!(by_model.contains("20.0"));
+        assert!(by_model.contains("1/1"));
     }
 
     #[test]
