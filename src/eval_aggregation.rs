@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use super::{result_name_component, ComparisonConfig, SuiteIdentity, TaskResult};
+use super::{
+    result_name_component, result_status, ComparisonConfig, ResultStatus, SuiteIdentity, TaskResult,
+};
 
 #[derive(Debug, Deserialize)]
 struct StoredRunMeta {
@@ -176,6 +178,7 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
         cases: usize,
         passed: usize,
         failed: usize,
+        limited: usize,
         errored: usize,
         tokens: u64,
         usd: f64,
@@ -197,12 +200,11 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
             totals.cases += 1;
             totals.tokens += result.scores.cost.tokens_in + result.scores.cost.tokens_out;
             totals.usd += result.scores.cost.usd;
-            if result.scores.error.is_some() {
-                totals.errored += 1;
-            } else if result.scores.outcome.passed {
-                totals.passed += 1;
-            } else {
-                totals.failed += 1;
+            match result_status(result) {
+                ResultStatus::Pass => totals.passed += 1,
+                ResultStatus::Fail => totals.failed += 1,
+                ResultStatus::Limit => totals.limited += 1,
+                ResultStatus::Error => totals.errored += 1,
             }
         }
     }
@@ -215,6 +217,7 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
                 totals.cases.to_string(),
                 format!("{}/{}", totals.passed, totals.cases),
                 totals.failed.to_string(),
+                totals.limited.to_string(),
                 totals.errored.to_string(),
                 totals.tokens.to_string(),
                 format!("${:.6}", totals.usd),
@@ -249,6 +252,7 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
         "cases",
         "pass",
         "fail",
+        "limit",
         "error",
         "tokens",
         "cost",
@@ -281,10 +285,10 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone)]
 struct ExistingTarget {
     suite_fingerprint: String,
     comparison_fingerprint: String,
-    stored_profile_fingerprint: String,
     output_dir: PathBuf,
 }
 
@@ -326,10 +330,22 @@ fn existing_target(
                 &fs::read_to_string(&snapshot_path)
                     .with_context(|| format!("reading {}", snapshot_path.display()))?,
             )?;
-            let suite = snapshot["suite"]["fingerprint"].as_str().ok_or_else(|| {
+            let suite_fingerprint = snapshot["suite"]["fingerprint"].as_str().ok_or_else(|| {
                 anyhow::anyhow!("missing suite fingerprint in {}", snapshot_path.display())
             })?;
-            let profile = snapshot["profile"]["fingerprint"].as_str().ok_or_else(|| {
+            let suite_source = snapshot["suite"]["fingerprint_source"]
+                .as_str()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing suite fingerprint source in {}",
+                        snapshot_path.display()
+                    )
+                })?;
+            let suite = SuiteIdentity {
+                fingerprint: suite_fingerprint.to_string(),
+                source: suite_source.to_string(),
+            };
+            snapshot["profile"]["fingerprint"].as_str().ok_or_else(|| {
                 anyhow::anyhow!("missing profile fingerprint in {}", snapshot_path.display())
             })?;
             let comparison: ComparisonConfig = serde_json::from_value(
@@ -337,9 +353,8 @@ fn existing_target(
             )
             .with_context(|| format!("parsing comparison in {}", snapshot_path.display()))?;
             matches.push(ExistingTarget {
-                suite_fingerprint: suite.to_string(),
+                suite_fingerprint: suite.fingerprint.clone(),
                 comparison_fingerprint: fingerprint(&comparison)?,
-                stored_profile_fingerprint: profile.to_string(),
                 output_dir: profile_dir,
             });
         }
@@ -459,10 +474,6 @@ pub(super) fn cmd_aggregate(
                         short_hash(&profile_fingerprint)
                     ))
             });
-        let stored_profile_fingerprint = target
-            .as_ref()
-            .map(|target| target.stored_profile_fingerprint.clone())
-            .unwrap_or(profile_fingerprint);
         let snapshot = AggregateSnapshot {
             schema_version: 1,
             generated_at: Utc::now().to_rfc3339(),
@@ -473,7 +484,7 @@ pub(super) fn cmd_aggregate(
             },
             profile: AggregateProfile {
                 label: profile_label.into(),
-                fingerprint: stored_profile_fingerprint,
+                fingerprint: profile_fingerprint,
                 comparison,
             },
             runs,

@@ -68,6 +68,10 @@ enum Cmd {
         /// Comma-separated task ids, or "all".
         #[arg(long, default_value = "all")]
         tasks: String,
+        /// Comma-separated task tags. Applied after --tasks selection; use
+        /// "all" to leave the selected task set unchanged.
+        #[arg(long, default_value = "all")]
+        tags: String,
         /// Model id (defaults to manifest.default_model).
         #[arg(long)]
         model: Option<String>,
@@ -181,7 +185,7 @@ struct PromptFrontMatter {
     matrix_exclude: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 struct ContextConfig {
     #[serde(default)]
     cwd: bool,
@@ -212,7 +216,7 @@ impl ContextConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct GitConfig {
     #[serde(default)]
     branch: bool,
@@ -220,7 +224,7 @@ struct GitConfig {
     status: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct FileTreeConfig {
     #[serde(default = "default_tree_depth")]
     max_depth: usize,
@@ -238,7 +242,6 @@ fn default_tree_entries() -> usize {
 #[derive(Debug, Clone)]
 struct Prompt {
     id: String,
-    source_path: PathBuf,
     front: PromptFrontMatter,
     body: String,
 }
@@ -247,6 +250,9 @@ struct Prompt {
 struct TaskSpec {
     id: String,
     prompt: String,
+    /// Capability/category labels used by --tags selection and reports.
+    #[serde(default)]
+    tags: Vec<String>,
     #[serde(default)]
     tools: Option<Vec<String>>,
     #[serde(default)]
@@ -270,14 +276,14 @@ struct TaskSpec {
     score: TaskScoreSpec,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct TaskScoreSpec {
     outcome: OutcomeSpec,
     #[serde(default)]
     efficiency: Option<EfficiencySpec>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct OutcomeSpec {
     expected_dir: String,
     #[serde(default)]
@@ -285,7 +291,7 @@ struct OutcomeSpec {
     ignore_globs: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct EfficiencySpec {
     #[serde(default)]
     min_tool_calls: Option<u32>,
@@ -357,7 +363,37 @@ struct Scores {
     outcome: OutcomeScore,
     efficiency: EfficiencyScore,
     cost: CostScore,
+    /// Configured or runtime guard that stopped an incomplete task. Older
+    /// artifacts derive max-turn limits from their legacy error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<LimitReason>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum LimitReason {
+    MaxTurns,
+    TokenBudget,
+    DoomLoop,
+}
+
+impl LimitReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::MaxTurns => "max_turns",
+            Self::TokenBudget => "token_budget",
+            Self::DoomLoop => "doom_loop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultStatus {
+    Pass,
+    Fail,
+    Limit,
+    Error,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -437,7 +473,6 @@ fn load_prompt(path: &Path) -> Result<Prompt> {
     }
     Ok(Prompt {
         id: front.id.clone().unwrap_or(stem),
-        source_path: path.to_path_buf(),
         front,
         body: body.to_string(),
     })
@@ -1035,6 +1070,7 @@ async fn run_one(
     let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
     let mut pending_routed_model: Option<String> = None;
     let mut error: Option<String> = None;
+    let mut limit: Option<LimitReason> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
     let mut finish_reasons: Vec<String> = Vec::new();
     let mut assistant_messages: Vec<AssistantTrace> = Vec::new();
@@ -1115,6 +1151,7 @@ async fn run_one(
                         // the dir diff below — the agent may have done the work
                         // and just emitted verbose tail-text after.
                         budget_exceeded = true;
+                        limit = Some(LimitReason::TokenBudget);
                         break;
                     }
                 }
@@ -1126,7 +1163,15 @@ async fn run_one(
                     if message.contains("; retrying once") {
                         continue;
                     }
-                    error = Some(message);
+                    if message.starts_with("Max iterations (") {
+                        limit = Some(LimitReason::MaxTurns);
+                    } else {
+                        error = Some(message);
+                    }
+                    break;
+                }
+                AgentEvent::LoopDetected { .. } => {
+                    limit = Some(LimitReason::DoomLoop);
                     break;
                 }
                 _ => {}
@@ -1187,6 +1232,7 @@ async fn run_one(
                 cache_write_tokens,
                 usd,
             },
+            limit,
             error,
         },
     }
@@ -1233,6 +1279,7 @@ fn error_result(
                 cache_write_tokens: 0,
                 usd: 0.0,
             },
+            limit: None,
             error: Some(err),
         },
     }
@@ -1273,17 +1320,38 @@ fn heddle_git_info() -> GitInfo {
 
 // ─── Output ──────────────────────────────────────────────────────────────
 
-fn outcome_label(result: &TaskResult) -> &'static str {
-    if result.scores.error.is_some() {
-        return "ERROR";
+fn legacy_limit_reason(result: &TaskResult) -> Option<LimitReason> {
+    result
+        .scores
+        .error
+        .as_deref()
+        .filter(|message| message.starts_with("Max iterations ("))
+        .map(|_| LimitReason::MaxTurns)
+}
+
+fn limit_reason(result: &TaskResult) -> Option<LimitReason> {
+    result.scores.limit.or_else(|| legacy_limit_reason(result))
+}
+
+fn result_status(result: &TaskResult) -> ResultStatus {
+    if result.scores.outcome.passed {
+        ResultStatus::Pass
+    } else if limit_reason(result).is_some() {
+        ResultStatus::Limit
+    } else if result.scores.error.is_some() {
+        ResultStatus::Error
+    } else {
+        ResultStatus::Fail
     }
-    match (
-        result.scores.outcome.passed,
-        result.scores.efficiency.tokens_in_budget,
-    ) {
-        (true, true) => "pass",
-        (true, false) => "pass*",
-        (false, _) => "FAIL",
+}
+
+fn outcome_label(result: &TaskResult) -> &'static str {
+    match result_status(result) {
+        ResultStatus::Pass if result.scores.efficiency.tokens_in_budget => "PASS",
+        ResultStatus::Pass => "PASS*",
+        ResultStatus::Fail => "FAIL",
+        ResultStatus::Limit => "LIMIT",
+        ResultStatus::Error => "ERROR",
     }
 }
 
@@ -1351,19 +1419,29 @@ fn format_summary(results: &[TaskResult]) -> String {
         out.push_str(&render(row));
         out.push('\n');
     }
-    let pass = results.iter().filter(|r| r.scores.outcome.passed).count();
+    let pass = results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Pass)
+        .count();
     let over_budget = results
         .iter()
         .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
         .count();
+    let limited = results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Limit)
+        .count();
     let errors = results
         .iter()
-        .filter(|r| !r.scores.outcome.passed && r.scores.error.is_some())
+        .filter(|r| result_status(r) == ResultStatus::Error)
         .count();
-    let fail = results.len() - pass - errors;
+    let fail = results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Fail)
+        .count();
     out.push('\n');
     out.push_str(&format!(
-        "{pass} passed ({over_budget} over budget), {fail} failed, {errors} errored of {} total\n",
+        "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total\n",
         results.len()
     ));
     if over_budget > 0 {
@@ -1455,15 +1533,28 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
     for ((task_id, prompt_id), runs_of) in &groups {
         let n = runs_of.len() as f64;
         let passed = runs_of.iter().filter(|r| r.scores.outcome.passed).count();
+        let limited = runs_of
+            .iter()
+            .filter(|r| result_status(r) == ResultStatus::Limit)
+            .count();
         let errors = runs_of
             .iter()
-            .filter(|r| !r.scores.outcome.passed && r.scores.error.is_some())
+            .filter(|r| result_status(r) == ResultStatus::Error)
             .count();
-        let pass_rate = if errors == 0 {
-            format!("{}/{}", passed, runs_of.len())
-        } else {
-            format!("{passed}/{} pass; {errors} ERROR", runs_of.len())
-        };
+        let failed = runs_of
+            .iter()
+            .filter(|r| result_status(r) == ResultStatus::Fail)
+            .count();
+        let mut pass_rate = format!("{passed}/{} pass", runs_of.len());
+        if failed > 0 {
+            pass_rate.push_str(&format!("; {failed} FAIL"));
+        }
+        if limited > 0 {
+            pass_rate.push_str(&format!("; {limited} LIMIT"));
+        }
+        if errors > 0 {
+            pass_rate.push_str(&format!("; {errors} ERROR"));
+        }
         let mean_tools = runs_of
             .iter()
             .map(|r| r.scores.efficiency.tool_calls as f64)
@@ -1563,7 +1654,9 @@ fn format_failure_details(results: &[TaskResult]) -> String {
     out.push_str(&format!("failures ({}):\n", fails.len()));
     for r in fails {
         out.push_str(&format!("  {} | {}\n", r.task_id, r.prompt_id));
-        if let Some(e) = &r.scores.error {
+        if let Some(limit) = limit_reason(r) {
+            out.push_str(&format!("    limit: {}\n", limit.label()));
+        } else if let Some(e) = &r.scores.error {
             out.push_str(&format!("    error: {e}\n"));
         }
         if !r.scores.outcome.diff_files.is_empty() {
@@ -1630,6 +1723,9 @@ fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
 }
 
 fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
+    if result_status(r) != ResultStatus::Error {
+        return Ok(());
+    }
     let Some(error) = &r.scores.error else {
         return Ok(());
     };
@@ -1694,6 +1790,7 @@ async fn main() -> Result<()> {
             evals,
             prompts,
             tasks,
+            tags,
             model,
             max_tokens_per_task,
             max_tokens_per_response,
@@ -1712,6 +1809,7 @@ async fn main() -> Result<()> {
                 &evals,
                 &prompts,
                 &tasks,
+                &tags,
                 model.as_deref(),
                 max_tokens_per_task,
                 max_tokens_per_response,
@@ -1753,8 +1851,13 @@ fn cmd_list(evals: &Path) -> Result<()> {
     println!("tasks ({}):", tasks.len());
     for t in &tasks {
         println!(
-            "  {:<28} max_turns={}  timeout={}s  tools={:?}",
+            "  {:<28} tags={:<36} max_turns={}  timeout={}s  tools={:?}",
             t.spec.id,
+            if t.spec.tags.is_empty() {
+                "-".to_string()
+            } else {
+                t.spec.tags.join(",")
+            },
             t.spec.max_turns.unwrap_or(8),
             t.spec.task_timeout_secs.unwrap_or(150),
             t.spec.tools.as_ref().map(|v| v.len()).unwrap_or(7),
@@ -1780,6 +1883,31 @@ where
         out.push(m);
     }
     Ok(out)
+}
+
+fn select_task_tags<'a>(tasks: Vec<&'a Task>, wanted: &str) -> Result<Vec<&'a Task>> {
+    if wanted == "all" {
+        return Ok(tasks);
+    }
+    let tags: Vec<&str> = wanted
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    if tags.is_empty() {
+        bail!("--tags must name at least one tag or use 'all'");
+    }
+    let selected: Vec<&Task> = tasks
+        .into_iter()
+        .filter(|task| {
+            tags.iter()
+                .any(|tag| task.spec.tags.iter().any(|task_tag| task_tag == tag))
+        })
+        .collect();
+    if selected.is_empty() {
+        bail!("no selected tasks match tags: {}", tags.join(", "));
+    }
+    Ok(selected)
 }
 
 fn result_name_component(value: &str, fallback: &str) -> String {
@@ -1929,6 +2057,7 @@ mod tests {
                     cache_write_tokens,
                     usd: 0.01,
                 },
+                limit: None,
                 error: None,
             },
             rendered_system_prompt_chars: 10,
@@ -1992,9 +2121,28 @@ mod tests {
 
         let summary = format_summary(std::slice::from_ref(&result));
         assert!(summary.contains("ERROR"));
-        assert!(summary.contains("0 failed, 1 errored"));
+        assert!(summary.contains("0 failed, 0 limited, 1 errored"));
         let aggregated = format_aggregated_summary(std::slice::from_ref(&result), 1);
         assert!(aggregated.contains("0/1 pass; 1 ERROR"));
+    }
+
+    #[test]
+    fn summaries_classify_max_turns_as_limit_and_preserve_legacy_artifacts() {
+        let mut result = result(0, 0, None);
+        result.scores.outcome.passed = false;
+        result.scores.error = Some("Max iterations (8) reached — possible infinite loop".into());
+
+        assert_eq!(result_status(&result), ResultStatus::Limit);
+        assert!(format_summary(std::slice::from_ref(&result)).contains("LIMIT"));
+        assert!(format_summary(std::slice::from_ref(&result))
+            .contains("0 failed, 1 limited, 0 errored"));
+        assert!(format_aggregated_summary(std::slice::from_ref(&result), 1)
+            .contains("0/1 pass; 1 LIMIT"));
+
+        result.scores.error = None;
+        result.scores.limit = Some(LimitReason::MaxTurns);
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["scores"]["limit"], "max_turns");
     }
 
     #[test]
@@ -2249,7 +2397,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prompt = Prompt {
             id: "dynamic".into(),
-            source_path: dir.path().join("dynamic.md"),
             front: PromptFrontMatter {
                 context: ContextConfig {
                     cwd: true,
@@ -2285,13 +2432,11 @@ mod tests {
     fn static_context_only_excludes_dynamic_prompts_from_matrix_selection() {
         let static_prompt = Prompt {
             id: "static".into(),
-            source_path: PathBuf::from("static.md"),
             front: PromptFrontMatter::default(),
             body: "instructions".into(),
         };
         let dynamic_prompt = Prompt {
             id: "dynamic".into(),
-            source_path: PathBuf::from("dynamic.md"),
             front: PromptFrontMatter {
                 context: ContextConfig {
                     cwd: true,
@@ -2320,7 +2465,6 @@ mod tests {
     fn static_context_only_rejects_explicit_dynamic_prompt_selection() {
         let dynamic_prompt = Prompt {
             id: "dynamic".into(),
-            source_path: PathBuf::from("dynamic.md"),
             front: PromptFrontMatter {
                 context: ContextConfig {
                     git: Some(GitConfig {
@@ -2339,6 +2483,84 @@ mod tests {
 
         assert!(error.to_string().contains("dynamic (git)"));
     }
+
+    #[test]
+    fn task_tag_selection_filters_selected_tasks() {
+        let task = |id: &str, tags: &[&str]| Task {
+            dir: PathBuf::from(id),
+            spec: TaskSpec {
+                id: id.into(),
+                prompt: String::new(),
+                tags: tags.iter().map(|tag| (*tag).into()).collect(),
+                tools: None,
+                max_turns: None,
+                task_timeout_secs: None,
+                budget_tokens: None,
+                smoke: false,
+                score: TaskScoreSpec {
+                    outcome: OutcomeSpec {
+                        expected_dir: "after".into(),
+                        ignore_globs: None,
+                    },
+                    efficiency: None,
+                },
+            },
+        };
+        let rename = task("rename", &["multi_file", "rename"]);
+        let bugfix = task("bugfix", &["bugfix"]);
+
+        let selected = select_task_tags(vec![&rename, &bugfix], "rename,bugfix").unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(select_task_tags(vec![&rename], "missing").is_err());
+    }
+
+    #[test]
+    fn suite_fingerprint_ignores_task_tags_but_tracks_behavioral_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let task_dir = dir.path().join("task");
+        std::fs::create_dir_all(task_dir.join("before")).unwrap();
+        std::fs::create_dir_all(task_dir.join("after")).unwrap();
+        std::fs::write(task_dir.join("before/input.txt"), "before").unwrap();
+        std::fs::write(task_dir.join("after/input.txt"), "after").unwrap();
+        let prompt = Prompt {
+            id: "default".into(),
+            front: PromptFrontMatter::default(),
+            body: "Do the task.".into(),
+        };
+        let mut task = Task {
+            dir: task_dir,
+            spec: TaskSpec {
+                id: "task".into(),
+                prompt: "Edit input.txt".into(),
+                tags: vec!["simple-edit".into()],
+                tools: None,
+                max_turns: None,
+                task_timeout_secs: None,
+                budget_tokens: None,
+                smoke: false,
+                score: TaskScoreSpec {
+                    outcome: OutcomeSpec {
+                        expected_dir: "after".into(),
+                        ignore_globs: None,
+                    },
+                    efficiency: None,
+                },
+            },
+        };
+
+        let original = suite_identity(&[&prompt], &[&task]).unwrap();
+        task.spec.tags.push("bugfix".into());
+        assert_eq!(
+            original.fingerprint,
+            suite_identity(&[&prompt], &[&task]).unwrap().fingerprint
+        );
+
+        task.spec.prompt.push_str(" Do not touch anything else.");
+        assert_ne!(
+            original.fingerprint,
+            suite_identity(&[&prompt], &[&task]).unwrap().fingerprint
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2346,6 +2568,7 @@ async fn cmd_run(
     evals: &Path,
     prompts: &str,
     tasks: &str,
+    tags: &str,
     model_flag: Option<&str>,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
@@ -2375,7 +2598,7 @@ async fn cmd_run(
     let all_prompts = load_prompts(evals)?;
     let all_tasks = load_tasks(evals)?;
     let mut chosen_prompts = select(&all_prompts, prompts, |p| p.id.as_str())?;
-    let chosen_tasks = select(&all_tasks, tasks, |t| t.spec.id.as_str())?;
+    let chosen_tasks = select_task_tags(select(&all_tasks, tasks, |t| t.spec.id.as_str())?, tags)?;
 
     // When the user said `--prompts all`, drop prompts marked
     // `matrix_exclude` (retired-but-kept, known-failing baselines, etc).
@@ -2666,7 +2889,7 @@ async fn cmd_run(
             openrouter_routing: "balanced",
         },
     );
-    let suite = suite_identity(evals, &chosen_prompts, &chosen_tasks)?;
+    let suite = suite_identity(&chosen_prompts, &chosen_tasks)?;
 
     write_run_artifacts(
         &results_dir,
@@ -2751,7 +2974,7 @@ struct ComparisonConfig {
     openrouter_routing: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct SuiteIdentity {
     fingerprint: String,
     source: String,
@@ -2765,37 +2988,96 @@ fn hash_file(hasher: &mut Sha256, label: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn suite_identity(evals: &Path, prompts: &[&Prompt], tasks: &[&Task]) -> Result<SuiteIdentity> {
-    let mut hasher = Sha256::new();
-    hash_file(&mut hasher, "manifest.toml", &evals.join("manifest.toml"))?;
+fn hash_value<T: Serialize>(hasher: &mut Sha256, label: &str, value: &T) -> Result<()> {
+    hasher.update(label.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(value)?);
+    hasher.update([0]);
+    Ok(())
+}
 
-    let mut prompt_paths: Vec<&PathBuf> =
-        prompts.iter().map(|prompt| &prompt.source_path).collect();
-    prompt_paths.sort();
-    for path in prompt_paths {
-        let relative = path.strip_prefix(evals).unwrap_or(path).to_string_lossy();
-        hash_file(&mut hasher, &relative, path)?;
+fn hash_fixture_tree(hasher: &mut Sha256, label: &str, root: &Path) -> Result<()> {
+    if !root.is_dir() {
+        bail!("fixture directory does not exist: {}", root.display());
+    }
+    let mut files: Vec<PathBuf> = WalkDir::new(root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect();
+    files.sort();
+    for path in files {
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+        hash_file(hasher, &format!("{label}/{relative}"), &path)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SuitePrompt<'a> {
+    id: &'a str,
+    context: &'a ContextConfig,
+    body: &'a str,
+}
+
+#[derive(Serialize)]
+struct SuiteTask<'a> {
+    id: &'a str,
+    prompt: &'a str,
+    tools: &'a Option<Vec<String>>,
+    max_turns: Option<u32>,
+    task_timeout_secs: Option<u64>,
+    budget_tokens: Option<u64>,
+    smoke: bool,
+    score: &'a TaskScoreSpec,
+}
+
+fn suite_identity(prompts: &[&Prompt], tasks: &[&Task]) -> Result<SuiteIdentity> {
+    let mut hasher = Sha256::new();
+    let mut sorted_prompts: Vec<&Prompt> = prompts.to_vec();
+    sorted_prompts.sort_by(|a, b| a.id.cmp(&b.id));
+    for prompt in sorted_prompts {
+        hash_value(
+            &mut hasher,
+            &format!("prompt/{}", prompt.id),
+            &SuitePrompt {
+                id: &prompt.id,
+                context: &prompt.front.context,
+                body: &prompt.body,
+            },
+        )?;
     }
 
-    let mut task_dirs: Vec<&PathBuf> = tasks.iter().map(|task| &task.dir).collect();
-    task_dirs.sort();
-    for task_dir in task_dirs {
-        let mut files: Vec<PathBuf> = WalkDir::new(task_dir)
-            .into_iter()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_type().is_file())
-            .map(|entry| entry.into_path())
-            .collect();
-        files.sort();
-        for path in files {
-            let relative = path.strip_prefix(evals).unwrap_or(&path).to_string_lossy();
-            hash_file(&mut hasher, &relative, &path)?;
-        }
+    let mut sorted_tasks: Vec<&Task> = tasks.to_vec();
+    sorted_tasks.sort_by(|a, b| a.spec.id.cmp(&b.spec.id));
+    for task in sorted_tasks {
+        let config = SuiteTask {
+            id: &task.spec.id,
+            prompt: &task.spec.prompt,
+            tools: &task.spec.tools,
+            max_turns: task.spec.max_turns,
+            task_timeout_secs: task.spec.task_timeout_secs,
+            budget_tokens: task.spec.budget_tokens,
+            smoke: task.spec.smoke,
+            score: &task.spec.score,
+        };
+        hash_value(&mut hasher, &format!("task/{}", task.spec.id), &config)?;
+        hash_fixture_tree(
+            &mut hasher,
+            &format!("task/{}/before", task.spec.id),
+            &task.dir.join("before"),
+        )?;
+        hash_fixture_tree(
+            &mut hasher,
+            &format!("task/{}/expected", task.spec.id),
+            &task.dir.join(&task.spec.score.outcome.expected_dir),
+        )?;
     }
 
     Ok(SuiteIdentity {
         fingerprint: hex::encode(hasher.finalize()),
-        source: "selected_eval_inputs_v1".into(),
+        source: "selected_eval_behavior_v2".into(),
     })
 }
 
@@ -2846,6 +3128,7 @@ struct RunCounts {
     passed: usize,
     passed_over_budget: usize,
     failed: usize,
+    limited: usize,
     errored: usize,
 }
 
@@ -2896,14 +3179,25 @@ fn write_run_artifacts(
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
 
-    let passed = results.iter().filter(|r| r.scores.outcome.passed).count();
+    let passed = results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Pass)
+        .count();
     let passed_over_budget = results
         .iter()
         .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
         .count();
+    let limited = results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Limit)
+        .count();
     let errored = results
         .iter()
-        .filter(|r| !r.scores.outcome.passed && r.scores.error.is_some())
+        .filter(|r| result_status(r) == ResultStatus::Error)
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Fail)
         .count();
     let cache_tokens = CacheTokenTotals {
         cached_tokens: results.iter().map(|r| r.scores.cost.cached_tokens).sum(),
@@ -2939,7 +3233,8 @@ fn write_run_artifacts(
             total: results.len(),
             passed,
             passed_over_budget,
-            failed: results.len() - passed - errored,
+            failed,
+            limited,
             errored,
         },
         totals,
