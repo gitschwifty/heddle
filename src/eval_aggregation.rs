@@ -443,11 +443,20 @@ pub(super) fn cmd_aggregate(
         )
         .with_context(|| format!("parsing {}", meta_path.display()))?;
         let results_path = run_dir.join("summary.json");
-        let results: Vec<TaskResult> = serde_json::from_str(
+        let mut results: Vec<TaskResult> = serde_json::from_str(
             &fs::read_to_string(&results_path)
                 .with_context(|| format!("reading {}", results_path.display()))?,
         )
         .with_context(|| format!("parsing {}", results_path.display()))?;
+        for result in &mut results {
+            if result
+                .routed_models
+                .iter()
+                .all(|observation| observation.model == meta.model)
+            {
+                result.routed_models.clear();
+            }
+        }
         let suite = meta.suite.clone().unwrap_or(legacy_suite(&meta)?);
         let comparison = meta
             .comparison

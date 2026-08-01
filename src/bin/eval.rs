@@ -311,6 +311,9 @@ struct Task {
 struct TaskResult {
     task_id: String,
     prompt_id: String,
+    /// Requested model. Run metadata owns this for persisted results, so do
+    /// not repeat it in every per-case or aggregate result record.
+    #[serde(default, skip_serializing)]
     model: String,
     heddle_commit: String,
     evals_version: String,
@@ -318,11 +321,9 @@ struct TaskResult {
     duration_ms: u128,
     scores: Scores,
     rendered_system_prompt_chars: usize,
-    /// Concrete model reported by the provider for routed aliases, when any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    routed_model: Option<String>,
     /// Provider-reported model for each assistant response. This preserves
-    /// switches behind routed aliases such as `openrouter/free`.
+    /// switches behind routed aliases such as `openrouter/free`. Pinned runs
+    /// omit this when every observed model equals the requested model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     routed_models: Vec<RoutedModelObservation>,
     /// 1-indexed run number when --runs N. 0 if single-run.
@@ -1074,7 +1075,6 @@ async fn run_one(
     let mut cached_tokens = 0u64;
     let mut cache_write_tokens = 0u64;
     let mut usd = 0.0f64;
-    let mut routed_model: Option<String> = None;
     let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
     let mut pending_routed_model: Option<String> = None;
     let mut error: Option<String> = None;
@@ -1164,8 +1164,7 @@ async fn run_one(
                     }
                 }
                 AgentEvent::RoutedModel { model } => {
-                    pending_routed_model = Some(model.clone());
-                    routed_model = Some(model);
+                    pending_routed_model = Some(model);
                 }
                 AgentEvent::Error { message } => {
                     if message.contains("; retrying once") {
@@ -1205,6 +1204,12 @@ async fn run_one(
     };
     let tool_calls_in_range = eff_min.map(|m| tool_calls >= m).unwrap_or(true)
         && eff_max.map(|m| tool_calls <= m).unwrap_or(true);
+    if routed_models
+        .iter()
+        .all(|observation| observation.model == model)
+    {
+        routed_models.clear();
+    }
 
     TaskResult {
         task_id: task.spec.id.clone(),
@@ -1215,7 +1220,6 @@ async fn run_one(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars,
-        routed_model,
         routed_models,
         run_index: 0,
         tool_sequence,
@@ -1264,7 +1268,6 @@ fn error_result(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
-        routed_model: None,
         routed_models: Vec::new(),
         run_index: 0,
         tool_sequence: Vec::new(),
@@ -1386,11 +1389,12 @@ fn format_summary(results: &[TaskResult]) -> String {
     if results.is_empty() {
         return out;
     }
-    let header = [
-        "task",
-        "prompt",
-        "model",
-        "routed",
+    let has_routed_models = results.iter().any(|r| !r.routed_models.is_empty());
+    let mut header = vec!["task", "prompt"];
+    if has_routed_models {
+        header.push("routed");
+    }
+    header.extend([
         "outcome",
         "tools",
         "turns",
@@ -1398,9 +1402,9 @@ fn format_summary(results: &[TaskResult]) -> String {
         "cache r/w",
         "usd",
         "err",
-    ];
-    let mut rows: Vec<[String; 11]> = Vec::with_capacity(results.len() + 1);
-    rows.push(header.map(String::from));
+    ]);
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(results.len() + 1);
+    rows.push(header.into_iter().map(String::from).collect());
     for r in results {
         let err = r.scores.error.as_deref().unwrap_or("");
         let err: String = err.chars().take(50).collect();
@@ -1411,11 +1415,11 @@ fn format_summary(results: &[TaskResult]) -> String {
             .filter(|_| exceeded_max_tool_call_guidance(r) == Some(true))
             .map(|max| format!("{} (max {max})", r.scores.efficiency.tool_calls))
             .unwrap_or_else(|| r.scores.efficiency.tool_calls.to_string());
-        rows.push([
-            r.task_id.clone(),
-            r.prompt_id.clone(),
-            r.model.clone(),
-            routed_model_summary(r),
+        let mut row = vec![r.task_id.clone(), r.prompt_id.clone()];
+        if has_routed_models {
+            row.push(routed_model_summary(r));
+        }
+        row.extend([
             outcome_label(r).to_string(),
             tool_calls,
             r.scores.efficiency.turns.to_string(),
@@ -1427,14 +1431,15 @@ fn format_summary(results: &[TaskResult]) -> String {
             format!("{:.6}", r.scores.cost.usd),
             err,
         ]);
+        rows.push(row);
     }
-    let mut widths = [0usize; 11];
+    let mut widths = vec![0usize; rows[0].len()];
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-    let render = |row: &[String; 11]| -> String {
+    let render = |row: &[String]| -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
@@ -1530,7 +1535,7 @@ fn routed_model_summary(r: &TaskResult) -> String {
         }
     }
     match models.as_slice() {
-        [] => r.routed_model.clone().unwrap_or_else(|| "-".into()),
+        [] => "-".into(),
         [model] => (*model).to_string(),
         models => format!(
             "mixed ({} models; final {})",
@@ -1744,7 +1749,6 @@ fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
         "prompt_id": r.prompt_id,
         "run_index": r.run_index,
         "model": r.model,
-        "routed_model": r.routed_model,
         "routed_models": r.routed_models,
         "timestamp": r.timestamp,
         "heddle_commit": r.heddle_commit,
@@ -1776,12 +1780,12 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
     fs::create_dir_all(&error_dir)?;
     let stem = result_artifact_stem(r);
     let contents = format!(
-        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_model: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
         r.prompt_id,
         r.run_index,
         r.model,
-        r.routed_model.as_deref().unwrap_or("unknown"),
+        routed_model_summary(r),
         r.scores.efficiency.turns,
         r.scores.efficiency.tool_calls,
         r.scores.cost.tokens_in,
@@ -2075,8 +2079,14 @@ mod tests {
             task_id: "task-1".into(),
             prompt_id: "prompt-1".into(),
             model: "openrouter/auto".into(),
-            routed_model: routed_model.map(str::to_string),
-            routed_models: Vec::new(),
+            routed_models: routed_model
+                .map(|model| {
+                    vec![RoutedModelObservation {
+                        assistant_turn: 1,
+                        model: model.into(),
+                    }]
+                })
+                .unwrap_or_default(),
             heddle_commit: "abc123".into(),
             evals_version: "0.1.0".into(),
             timestamp: "2026-07-22T00:00:00Z".into(),
@@ -2114,10 +2124,15 @@ mod tests {
     }
 
     #[test]
-    fn result_artifact_serializes_cache_metrics_and_routed_model() {
+    fn result_artifact_omits_requested_model_and_serializes_routing_only_when_needed() {
         let value =
             serde_json::to_value(result(75, 25, Some("anthropic/claude-sonnet-4"))).unwrap();
-        assert_eq!(value["routed_model"], "anthropic/claude-sonnet-4");
+        assert!(value.get("model").is_none());
+        assert!(value.get("routed_model").is_none());
+        assert_eq!(
+            value["routed_models"][0]["model"],
+            "anthropic/claude-sonnet-4"
+        );
         assert_eq!(value["scores"]["cost"]["cached_tokens"], 75);
         assert_eq!(value["scores"]["cost"]["cache_write_tokens"], 25);
     }
@@ -2165,6 +2180,15 @@ mod tests {
         ];
 
         assert!(format_summary(&[result]).contains("mixed (2 models; final qwen/qwen3-coder)"));
+    }
+
+    #[test]
+    fn summary_omits_repeated_requested_and_routed_model_columns() {
+        let summary = format_summary(&[result(0, 0, None)]);
+
+        assert!(!summary.contains("| model |"));
+        assert!(!summary.contains("| routed |"));
+        assert!(summary.contains("| task"));
     }
 
     #[test]
@@ -2238,7 +2262,7 @@ mod tests {
         write_result_artifacts(dir.path(), &result).unwrap();
 
         let log = std::fs::read_to_string(dir.path().join("errors/task-1__prompt-1.log")).unwrap();
-        assert!(log.contains("routed_model: nvidia/nemotron:free"));
+        assert!(log.contains("routed_models: nvidia/nemotron:free"));
         assert!(log.contains("error decoding provider JSON response"));
         assert!(log.contains("result: ../task-1__prompt-1.json"));
     }
