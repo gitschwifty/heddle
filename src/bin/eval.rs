@@ -1384,6 +1384,21 @@ fn exceeded_max_tool_call_guidance(result: &TaskResult) -> Option<bool> {
         })
 }
 
+fn requested_model_line<'a>(results: impl IntoIterator<Item = &'a TaskResult>) -> Option<String> {
+    let mut models: Vec<&str> = results
+        .into_iter()
+        .map(|result| result.model.as_str())
+        .filter(|model| !model.is_empty())
+        .collect();
+    models.sort_unstable();
+    models.dedup();
+    match models.as_slice() {
+        [] => None,
+        [model] => Some(format!("model: {model}\n")),
+        models => Some(format!("models: {}\n", models.join(", "))),
+    }
+}
+
 fn format_summary(results: &[TaskResult]) -> String {
     let mut out = String::new();
     if results.is_empty() {
@@ -1457,6 +1472,10 @@ fn format_summary(results: &[TaskResult]) -> String {
         out.push_str(&render(row));
         out.push('\n');
     }
+    out.push('\n');
+    if let Some(model_line) = requested_model_line(results) {
+        out.push_str(&model_line);
+    }
     let pass = results
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Pass)
@@ -1477,7 +1496,6 @@ fn format_summary(results: &[TaskResult]) -> String {
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Fail)
         .count();
-    out.push('\n');
     out.push_str(&format!(
         "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total\n",
         results.len()
@@ -1553,13 +1571,21 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
     if results.is_empty() {
         return String::new();
     }
+    // In repeated runs, smoke cases are one-time preflight checks (run_index
+    // zero), not observations in the quality matrix. Keep them visible only
+    // when the matrix never started, such as after a smoke failure.
+    let reported_results: Vec<&TaskResult> = if results.iter().any(|r| r.run_index > 0) {
+        results.iter().filter(|r| r.run_index > 0).collect()
+    } else {
+        results.iter().collect()
+    };
     // Group by (task_id, prompt_id).
     let mut groups: BTreeMap<(String, String), Vec<&TaskResult>> = BTreeMap::new();
-    for r in results {
+    for r in &reported_results {
         groups
             .entry((r.task_id.clone(), r.prompt_id.clone()))
             .or_default()
-            .push(r);
+            .push(*r);
     }
 
     let header = [
@@ -1680,7 +1706,74 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         out.push_str(&render(row));
         out.push('\n');
     }
-    let totals = run_totals(results);
+    out.push('\n');
+    if let Some(model_line) = requested_model_line(reported_results.iter().copied()) {
+        out.push_str(&model_line);
+    }
+    let pass = reported_results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Pass)
+        .count();
+    let over_budget = reported_results
+        .iter()
+        .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
+        .count();
+    let limited = reported_results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Limit)
+        .count();
+    let errors = reported_results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Error)
+        .count();
+    let fail = reported_results
+        .iter()
+        .filter(|r| result_status(r) == ResultStatus::Fail)
+        .count();
+    out.push_str(&format!(
+        "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total\n",
+        reported_results.len()
+    ));
+    if over_budget > 0 {
+        out.push_str(
+            "(`pass*` = correct outcome but token budget exceeded mid-run; not a failure)\n",
+        );
+    }
+    let over_tool_call_guidance = reported_results
+        .iter()
+        .filter(|r| exceeded_max_tool_call_guidance(r) == Some(true))
+        .count();
+    if over_tool_call_guidance > 0 {
+        out.push_str(&format!(
+            "{over_tool_call_guidance} exceeded maximum tool-call guidance (not a failure)\n"
+        ));
+    }
+    let cached_total = reported_results
+        .iter()
+        .map(|r| r.scores.cost.cached_tokens)
+        .sum::<u64>();
+    let cache_write_total = reported_results
+        .iter()
+        .map(|r| r.scores.cost.cache_write_tokens)
+        .sum::<u64>();
+    out.push_str(&format!(
+        "cache tokens: {cached_total} read, {cache_write_total} written\n"
+    ));
+    let totals = RunTotals {
+        prompt_tokens: reported_results
+            .iter()
+            .map(|r| r.scores.cost.tokens_in)
+            .sum(),
+        completion_tokens: reported_results
+            .iter()
+            .map(|r| r.scores.cost.tokens_out)
+            .sum(),
+        total_tokens: reported_results
+            .iter()
+            .map(|r| r.scores.cost.tokens_in + r.scores.cost.tokens_out)
+            .sum(),
+        usd: reported_results.iter().map(|r| r.scores.cost.usd).sum(),
+    };
     out.push_str(&format!(
         "totals: {} prompt + {} completion = {} tokens, ${:.6}\n",
         totals.prompt_tokens, totals.completion_tokens, totals.total_tokens, totals.usd
@@ -2189,6 +2282,7 @@ mod tests {
         assert!(!summary.contains("| model |"));
         assert!(!summary.contains("| routed |"));
         assert!(summary.contains("| task"));
+        assert!(summary.contains("\nmodel: openrouter/auto\n1 passed"));
     }
 
     #[test]
@@ -2284,6 +2378,35 @@ mod tests {
         assert!(aggregated.contains("cache read (avg)"));
         assert!(aggregated.contains("cache write (avg)"));
         assert!(aggregated.contains("38"));
+    }
+
+    #[test]
+    fn multi_run_summary_excludes_smoke_preflight_from_metrics_and_totals() {
+        let mut smoke = result(80, 40, None);
+        smoke.task_id = "smoke-task".into();
+
+        let mut first = result(10, 5, None);
+        first.task_id = "matrix-task".into();
+        first.run_index = 1;
+
+        let mut second = result(20, 15, None);
+        second.task_id = "matrix-task".into();
+        second.run_index = 2;
+        second.scores.efficiency.tool_calls = 20;
+        second.scores.efficiency.max_tool_calls = Some(12);
+        second.scores.efficiency.exceeded_max_tool_calls = Some(true);
+
+        let summary = format_aggregated_summary(&[smoke, first, second], 2);
+
+        assert!(!summary.contains("smoke-task"));
+        assert!(summary.contains("matrix-task"));
+        assert!(summary.contains("model: openrouter/auto"));
+        assert!(
+            summary.contains("2 passed (0 over budget), 0 failed, 0 limited, 0 errored of 2 total")
+        );
+        assert!(summary.contains("1 exceeded maximum tool-call guidance (not a failure)"));
+        assert!(summary.contains("cache tokens: 30 read, 20 written"));
+        assert!(summary.contains("totals: 200 prompt + 40 completion = 240 tokens, $0.020000"));
     }
 
     #[test]
