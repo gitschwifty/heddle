@@ -341,6 +341,10 @@ struct TaskResult {
     /// 1-indexed run number when --runs N. 0 if single-run.
     #[serde(default)]
     run_index: u32,
+    /// Transient provider/transport failures retried from a fresh workspace
+    /// and conversation. The final result remains one matrix observation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retry_attempts: Vec<RetryAttempt>,
     /// Order of tool calls (names only). Useful for diagnosing why a task
     /// failed without re-reading the result JSON.
     tool_sequence: Vec<String>,
@@ -359,6 +363,27 @@ struct TaskResult {
     /// transcript artifact, not duplicated in the result JSON.
     #[serde(skip, default)]
     transcript: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetryAttempt {
+    attempt: u32,
+    cause: FailureCause,
+    error: String,
+    duration_ms: u128,
+    cost: CostScore,
+}
+
+impl RetryAttempt {
+    fn from_result(result: &TaskResult, attempt: u32) -> Option<Self> {
+        Some(Self {
+            attempt,
+            cause: failure_cause(result)?,
+            error: result.scores.error.clone()?,
+            duration_ms: result.duration_ms,
+            cost: result.scores.cost.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -532,7 +557,7 @@ struct EfficiencyScore {
     tokens_in_budget: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CostScore {
     tokens_in: u64,
     tokens_out: u64,
@@ -1384,6 +1409,7 @@ async fn run_one(
         rendered_system_prompt_chars,
         routed_models,
         run_index: 0,
+        retry_attempts: Vec::new(),
         tool_sequence,
         finish_reasons,
         assistant_messages,
@@ -1435,6 +1461,7 @@ fn error_result(
         rendered_system_prompt_chars: 0,
         routed_models: Vec::new(),
         run_index: 0,
+        retry_attempts: Vec::new(),
         tool_sequence: Vec::new(),
         finish_reasons: Vec::new(),
         assistant_messages: Vec::new(),
@@ -1474,6 +1501,31 @@ fn error_result(
             error: Some(err),
         },
     }
+}
+
+async fn run_with_provider_retry(
+    task: &Task,
+    prompt: &Prompt,
+    model: &str,
+    api_key: &str,
+    options: &RunOneOptions,
+) -> (TaskResult, Option<TaskResult>) {
+    let first = run_one(task, prompt, model, api_key, options).await;
+    if !retryable_provider_error(&first) {
+        return (first, None);
+    }
+
+    let cause = failure_cause(&first)
+        .expect("retryable_provider_error requires a structured failure cause");
+    println!(
+        "      retrying from a fresh workspace and conversation after {}",
+        cause.label()
+    );
+    let mut retry = run_one(task, prompt, model, api_key, options).await;
+    if let Some(attempt) = RetryAttempt::from_result(&first, 1) {
+        retry.retry_attempts.push(attempt);
+    }
+    (retry, Some(first))
 }
 
 fn classify_runtime_error(message: &str) -> FailureCause {
@@ -1637,6 +1689,9 @@ fn failure_cause_summary<'a>(results: impl IntoIterator<Item = &'a TaskResult>) 
         if let Some(cause) = failure_cause(result) {
             *counts.entry(cause).or_default() += 1;
         }
+        for retry in &result.retry_attempts {
+            *counts.entry(retry.cause).or_default() += 1;
+        }
     }
     (!counts.is_empty()).then(|| {
         format!(
@@ -1650,14 +1705,47 @@ fn failure_cause_summary<'a>(results: impl IntoIterator<Item = &'a TaskResult>) 
     })
 }
 
-fn outcome_label(result: &TaskResult) -> &'static str {
-    match result_status(result) {
+fn outcome_label(result: &TaskResult) -> String {
+    let outcome = match result_status(result) {
         ResultStatus::Pass if result.scores.efficiency.tokens_in_budget => "PASS",
         ResultStatus::Pass => "PASS*",
         ResultStatus::Fail => "FAIL",
         ResultStatus::Limit => "LIMIT",
         ResultStatus::Error => "ERROR",
+    };
+    if result.retry_attempts.is_empty() {
+        outcome.into()
+    } else {
+        format!("{outcome} ({} RETRY)", result.retry_attempts.len())
     }
+}
+
+fn retry_count(result: &TaskResult) -> usize {
+    result.retry_attempts.len()
+}
+
+fn retry_error_attempt_count(result: &TaskResult) -> usize {
+    result.retry_attempts.len()
+        + usize::from(result_status(result) == ResultStatus::Error && retry_count(result) > 0)
+}
+
+fn retryable_provider_error(result: &TaskResult) -> bool {
+    matches!(
+        failure_cause(result),
+        Some(FailureCause::ProviderApi | FailureCause::Transport)
+    ) && result.scores.error.is_some()
+}
+
+fn attempt_cost(result: &TaskResult) -> CostScore {
+    let mut cost = result.scores.cost.clone();
+    for retry in &result.retry_attempts {
+        cost.tokens_in += retry.cost.tokens_in;
+        cost.tokens_out += retry.cost.tokens_out;
+        cost.cached_tokens += retry.cost.cached_tokens;
+        cost.cache_write_tokens += retry.cost.cache_write_tokens;
+        cost.usd += retry.cost.usd;
+    }
+    cost
 }
 
 fn exceeded_max_tool_call_guidance(result: &TaskResult) -> Option<bool> {
@@ -1725,7 +1813,7 @@ fn format_summary(results: &[TaskResult]) -> String {
             row.push(routed_model_summary(r));
         }
         row.extend([
-            outcome_label(r).to_string(),
+            outcome_label(r),
             tool_calls,
             r.scores.efficiency.turns.to_string(),
             format!("{}/{}", r.scores.cost.tokens_in, r.scores.cost.tokens_out),
@@ -1786,9 +1874,18 @@ fn format_summary(results: &[TaskResult]) -> String {
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Fail)
         .count();
+    let retries: usize = results.iter().map(retry_count).sum();
+    let retry_errors: usize = results.iter().map(retry_error_attempt_count).sum();
     out.push_str(&format!(
-        "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total\n",
-        results.len()
+        "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total{}\n",
+        results.len(),
+        if retries > 0 {
+            format!("; {retries} retr{} ({retry_errors} errored attempt{})",
+                if retries == 1 { "y" } else { "ies" },
+                if retry_errors == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        },
     ));
     if over_budget > 0 {
         out.push_str(
@@ -1809,11 +1906,11 @@ fn format_summary(results: &[TaskResult]) -> String {
     }
     let cached_total = results
         .iter()
-        .map(|r| r.scores.cost.cached_tokens)
+        .map(|r| attempt_cost(r).cached_tokens)
         .sum::<u64>();
     let cache_write_total = results
         .iter()
-        .map(|r| r.scores.cost.cache_write_tokens)
+        .map(|r| attempt_cost(r).cache_write_tokens)
         .sum::<u64>();
     out.push_str(&format!(
         "cache tokens: {cached_total} read, {cache_write_total} written\n"
@@ -1828,13 +1925,29 @@ fn format_summary(results: &[TaskResult]) -> String {
 }
 
 fn run_totals(results: &[TaskResult]) -> RunTotals {
-    let prompt_tokens = results.iter().map(|r| r.scores.cost.tokens_in).sum();
-    let completion_tokens = results.iter().map(|r| r.scores.cost.tokens_out).sum();
+    run_totals_from_refs(results.iter())
+}
+
+fn run_totals_from_refs<'a>(results: impl IntoIterator<Item = &'a TaskResult>) -> RunTotals {
+    let costs: Vec<CostScore> = results.into_iter().map(attempt_cost).collect();
+    let prompt_tokens = costs.iter().map(|cost| cost.tokens_in).sum();
+    let completion_tokens = costs.iter().map(|cost| cost.tokens_out).sum();
     RunTotals {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens + completion_tokens,
-        usd: results.iter().map(|r| r.scores.cost.usd).sum(),
+        usd: costs.iter().map(|cost| cost.usd).sum(),
+    }
+}
+
+fn reported_results(results: &[TaskResult]) -> Vec<&TaskResult> {
+    if results.iter().any(|result| result.run_index > 0) {
+        results
+            .iter()
+            .filter(|result| result.run_index > 0)
+            .collect()
+    } else {
+        results.iter().collect()
     }
 }
 
@@ -1867,11 +1980,7 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
     // In repeated runs, smoke cases are one-time preflight checks (run_index
     // zero), not observations in the quality matrix. Keep them visible only
     // when the matrix never started, such as after a smoke failure.
-    let reported_results: Vec<&TaskResult> = if results.iter().any(|r| r.run_index > 0) {
-        results.iter().filter(|r| r.run_index > 0).collect()
-    } else {
-        results.iter().collect()
-    };
+    let reported_results = reported_results(results);
     // Group by (task_id, prompt_id).
     let mut groups: BTreeMap<(String, String), Vec<&TaskResult>> = BTreeMap::new();
     for r in &reported_results {
@@ -1911,7 +2020,11 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             .iter()
             .filter(|r| result_status(r) == ResultStatus::Fail)
             .count();
+        let retries: usize = runs_of.iter().map(|r| retry_count(r)).sum();
         let mut pass_rate = format!("{passed}/{} pass", runs_of.len());
+        if retries > 0 {
+            pass_rate.push_str(&format!("; {retries} RETRY"));
+        }
         if failed > 0 {
             pass_rate.push_str(&format!("; {failed} FAIL"));
         }
@@ -2023,9 +2136,21 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Fail)
         .count();
+    let retries: usize = reported_results.iter().map(|r| retry_count(r)).sum();
+    let retry_errors: usize = reported_results
+        .iter()
+        .map(|r| retry_error_attempt_count(r))
+        .sum();
     out.push_str(&format!(
-        "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total\n",
-        reported_results.len()
+        "{pass} passed ({over_budget} over budget), {fail} failed, {limited} limited, {errors} errored of {} total{}\n",
+        reported_results.len(),
+        if retries > 0 {
+            format!("; {retries} retr{} ({retry_errors} errored attempt{})",
+                if retries == 1 { "y" } else { "ies" },
+                if retry_errors == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        }
     ));
     if over_budget > 0 {
         out.push_str(
@@ -2046,11 +2171,11 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
     }
     let cached_total = reported_results
         .iter()
-        .map(|r| r.scores.cost.cached_tokens)
+        .map(|r| attempt_cost(r).cached_tokens)
         .sum::<u64>();
     let cache_write_total = reported_results
         .iter()
-        .map(|r| r.scores.cost.cache_write_tokens)
+        .map(|r| attempt_cost(r).cache_write_tokens)
         .sum::<u64>();
     out.push_str(&format!(
         "cache tokens: {cached_total} read, {cache_write_total} written\n"
@@ -2058,17 +2183,20 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
     let totals = RunTotals {
         prompt_tokens: reported_results
             .iter()
-            .map(|r| r.scores.cost.tokens_in)
+            .map(|r| attempt_cost(r).tokens_in)
             .sum(),
         completion_tokens: reported_results
             .iter()
-            .map(|r| r.scores.cost.tokens_out)
+            .map(|r| attempt_cost(r).tokens_out)
             .sum(),
         total_tokens: reported_results
             .iter()
-            .map(|r| r.scores.cost.tokens_in + r.scores.cost.tokens_out)
+            .map(|r| {
+                let cost = attempt_cost(r);
+                cost.tokens_in + cost.tokens_out
+            })
             .sum(),
-        usd: reported_results.iter().map(|r| r.scores.cost.usd).sum(),
+        usd: reported_results.iter().map(|r| attempt_cost(r).usd).sum(),
     };
     out.push_str(&format!(
         "totals: {} prompt + {} completion = {} tokens, ${:.6}\n",
@@ -2084,68 +2212,91 @@ fn format_failure_details(results: &[TaskResult]) -> String {
         .iter()
         .filter(|r| !r.scores.outcome.passed)
         .collect();
-    if fails.is_empty() {
+    let retries: Vec<(&TaskResult, &RetryAttempt)> = results
+        .iter()
+        .flat_map(|result| {
+            result
+                .retry_attempts
+                .iter()
+                .map(move |retry| (result, retry))
+        })
+        .collect();
+    if fails.is_empty() && retries.is_empty() {
         return out;
     }
-    out.push_str(&format!("failures ({}):\n", fails.len()));
-    for r in fails {
-        out.push_str(&format!("  {} | {}\n", r.task_id, r.prompt_id));
-        if let Some(limit) = limit_reason(r) {
-            out.push_str(&format!("    limit: {}\n", limit.label()));
-        } else if let Some(e) = &r.scores.error {
-            out.push_str(&format!("    error: {e}\n"));
-        }
-        if let Some(cause) = failure_cause(r) {
-            out.push_str(&format!("    cause: {}\n", cause.label()));
-        }
-        if !r.scores.outcome.diff_files.is_empty() {
-            for d in &r.scores.outcome.diff_files {
-                out.push_str(&format!("    diff: {} ({})\n", d.path, d.kind));
+    if !fails.is_empty() {
+        out.push_str(&format!("failures ({}):\n", fails.len()));
+        for r in fails {
+            out.push_str(&format!("  {} | {}\n", r.task_id, r.prompt_id));
+            if let Some(limit) = limit_reason(r) {
+                out.push_str(&format!("    limit: {}\n", limit.label()));
+            } else if let Some(e) = &r.scores.error {
+                out.push_str(&format!("    error: {e}\n"));
+            }
+            if let Some(cause) = failure_cause(r) {
+                out.push_str(&format!("    cause: {}\n", cause.label()));
+            }
+            if !r.scores.outcome.diff_files.is_empty() {
+                for d in &r.scores.outcome.diff_files {
+                    out.push_str(&format!("    diff: {} ({})\n", d.path, d.kind));
+                }
+            }
+            if !r.tool_sequence.is_empty() {
+                out.push_str(&format!("    tools: {}\n", r.tool_sequence.join(" -> ")));
+            }
+            if let Some(trace) = &r.trace {
+                if !trace.tool_failures.is_empty() {
+                    let failures = trace
+                        .tool_failures
+                        .iter()
+                        .map(|failure| format!("{}: {}", failure.name, failure.detail))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    out.push_str(&format!("    tool failures: {failures}\n"));
+                }
+                if let Some(change) = &trace.routed_model_change {
+                    out.push_str(&format!("    routed-model change: {change}\n"));
+                }
+                if trace.truncated {
+                    out.push_str("    trace: truncated\n");
+                }
             }
         }
-        if !r.tool_sequence.is_empty() {
-            out.push_str(&format!("    tools: {}\n", r.tool_sequence.join(" -> ")));
-        }
-        if let Some(trace) = &r.trace {
-            if !trace.tool_failures.is_empty() {
-                let failures = trace
-                    .tool_failures
-                    .iter()
-                    .map(|failure| format!("{}: {}", failure.name, failure.detail))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                out.push_str(&format!("    tool failures: {failures}\n"));
-            }
-            if let Some(change) = &trace.routed_model_change {
-                out.push_str(&format!("    routed-model change: {change}\n"));
-            }
-            if trace.truncated {
-                out.push_str("    trace: truncated\n");
-            }
+    }
+    if !retries.is_empty() {
+        out.push_str(&format!("retries ({}):\n", retries.len()));
+        for (result, retry) in retries {
+            out.push_str(&format!(
+                "  {} | {} | attempt {} | {}: {}\n",
+                result.task_id,
+                result.prompt_id,
+                retry.attempt,
+                retry.cause.label(),
+                retry.error,
+            ));
         }
     }
     out.push('\n');
     out
 }
 
-fn write_result(results_dir: &Path, r: &TaskResult) -> Result<()> {
+fn write_result(results_dir: &Path, r: &TaskResult, attempt: Option<u32>) -> Result<()> {
     fs::create_dir_all(results_dir)?;
-    let name = if r.run_index > 0 {
-        format!("{}__{}__run{}.json", r.task_id, r.prompt_id, r.run_index)
-    } else {
-        format!("{}__{}.json", r.task_id, r.prompt_id)
-    };
+    let name = format!("{}.json", result_artifact_stem(r, attempt));
     let path = results_dir.join(name);
     fs::write(&path, serde_json::to_string_pretty(r)?)?;
     Ok(())
 }
 
-fn result_artifact_stem(r: &TaskResult) -> String {
-    if r.run_index > 0 {
+fn result_artifact_stem(r: &TaskResult, attempt: Option<u32>) -> String {
+    let base = if r.run_index > 0 {
         format!("{}__{}__run{}", r.task_id, r.prompt_id, r.run_index)
     } else {
         format!("{}__{}", r.task_id, r.prompt_id)
-    }
+    };
+    attempt
+        .map(|number| format!("{base}__attempt{number}"))
+        .unwrap_or(base)
 }
 
 fn compact_results_location(results_dir: &Path) -> String {
@@ -2159,7 +2310,7 @@ fn compact_results_location(results_dir: &Path) -> String {
     components.join("/")
 }
 
-fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
+fn write_transcript(results_dir: &Path, r: &TaskResult, attempt: Option<u32>) -> Result<()> {
     let transcript_dir = results_dir.join("transcripts");
     fs::create_dir_all(&transcript_dir)?;
 
@@ -2182,13 +2333,13 @@ fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
             .collect::<Result<Vec<_>, _>>()?,
     );
     fs::write(
-        transcript_dir.join(format!("{}.jsonl", result_artifact_stem(r))),
+        transcript_dir.join(format!("{}.jsonl", result_artifact_stem(r, attempt))),
         format!("{}\n", lines.join("\n")),
     )?;
     Ok(())
 }
 
-fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
+fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>) -> Result<()> {
     if result_status(r) != ResultStatus::Error {
         return Ok(());
     }
@@ -2198,7 +2349,7 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
 
     let error_dir = results_dir.join("errors");
     fs::create_dir_all(&error_dir)?;
-    let stem = result_artifact_stem(r);
+    let stem = result_artifact_stem(r, attempt);
     let contents = format!(
         "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
@@ -2222,9 +2373,15 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
 }
 
 fn write_result_artifacts(results_dir: &Path, r: &TaskResult) -> Result<()> {
-    write_result(results_dir, r)?;
-    write_transcript(results_dir, r)?;
-    write_error_artifact(results_dir, r)
+    write_result(results_dir, r, None)?;
+    write_transcript(results_dir, r, None)?;
+    write_error_artifact(results_dir, r, None)
+}
+
+fn write_retry_attempt_artifacts(results_dir: &Path, r: &TaskResult, attempt: u32) -> Result<()> {
+    write_result(results_dir, r, Some(attempt))?;
+    write_transcript(results_dir, r, Some(attempt))?;
+    write_error_artifact(results_dir, r, Some(attempt))
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
@@ -2589,6 +2746,7 @@ mod tests {
             },
             rendered_system_prompt_chars: 10,
             run_index: 0,
+            retry_attempts: Vec::new(),
             tool_sequence: Vec::new(),
             finish_reasons: Vec::new(),
             assistant_messages: Vec::new(),
@@ -2835,7 +2993,7 @@ mod tests {
             }),
         ];
 
-        write_transcript(dir.path(), &result).unwrap();
+        write_transcript(dir.path(), &result, None).unwrap();
 
         let lines: Vec<serde_json::Value> =
             std::fs::read_to_string(dir.path().join("transcripts/task__prompt.jsonl"))
@@ -2910,6 +3068,59 @@ mod tests {
         assert!(summary.contains("1 exceeded maximum tool-call guidance (not a failure)"));
         assert!(summary.contains("cache tokens: 30 read, 20 written"));
         assert!(summary.contains("totals: 200 prompt + 40 completion = 240 tokens, $0.020000"));
+    }
+
+    #[test]
+    fn retried_provider_errors_preserve_attempt_cost_and_quality_outcome() {
+        let mut final_result = result(0, 0, None);
+        final_result.retry_attempts.push(RetryAttempt {
+            attempt: 1,
+            cause: FailureCause::ProviderApi,
+            error: "error decoding provider JSON response".into(),
+            duration_ms: 12,
+            cost: CostScore {
+                tokens_in: 50,
+                tokens_out: 5,
+                cached_tokens: 4,
+                cache_write_tokens: 3,
+                usd: 0.005,
+            },
+        });
+
+        let summary = format_summary(std::slice::from_ref(&final_result));
+        assert!(summary.contains("PASS (1 RETRY)"));
+        assert!(summary.contains("1 passed (0 over budget), 0 failed, 0 limited, 0 errored of 1 total; 1 retry (1 errored attempt)"));
+        assert!(summary.contains("failure causes: provider_api=1"));
+        assert!(summary.contains("cache tokens: 4 read, 3 written"));
+        assert!(summary.contains("totals: 150 prompt + 25 completion = 175 tokens, $0.015000"));
+
+        let aggregated = format_aggregated_summary(std::slice::from_ref(&final_result), 1);
+        assert!(aggregated.contains("1/1 pass; 1 RETRY"));
+        assert!(aggregated.contains("1 retry (1 errored attempt)"));
+        assert!(aggregated.contains("totals: 150 prompt + 25 completion = 175 tokens, $0.015000"));
+        assert!(format_failure_details(&[final_result])
+            .contains("retries (1):\n  task-1 | prompt-1 | attempt 1 | provider_api"));
+    }
+
+    #[test]
+    fn retry_attempt_artifacts_use_a_distinct_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut failed = result(0, 0, None);
+        failed.scores.outcome.passed = false;
+        failed.scores.failure_cause = Some(FailureCause::ProviderApi);
+        failed.scores.error = Some("error decoding provider JSON response".into());
+
+        write_retry_attempt_artifacts(dir.path(), &failed, 1).unwrap();
+
+        assert!(dir.path().join("task-1__prompt-1__attempt1.json").exists());
+        assert!(dir
+            .path()
+            .join("transcripts/task-1__prompt-1__attempt1.jsonl")
+            .exists());
+        assert!(dir
+            .path()
+            .join("errors/task-1__prompt-1__attempt1.log")
+            .exists());
     }
 
     #[test]
@@ -3538,7 +3749,11 @@ async fn cmd_run(
             "[smoke {idx}/{smoke_total}] {} | {}",
             task.spec.id, prompt.id
         );
-        let r = run_one(task, prompt, &model, &api_key, &run_options).await;
+        let (r, retry_attempt) =
+            run_with_provider_retry(task, prompt, &model, &api_key, &run_options).await;
+        if let Some(retry_attempt) = retry_attempt.as_ref() {
+            write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
+        }
         let outcome = outcome_label(&r);
         println!(
             "      {outcome} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
@@ -3554,7 +3769,7 @@ async fn cmd_run(
         if !r.scores.outcome.passed {
             smoke_failed = true;
         }
-        cumulative_usd += r.scores.cost.usd;
+        cumulative_usd += attempt_cost(&r).usd;
         if cumulative_usd > budget_stop_usd {
             budget_stopped = true;
         }
@@ -3618,9 +3833,16 @@ async fn cmd_run(
                     format!("[matrix {idx}/{matrix_total}]")
                 };
                 println!("{prefix} {} | {}", task.spec.id, prompt.id);
-                let mut r = run_one(task, prompt, &model, &api_key, &run_options).await;
+                let (mut r, mut retry_attempt) =
+                    run_with_provider_retry(task, prompt, &model, &api_key, &run_options).await;
                 if runs > 1 {
                     r.run_index = run_n;
+                    if let Some(attempt) = retry_attempt.as_mut() {
+                        attempt.run_index = run_n;
+                    }
+                }
+                if let Some(retry_attempt) = retry_attempt.as_ref() {
+                    write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
                 }
                 let outcome = outcome_label(&r);
                 println!(
@@ -3635,7 +3857,7 @@ async fn cmd_run(
                     r.duration_ms,
                 );
                 write_result_artifacts(&results_dir, &r)?;
-                cumulative_usd += r.scores.cost.usd;
+                cumulative_usd += attempt_cost(&r).usd;
                 if cumulative_usd > budget_stop_usd {
                     budget_stopped = true;
                 }
@@ -4135,35 +4357,36 @@ fn write_run_artifacts(
     runs_per_case: u32,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
+    let reported = reported_results(results);
 
-    let passed = results
+    let passed = reported
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Pass)
         .count();
-    let passed_over_budget = results
+    let passed_over_budget = reported
         .iter()
         .filter(|r| r.scores.outcome.passed && !r.scores.efficiency.tokens_in_budget)
         .count();
-    let limited = results
+    let limited = reported
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Limit)
         .count();
-    let errored = results
+    let errored = reported
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Error)
         .count();
-    let failed = results
+    let failed = reported
         .iter()
         .filter(|r| result_status(r) == ResultStatus::Fail)
         .count();
     let cache_tokens = CacheTokenTotals {
-        cached_tokens: results.iter().map(|r| r.scores.cost.cached_tokens).sum(),
-        cache_write_tokens: results
+        cached_tokens: reported.iter().map(|r| attempt_cost(r).cached_tokens).sum(),
+        cache_write_tokens: reported
             .iter()
-            .map(|r| r.scores.cost.cache_write_tokens)
+            .map(|r| attempt_cost(r).cache_write_tokens)
             .sum(),
     };
-    let totals = run_totals(results);
+    let totals = run_totals_from_refs(reported.iter().copied());
     let heddle_git = heddle_git_info();
     let evals_git = git_info(evals_dir);
     let meta = RunMeta {
@@ -4187,7 +4410,7 @@ fn write_run_artifacts(
         request_pacing_ms: is_free_model(model)
             .then_some(FREE_MODEL_REQUEST_INTERVAL.as_millis() as u64),
         counts: RunCounts {
-            total: results.len(),
+            total: reported.len(),
             passed,
             passed_over_budget,
             failed,
