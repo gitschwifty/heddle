@@ -1186,6 +1186,13 @@ async fn run_one(
     if std::env::set_current_dir(workspace).is_err() {
         return error_result(task, prompt, model, "set_current_dir failed".into(), start);
     }
+    // Commands such as `cargo test` are legitimate agent behavior but their
+    // build output is not part of the requested workspace edit. Keep it in a
+    // separate temporary directory so exact-directory scoring remains about
+    // source changes rather than tool byproducts.
+    let cargo_target_dir = tempfile::tempdir().expect("cargo target tempdir");
+    let previous_cargo_target_dir = std::env::var_os("CARGO_TARGET_DIR");
+    std::env::set_var("CARGO_TARGET_DIR", cargo_target_dir.path());
 
     let opts = AgentLoopOptions {
         max_iterations: Some(effective_max_turns),
@@ -1308,6 +1315,10 @@ async fn run_one(
     }
     if let Some(prev) = prev_cwd {
         let _ = std::env::set_current_dir(prev);
+    }
+    match previous_cargo_target_dir {
+        Some(path) => std::env::set_var("CARGO_TARGET_DIR", path),
+        None => std::env::remove_var("CARGO_TARGET_DIR"),
     }
 
     let diff = diff_dirs(
