@@ -47,6 +47,14 @@ struct StoredRunMeta {
     budget_stopped: bool,
     #[serde(default)]
     planned_results: Option<usize>,
+    #[serde(default)]
+    planned_results_version: Option<u8>,
+    #[serde(default = "default_runs_per_case")]
+    runs_per_case: u32,
+}
+
+fn default_runs_per_case() -> u32 {
+    1
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +80,9 @@ struct AggregateRun {
     evals_dirty: Option<bool>,
     included_in_quality_metrics: bool,
     exclusion_reason: Option<String>,
+    /// Matrix repetitions represented by this invocation. A multi-run batch
+    /// remains one directory but contributes one source run per repetition.
+    source_repetitions: usize,
     results: Vec<TaskResult>,
 }
 #[derive(Debug, Serialize)]
@@ -398,48 +409,88 @@ fn reliability_groups(runs: &[AggregateRun]) -> Vec<ReliabilityGroup> {
     }
     groups
         .into_iter()
-        .map(|((task, prompt, requested_model, routed_models), results)| {
-            let mut statuses = BTreeMap::new();
-            let mut failure_causes = BTreeMap::new();
-            let mut passed = 0;
-            for result in &results {
-                *statuses
-                    .entry(match result_status(result) {
-                        ResultStatus::Pass => "pass",
-                        ResultStatus::Fail => "fail",
-                        ResultStatus::Limit => "limit",
-                        ResultStatus::Error => "error",
+        .map(
+            |((task, prompt, requested_model, routed_models), results)| {
+                let mut statuses = BTreeMap::new();
+                let mut failure_causes = BTreeMap::new();
+                let mut passed = 0;
+                for result in &results {
+                    *statuses
+                        .entry(
+                            match result_status(result) {
+                                ResultStatus::Pass => "pass",
+                                ResultStatus::Fail => "fail",
+                                ResultStatus::Limit => "limit",
+                                ResultStatus::Error => "error",
+                            }
+                            .to_string(),
+                        )
+                        .or_default() += 1;
+                    if result_status(result) == ResultStatus::Pass {
+                        passed += 1;
                     }
-                    .to_string())
-                    .or_default() += 1;
-                if result_status(result) == ResultStatus::Pass {
-                    passed += 1;
+                    if let Some(cause) = failure_cause(result) {
+                        *failure_causes.entry(cause.label().to_string()).or_default() += 1;
+                    }
                 }
-                if let Some(cause) = failure_cause(result) {
-                    *failure_causes.entry(cause.label().to_string()).or_default() += 1;
+                let observations = results.len();
+                ReliabilityGroup {
+                    task,
+                    prompt,
+                    requested_model,
+                    routed_models,
+                    observations,
+                    passed,
+                    pass_rate: Some(passed as f64 / observations as f64),
+                    statuses,
+                    failure_causes,
+                    duration_ms: metric(results.iter().map(|r| r.duration_ms as f64)),
+                    tokens: metric(
+                        results
+                            .iter()
+                            .map(|r| (r.scores.cost.tokens_in + r.scores.cost.tokens_out) as f64),
+                    ),
+                    cost_usd: metric(results.iter().map(|r| r.scores.cost.usd)),
+                    turns: metric(results.iter().map(|r| r.scores.efficiency.turns as f64)),
+                    tool_calls: metric(
+                        results
+                            .iter()
+                            .map(|r| r.scores.efficiency.tool_calls as f64),
+                    ),
                 }
-            }
-            let observations = results.len();
-            ReliabilityGroup {
-                task,
-                prompt,
-                requested_model,
-                routed_models,
-                observations,
-                passed,
-                pass_rate: Some(passed as f64 / observations as f64),
-                statuses,
-                failure_causes,
-                duration_ms: metric(results.iter().map(|r| r.duration_ms as f64)),
-                tokens: metric(results.iter().map(|r| {
-                    (r.scores.cost.tokens_in + r.scores.cost.tokens_out) as f64
-                })),
-                cost_usd: metric(results.iter().map(|r| r.scores.cost.usd)),
-                turns: metric(results.iter().map(|r| r.scores.efficiency.turns as f64)),
-                tool_calls: metric(results.iter().map(|r| r.scores.efficiency.tool_calls as f64)),
-            }
-        })
+            },
+        )
         .collect()
+}
+
+fn source_repetitions(results: &[TaskResult]) -> usize {
+    let repeated = results
+        .iter()
+        .filter_map(|result| (result.run_index > 0).then_some(result.run_index))
+        .collect::<BTreeSet<_>>();
+    if repeated.is_empty() {
+        1
+    } else {
+        repeated.len()
+    }
+}
+
+fn complete_repeated_matrix(results: &[TaskResult], runs_per_case: u32) -> bool {
+    if runs_per_case <= 1 {
+        return false;
+    }
+    let counts: BTreeMap<u32, usize> = results.iter().filter(|result| result.run_index > 0).fold(
+        BTreeMap::new(),
+        |mut counts, result| {
+            *counts.entry(result.run_index).or_default() += 1;
+            counts
+        },
+    );
+    counts.len() == runs_per_case as usize
+        && (1..=runs_per_case).all(|run_index| counts.contains_key(&run_index))
+        && counts
+            .values()
+            .all(|count| *count == *counts.values().next().unwrap_or(&0))
 }
 
 fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
@@ -461,11 +512,18 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
         .runs
         .iter()
         .filter(|run| !run.included_in_quality_metrics)
-        .count();
+        .map(|run| run.source_repetitions)
+        .sum::<usize>();
+    let source_runs = snapshot
+        .runs
+        .iter()
+        .map(|run| run.source_repetitions)
+        .sum::<usize>();
+    let metric_runs = source_runs.saturating_sub(excluded);
     let preamble = format!(
-        "# Eval aggregate\n\n- suite: `{}` (`{}`)\n- profile: `{}` (`{}`)\n- source runs: {}; excluded from quality metrics: {}\n\n",
+        "# Eval aggregate\n\n- suite: `{}` (`{}`)\n- profile: `{}` (`{}`)\n- source matrix runs: {}; metric runs: {}; excluded from metrics: {}\n\n",
         snapshot.suite.label, short_hash(&snapshot.suite.fingerprint), snapshot.profile.label,
-        short_hash(&snapshot.profile.fingerprint), snapshot.runs.len(), excluded,
+        short_hash(&snapshot.profile.fingerprint), source_runs, metric_runs, excluded,
     );
     let headers = [
         "group",
@@ -516,13 +574,44 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
                 group.requested_model.clone(),
                 group.routed_models.clone().unwrap_or_else(|| "—".into()),
                 group.observations.to_string(),
-                format!("{}/{} ({:.0}%)", group.passed, group.observations, group.pass_rate.unwrap_or(0.0) * 100.0),
-                group.statuses.iter().map(|(status, count)| format!("{status}={count}")).collect::<Vec<_>>().join(", "),
-                if group.failure_causes.is_empty() { "—".into() } else { group.failure_causes.iter().map(|(cause, count)| format!("{cause}={count}")).collect::<Vec<_>>().join(", ") },
-                format!("{:.0}/{:.0}/{:.0}", group.duration_ms.min, group.duration_ms.mean, group.duration_ms.max),
-                format!("{:.0}/{:.0}/{:.0}", group.tokens.min, group.tokens.mean, group.tokens.max),
-                format!("{:.1}/{:.1}/{:.1}", group.turns.min, group.turns.mean, group.turns.max),
-                format!("{:.1}/{:.1}/{:.1}", group.tool_calls.min, group.tool_calls.mean, group.tool_calls.max),
+                format!(
+                    "{}/{} ({:.0}%)",
+                    group.passed,
+                    group.observations,
+                    group.pass_rate.unwrap_or(0.0) * 100.0
+                ),
+                group
+                    .statuses
+                    .iter()
+                    .map(|(status, count)| format!("{status}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if group.failure_causes.is_empty() {
+                    "—".into()
+                } else {
+                    group
+                        .failure_causes
+                        .iter()
+                        .map(|(cause, count)| format!("{cause}={count}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+                format!(
+                    "{:.0}/{:.0}/{:.0}",
+                    group.duration_ms.min, group.duration_ms.mean, group.duration_ms.max
+                ),
+                format!(
+                    "{:.0}/{:.0}/{:.0}",
+                    group.tokens.min, group.tokens.mean, group.tokens.max
+                ),
+                format!(
+                    "{:.1}/{:.1}/{:.1}",
+                    group.turns.min, group.turns.mean, group.turns.max
+                ),
+                format!(
+                    "{:.1}/{:.1}/{:.1}",
+                    group.tool_calls.min, group.tool_calls.mean, group.tool_calls.max
+                ),
             ]
         })
         .collect::<Vec<_>>();
@@ -709,10 +798,12 @@ pub(super) fn cmd_aggregate(
             .clone()
             .unwrap_or_else(|| legacy_comparison(&meta));
         let profile_fingerprint = fingerprint(&comparison)?;
+        let legacy_complete_repeated = meta.planned_results_version.is_none()
+            && complete_repeated_matrix(&results, meta.runs_per_case);
         let incomplete = meta.budget_stopped
             || meta
                 .planned_results
-                .is_some_and(|planned| results.len() < planned);
+                .is_some_and(|planned| results.len() < planned && !legacy_complete_repeated);
         let exclusion_reason = if meta.budget_stopped {
             Some("budget_stopped".into())
         } else if incomplete {
@@ -730,6 +821,7 @@ pub(super) fn cmd_aggregate(
             evals_dirty: meta.evals_dirty,
             included_in_quality_metrics: exclusion_reason.is_none(),
             exclusion_reason,
+            source_repetitions: source_repetitions(&results),
             results,
         };
         groups

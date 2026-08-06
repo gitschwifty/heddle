@@ -1,5 +1,6 @@
 //! Agent event types yielded by the streaming + non-streaming loops.
 
+use crate::provider::types::ProviderTelemetry;
 use crate::types::{AssistantMessage, ToolCall, Usage};
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,11 @@ pub enum AgentEvent {
     },
     Error {
         message: String,
+    },
+    ProviderError {
+        message: String,
+        telemetry: ProviderTelemetry,
+        debug_detail: Option<String>,
     },
     PermissionRequest {
         name: String,

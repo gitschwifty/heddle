@@ -19,7 +19,7 @@ use crate::debug::debug;
 use crate::hooks::runner::HooksRunner;
 use crate::hooks::types::{HookContext, HookEvent};
 use crate::permissions::checker::{Decision, PermissionChecker};
-use crate::provider::types::Provider;
+use crate::provider::types::{Provider, ProviderFailure};
 use crate::tools::registry::ToolRegistry;
 use crate::tools::types::ExecOptions;
 use crate::types::{
@@ -232,7 +232,15 @@ pub fn run_agent_loop<'a>(
             let response = match provider.send(messages, tools_arg, &overrides).await {
                 Ok(r) => r,
                 Err(e) => {
-                    yield AgentEvent::Error { message: e.to_string() };
+                    if let Some(failure) = e.downcast_ref::<ProviderFailure>() {
+                        yield AgentEvent::ProviderError {
+                            message: failure.message.clone(),
+                            telemetry: failure.telemetry.clone(),
+                            debug_detail: failure.debug_detail.clone(),
+                        };
+                    } else {
+                        yield AgentEvent::Error { message: e.to_string() };
+                    }
                     return;
                 }
             };
@@ -462,7 +470,15 @@ pub fn run_agent_loop_streaming<'a>(
                 let chunk = match chunk_res {
                     Ok(c) => c,
                     Err(e) => {
-                        yield AgentEvent::Error { message: e.to_string() };
+                        if let Some(failure) = e.downcast_ref::<ProviderFailure>() {
+                            yield AgentEvent::ProviderError {
+                                message: failure.message.clone(),
+                                telemetry: failure.telemetry.clone(),
+                                debug_detail: failure.debug_detail.clone(),
+                            };
+                        } else {
+                            yield AgentEvent::Error { message: e.to_string() };
+                        }
                         return;
                     }
                 };

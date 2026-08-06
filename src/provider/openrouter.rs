@@ -13,7 +13,9 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
 
 use super::overrides::validate_overrides;
-use super::types::{AppAttribution, ChunkStream, Provider, ProviderConfig};
+use super::types::{
+    AppAttribution, ChunkStream, Provider, ProviderConfig, ProviderFailure, ProviderTelemetry,
+};
 use crate::debug::debug;
 use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition};
 
@@ -193,6 +195,118 @@ impl OpenRouterProvider {
     }
 }
 
+const MAX_PROVIDER_DETAIL_CHARS: usize = 500;
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn response_telemetry(headers: &HeaderMap, status: Option<u16>) -> ProviderTelemetry {
+    ProviderTelemetry {
+        request_id: header_value(headers, "x-request-id")
+            .or_else(|| header_value(headers, "x-openrouter-request-id")),
+        generation_id: header_value(headers, "x-generation-id"),
+        status,
+        content_type: header_value(headers, "content-type"),
+        retry_after_ms: retry_after_ms(headers),
+        ..ProviderTelemetry::default()
+    }
+}
+
+fn bounded_preview(body: &[u8]) -> String {
+    String::from_utf8_lossy(body)
+        .chars()
+        .take(MAX_PROVIDER_DETAIL_CHARS)
+        .collect()
+}
+
+fn provider_failure(
+    headers: &HeaderMap,
+    status: Option<u16>,
+    body: &[u8],
+    message: impl Into<String>,
+) -> ProviderFailure {
+    let mut telemetry = response_telemetry(headers, status);
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        telemetry.generation_id = telemetry.generation_id.or_else(|| {
+            value
+                .get("id")
+                .or_else(|| value.get("generation_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        telemetry.provider = value
+            .pointer("/openrouter_metadata/endpoints/available")
+            .and_then(Value::as_array)
+            .and_then(|endpoints| {
+                endpoints.iter().find_map(|endpoint| {
+                    endpoint
+                        .get("selected")
+                        .and_then(Value::as_bool)
+                        .filter(|selected| *selected)
+                        .and_then(|_| endpoint.get("provider"))
+                        .and_then(Value::as_str)
+                })
+            })
+            .map(str::to_string);
+        telemetry.error_type = value
+            .pointer("/error/metadata/error_type")
+            .or_else(|| value.get("error_type"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        telemetry.provider_code = value
+            .pointer("/error/metadata/provider_code")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        telemetry.detail = value
+            .pointer("/error/message")
+            .or_else(|| value.get("message"))
+            .and_then(Value::as_str)
+            .map(|value| value.chars().take(MAX_PROVIDER_DETAIL_CHARS).collect());
+    }
+    ProviderFailure {
+        message: message.into(),
+        telemetry,
+        debug_detail: None,
+    }
+}
+
+fn parse_stream_chunk(headers: &HeaderMap, status: u16, data: &str) -> Result<StreamChunk> {
+    serde_json::from_str(data).map_err(|error| {
+        let mut failure = provider_failure(
+            headers,
+            Some(status),
+            data.as_bytes(),
+            if serde_json::from_str::<Value>(data)
+                .ok()
+                .is_some_and(|value| value.get("error").is_some())
+            {
+                "OpenRouter streaming provider error".to_string()
+            } else {
+                let preview: String = data.chars().take(MAX_PROVIDER_DETAIL_CHARS).collect();
+                debug(
+                    "provider",
+                    &format!("stream chunk decode failed: {error}; preview={preview}"),
+                );
+                format!("error decoding streaming response chunk: {error}")
+            },
+        );
+        if serde_json::from_str::<Value>(data)
+            .ok()
+            .is_none_or(|value| value.get("error").is_none())
+        {
+            failure.debug_detail = Some(format!(
+                "stream chunk decode failed; preview={}",
+                bounded_preview(data.as_bytes())
+            ));
+        }
+        anyhow::Error::new(failure)
+    })
+}
+
 fn retry_delay_ms(
     headers: &HeaderMap,
     body: &str,
@@ -261,15 +375,44 @@ impl Provider for OpenRouterProvider {
         let headers = self.build_headers()?;
         let resp = self.fetch_with_retry(&url, headers, &body).await?;
         let status = resp.status();
+        let response_headers = resp.headers().clone();
+        let response_body = resp.bytes().await.unwrap_or_default();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            debug("provider", &format!("error {status}: {text}"));
-            return Err(anyhow!("OpenRouter API error ({status}): {text}"));
+            let failure = provider_failure(
+                &response_headers,
+                Some(status.as_u16()),
+                &response_body,
+                format!("OpenRouter API error ({status})"),
+            );
+            let mut failure = failure;
+            if let Some(detail) = failure.telemetry.detail.clone() {
+                failure.message = detail;
+            }
+            debug(
+                "provider",
+                &format!("{}: {:?}", failure.message, failure.telemetry),
+            );
+            return Err(anyhow::Error::new(failure));
         }
-        let parsed: ChatCompletionResponse = resp
-            .json()
-            .await
-            .map_err(|e| anyhow!("error decoding provider JSON response: {e}"))?;
+        let parsed: ChatCompletionResponse =
+            serde_json::from_slice(&response_body).map_err(|e| {
+                let preview = bounded_preview(&response_body);
+                debug(
+                    "provider",
+                    &format!("response decode failed: {e}; preview={preview}"),
+                );
+                let mut failure = provider_failure(
+                    &response_headers,
+                    Some(status.as_u16()),
+                    &response_body,
+                    format!("error decoding provider JSON response: {e}"),
+                );
+                failure.debug_detail = Some(format!(
+                    "response decode failed: {e}; preview={}",
+                    bounded_preview(&response_body)
+                ));
+                anyhow::Error::new(failure)
+            })?;
         Ok(parsed)
     }
 
@@ -304,11 +447,22 @@ impl Provider for OpenRouterProvider {
             let headers = provider.build_headers().map_err(|e| anyhow!(e))?;
             let resp = provider.fetch_with_retry(&url, headers, &body).await?;
             let status = resp.status();
+            let response_headers = resp.headers().clone();
             let mut byte_stream = if status.is_success() {
                 resp.bytes_stream()
             } else {
-                let text = resp.text().await.unwrap_or_default();
-                Err::<reqwest::Response, _>(anyhow!("OpenRouter API error ({status}): {text}"))?
+                let response_headers = resp.headers().clone();
+                let response_body = resp.bytes().await.unwrap_or_default();
+                let mut failure = provider_failure(
+                    &response_headers,
+                    Some(status.as_u16()),
+                    &response_body,
+                    format!("OpenRouter API error ({status})"),
+                );
+                if let Some(detail) = failure.telemetry.detail.clone() {
+                    failure.message = detail;
+                }
+                Err::<reqwest::Response, _>(anyhow::Error::new(failure))?
                     .bytes_stream()
             };
             let mut buffer = String::new();
@@ -328,20 +482,14 @@ impl Provider for OpenRouterProvider {
                     if data == "[DONE]" {
                         return;
                     }
-                    let parsed: StreamChunk = serde_json::from_str(data).map_err(|e| {
-                        let preview: String = data.chars().take(500).collect();
-                        anyhow!("error decoding streaming response chunk: {e}; data={preview}")
-                    })?;
+                    let parsed = parse_stream_chunk(&response_headers, status.as_u16(), data)?;
                     yield parsed;
                 }
             }
             let trimmed = buffer.trim();
             if let Some(data) = trimmed.strip_prefix("data: ") {
                 if data != "[DONE]" {
-                    let parsed: StreamChunk = serde_json::from_str(data).map_err(|e| {
-                        let preview: String = data.chars().take(500).collect();
-                        anyhow!("error decoding trailing streaming response chunk: {e}; data={preview}")
-                    })?;
+                    let parsed = parse_stream_chunk(&response_headers, status.as_u16(), data)?;
                     yield parsed;
                 }
             }
@@ -430,6 +578,67 @@ mod retry_tests {
         );
         let delay = rate_limit_reset_delay_ms(&headers, &body).unwrap();
         assert!((59_000..=60_000).contains(&delay), "delay was {delay}");
+    }
+
+    #[test]
+    fn provider_failure_keeps_only_safe_typed_correlation_fields() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_static("req-123"));
+        headers.insert("x-generation-id", HeaderValue::from_static("gen-456"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert("retry-after", HeaderValue::from_static("3"));
+        let failure = provider_failure(
+            &headers,
+            Some(429),
+            br#"{"error":{"message":"slow down","metadata":{"error_type":"rate_limit_exceeded","provider_code":"rate_limited"}}}"#,
+            "OpenRouter API error (429)",
+        );
+        assert_eq!(failure.telemetry.request_id.as_deref(), Some("req-123"));
+        assert_eq!(failure.telemetry.generation_id.as_deref(), Some("gen-456"));
+        assert_eq!(failure.telemetry.status, Some(429));
+        assert_eq!(failure.telemetry.retry_after_ms, Some(3_000));
+        assert_eq!(
+            failure.telemetry.error_type.as_deref(),
+            Some("rate_limit_exceeded")
+        );
+        assert_eq!(
+            failure.telemetry.provider_code.as_deref(),
+            Some("rate_limited")
+        );
+        assert_eq!(failure.telemetry.detail.as_deref(), Some("slow down"));
+    }
+
+    #[test]
+    fn malformed_body_does_not_become_normal_telemetry_detail() {
+        let headers = HeaderMap::new();
+        let failure = provider_failure(
+            &headers,
+            Some(200),
+            b"not valid json; Authorization: secret",
+            "error decoding provider JSON response",
+        );
+        assert!(failure.telemetry.detail.is_none());
+        assert_eq!(failure.telemetry.status, Some(200));
+    }
+
+    #[test]
+    fn stream_error_envelope_becomes_typed_provider_failure() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_static("req-stream"));
+        let error = parse_stream_chunk(
+            &headers,
+            503,
+            r#"{"error":{"message":"provider overloaded","metadata":{"error_type":"provider_overloaded","provider_code":"overloaded"}}}"#,
+        )
+        .unwrap_err();
+        let failure = error.downcast_ref::<ProviderFailure>().unwrap();
+        assert_eq!(failure.message, "OpenRouter streaming provider error");
+        assert_eq!(failure.telemetry.request_id.as_deref(), Some("req-stream"));
+        assert_eq!(failure.telemetry.status, Some(503));
+        assert_eq!(
+            failure.telemetry.error_type.as_deref(),
+            Some("provider_overloaded")
+        );
     }
 
     #[test]

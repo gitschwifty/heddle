@@ -20,7 +20,7 @@ use futures::StreamExt;
 use heddle::agent::loop_::{run_agent_loop, AgentLoopOptions};
 use heddle::agent::types::AgentEvent;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::{Provider, ProviderConfig, RetryConfig};
+use heddle::provider::types::{Provider, ProviderConfig, ProviderTelemetry, RetryConfig};
 use heddle::tools::bash::create_bash_tool;
 use heddle::tools::edit::create_edit_tool;
 use heddle::tools::glob::create_glob_tool;
@@ -346,6 +346,13 @@ struct TaskResult {
     /// case. These make eval artifacts joinable to provider-side logs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     generation_ids: Vec<String>,
+    /// Correlation metadata retained for provider failures, including calls
+    /// that failed before they emitted usage or an assistant response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_telemetry: Vec<ProviderTelemetry>,
+    /// Sanitized diagnostics retained only in this run's separate debug log.
+    #[serde(skip, default)]
+    debug_errors: Vec<ProviderDebugError>,
     /// 1-indexed run number when --runs N. 0 if single-run.
     #[serde(default)]
     run_index: u32,
@@ -380,6 +387,10 @@ struct RetryAttempt {
     error: String,
     duration_ms: u128,
     cost: CostScore,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_telemetry: Vec<ProviderTelemetry>,
+    #[serde(skip, default)]
+    debug_errors: Vec<ProviderDebugError>,
 }
 
 impl RetryAttempt {
@@ -390,6 +401,8 @@ impl RetryAttempt {
             error: result.scores.error.clone()?,
             duration_ms: result.duration_ms,
             cost: result.scores.cost.clone(),
+            provider_telemetry: result.provider_telemetry.clone(),
+            debug_errors: result.debug_errors.clone(),
         })
     }
 }
@@ -447,6 +460,13 @@ struct RoutedModelObservation {
 struct UpstreamProviderObservation {
     assistant_turn: u32,
     provider: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProviderDebugError {
+    timestamp: String,
+    detail: String,
+    telemetry: ProviderTelemetry,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1222,6 +1242,8 @@ async fn run_one(
     let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
     let mut upstream_providers: Vec<UpstreamProviderObservation> = Vec::new();
     let mut generation_ids: Vec<String> = Vec::new();
+    let mut provider_telemetry: Vec<ProviderTelemetry> = Vec::new();
+    let mut debug_errors: Vec<ProviderDebugError> = Vec::new();
     let mut pending_routed_model: Option<String> = None;
     let mut pending_upstream_provider: Option<String> = None;
     let mut error: Option<String> = None;
@@ -1359,10 +1381,7 @@ async fn run_one(
                     {
                         println!(
                             "      upstream provider switch: {} -> {provider}",
-                            upstream_providers
-                                .last()
-                                .expect("checked above")
-                                .provider
+                            upstream_providers.last().expect("checked above").provider
                         );
                     }
                     pending_upstream_provider = Some(provider);
@@ -1377,6 +1396,23 @@ async fn run_one(
                         error_cause = Some(classify_runtime_error(&message));
                         error = Some(message);
                     }
+                    break;
+                }
+                AgentEvent::ProviderError {
+                    message,
+                    telemetry,
+                    debug_detail,
+                } => {
+                    if let Some(detail) = debug_detail {
+                        debug_errors.push(ProviderDebugError {
+                            timestamp: Utc::now().to_rfc3339(),
+                            detail,
+                            telemetry: telemetry.clone(),
+                        });
+                    }
+                    provider_telemetry.push(telemetry);
+                    error_cause = Some(FailureCause::ProviderApi);
+                    error = Some(message);
                     break;
                 }
                 AgentEvent::PermissionDenied { reason, .. } => {
@@ -1457,6 +1493,8 @@ async fn run_one(
         routed_models,
         upstream_providers,
         generation_ids,
+        provider_telemetry,
+        debug_errors,
         run_index: 0,
         retry_attempts: Vec::new(),
         tool_sequence,
@@ -1511,6 +1549,8 @@ fn error_result(
         routed_models: Vec::new(),
         upstream_providers: Vec::new(),
         generation_ids: Vec::new(),
+        provider_telemetry: Vec::new(),
+        debug_errors: Vec::new(),
         run_index: 0,
         retry_attempts: Vec::new(),
         tool_sequence: Vec::new(),
@@ -1665,8 +1705,8 @@ fn build_compact_trace(
             }
             providers
         });
-    let upstream_provider_change = (distinct_providers.len() > 1)
-        .then(|| distinct_providers.join(" -> "));
+    let upstream_provider_change =
+        (distinct_providers.len() > 1).then(|| distinct_providers.join(" -> "));
     CompactTrace {
         assistant_turns,
         tool_sequence: tool_sequence
@@ -2042,16 +2082,23 @@ fn routed_model_summary(r: &TaskResult) -> String {
 }
 
 fn upstream_provider_summary(r: &TaskResult) -> String {
-    let providers = r.upstream_providers.iter().fold(Vec::new(), |mut values, observation| {
-        if values.last().copied() != Some(observation.provider.as_str()) {
-            values.push(observation.provider.as_str());
-        }
-        values
-    });
+    let providers = r
+        .upstream_providers
+        .iter()
+        .fold(Vec::new(), |mut values, observation| {
+            if values.last().copied() != Some(observation.provider.as_str()) {
+                values.push(observation.provider.as_str());
+            }
+            values
+        });
     match providers.as_slice() {
         [] => "-".into(),
         [provider] => (*provider).to_string(),
-        providers => format!("switched ({}; final {})", providers.join(" -> "), providers.last().unwrap()),
+        providers => format!(
+            "switched ({}; final {})",
+            providers.join(" -> "),
+            providers.last().unwrap()
+        ),
     }
 }
 
@@ -2412,6 +2459,7 @@ fn write_transcript(results_dir: &Path, r: &TaskResult, attempt: Option<u32>) ->
         "routed_models": r.routed_models,
         "upstream_providers": r.upstream_providers,
         "generation_ids": r.generation_ids,
+        "provider_telemetry": r.provider_telemetry,
         "timestamp": r.timestamp,
         "heddle_commit": r.heddle_commit,
         "evals_version": r.evals_version,
@@ -2441,8 +2489,9 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>
     let error_dir = results_dir.join("errors");
     fs::create_dir_all(&error_dir)?;
     let stem = result_artifact_stem(r, attempt);
+    let correlation = serde_json::to_string(&r.provider_telemetry)?;
     let contents = format!(
-        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nupstream_providers: {}\ngeneration_ids: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nupstream_providers: {}\ngeneration_ids: {}\nprovider_correlation: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
         r.prompt_id,
         r.run_index,
@@ -2450,6 +2499,7 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>
         routed_model_summary(r),
         upstream_provider_summary(r),
         r.generation_ids.join(","),
+        correlation,
         failure_cause(r).map(FailureCause::label).unwrap_or("unknown"),
         r.scores.efficiency.turns,
         r.scores.efficiency.tool_calls,
@@ -2811,6 +2861,8 @@ mod tests {
                 .unwrap_or_default(),
             upstream_providers: Vec::new(),
             generation_ids: Vec::new(),
+            provider_telemetry: Vec::new(),
+            debug_errors: Vec::new(),
             heddle_commit: "abc123".into(),
             evals_version: "0.1.0".into(),
             timestamp: "2026-07-22T00:00:00Z".into(),
@@ -3196,6 +3248,8 @@ mod tests {
                 cache_write_tokens: 3,
                 usd: 0.005,
             },
+            provider_telemetry: Vec::new(),
+            debug_errors: Vec::new(),
         });
 
         let summary = format_summary(std::slice::from_ref(&final_result));
@@ -4053,7 +4107,8 @@ async fn cmd_run(
         comparison,
         suite,
         budget_stopped,
-        total_pairs * runs as usize,
+        // Smoke checks are one-time preflight cases; only matrix cases repeat.
+        smoke_pairs.len() + matrix_pairs.len() * runs as usize,
         runs,
         &start_heddle_git,
         &start_evals_git,
@@ -4093,6 +4148,7 @@ struct RunMeta {
     comparison: ComparisonConfig,
     suite: SuiteIdentity,
     budget_stopped: bool,
+    planned_results_version: u8,
     planned_results: usize,
 }
 
@@ -4493,6 +4549,7 @@ fn write_run_artifacts(
     start_evals_git: &GitInfo,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
+    write_debug_error_log(results_dir, results)?;
     let reported = reported_results(results);
 
     let passed = reported
@@ -4558,6 +4615,7 @@ fn write_run_artifacts(
         comparison,
         suite,
         budget_stopped,
+        planned_results_version: 2,
         planned_results,
     };
 
@@ -4646,5 +4704,27 @@ fn write_run_artifacts(
     md.push_str(summary_md);
     md.push_str(failures_md);
     fs::write(results_dir.join("summary.md"), md)?;
+    Ok(())
+}
+
+fn write_debug_error_log(results_dir: &Path, results: &[TaskResult]) -> Result<()> {
+    let entries = results
+        .iter()
+        .flat_map(|result| {
+            result.debug_errors.iter().chain(
+                result
+                    .retry_attempts
+                    .iter()
+                    .flat_map(|attempt| attempt.debug_errors.iter()),
+            )
+        })
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    if !entries.is_empty() {
+        fs::write(
+            results_dir.join("debug-errors.jsonl"),
+            format!("{}\n", entries.join("\n")),
+        )?;
+    }
     Ok(())
 }

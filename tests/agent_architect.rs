@@ -421,6 +421,7 @@ async fn events_from_both_phases_are_yielded() {
             AgentEvent::AssistantMessage { .. } => "assistant_message",
             AgentEvent::PlanComplete { .. } => "plan_complete",
             AgentEvent::Error { .. } => "error",
+            AgentEvent::ProviderError { .. } => "provider_error",
             _ => "other",
         })
         .collect();

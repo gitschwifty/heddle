@@ -380,7 +380,10 @@ impl HeddleRuntime {
                 AgentEvent::UpstreamProvider { provider } => {
                     if self.upstream_provider_history.last() != Some(&provider) {
                         if self.last_upstream_provider.is_some() {
-                            crate::debug::debug("provider", &format!("upstream provider switch: {provider}"));
+                            crate::debug::debug(
+                                "provider",
+                                &format!("upstream provider switch: {provider}"),
+                            );
                         }
                         self.upstream_provider_history.push(provider.clone());
                     }
@@ -404,6 +407,25 @@ impl HeddleRuntime {
                             "provider_error"
                         },
                     ));
+                }
+                AgentEvent::ProviderError {
+                    message, telemetry, ..
+                } => {
+                    let details = provider_error_details(&message, &telemetry);
+                    error = Some(RuntimeError {
+                        code: "provider_error".into(),
+                        message,
+                        retryable: telemetry.retry_after_ms.is_some()
+                            || matches!(
+                                telemetry.status,
+                                Some(408 | 429 | 500 | 502 | 503 | 504 | 529)
+                            ),
+                        provider: telemetry
+                            .provider
+                            .clone()
+                            .or_else(|| Some("openrouter".into())),
+                        details: Some(details),
+                    });
                 }
                 _ => {}
             }
@@ -552,6 +574,24 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
                 },
             ),
         }),
+        AgentEvent::ProviderError {
+            message, telemetry, ..
+        } => Some(RuntimeEvent::Error {
+            error: RuntimeError {
+                code: "provider_error".into(),
+                message: message.clone(),
+                retryable: telemetry.retry_after_ms.is_some()
+                    || matches!(
+                        telemetry.status,
+                        Some(408 | 429 | 500 | 502 | 503 | 504 | 529)
+                    ),
+                provider: telemetry
+                    .provider
+                    .clone()
+                    .or_else(|| Some("openrouter".into())),
+                details: Some(provider_error_details(message, telemetry)),
+            },
+        }),
         AgentEvent::PermissionRequest { name, call, reason } => {
             Some(RuntimeEvent::PermissionRequested {
                 name: name.clone(),
@@ -593,6 +633,21 @@ fn agent_permission_resolver(resolver: RuntimePermissionResolver) -> PermissionR
                 RuntimePermissionResponse::Always => PermissionResponse::Always,
             }
         })
+    })
+}
+
+fn provider_error_details(
+    message: &str,
+    telemetry: &crate::provider::types::ProviderTelemetry,
+) -> Value {
+    // Keep the headless error-details contract stable. Eval artifacts retain
+    // the richer telemetry; headless continues to expose its legacy envelope.
+    serde_json::json!({
+        "error": {
+            "message": telemetry.detail.as_deref().unwrap_or(message),
+            "type": "error",
+            "code": telemetry.status,
+        },
     })
 }
 

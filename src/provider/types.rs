@@ -42,6 +42,47 @@ pub struct ProviderConfig {
     pub retry: Option<RetryConfig>,
 }
 
+/// Safe, bounded provider-side correlation data. It intentionally excludes
+/// request bodies, authorization, and arbitrary response payloads.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProviderTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderFailure {
+    pub message: String,
+    pub telemetry: ProviderTelemetry,
+    /// Bounded sanitized diagnostic for the dedicated debug-error artifact.
+    /// Never serialize this into normal eval evidence.
+    pub debug_detail: Option<String>,
+}
+
+impl std::fmt::Display for ProviderFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ProviderFailure {}
+
 pub type StreamItem = Result<StreamChunk>;
 pub type ChunkStream = Pin<Box<dyn Stream<Item = StreamItem> + Send>>;
 

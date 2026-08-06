@@ -77,6 +77,7 @@ fn event_kind(e: &AgentEvent) -> &'static str {
         AgentEvent::ToolEnd { .. } => "tool_end",
         AgentEvent::ContentDelta { .. } => "content_delta",
         AgentEvent::Error { .. } => "error",
+        AgentEvent::ProviderError { .. } => "provider_error",
         AgentEvent::LoopDetected { .. } => "loop_detected",
         AgentEvent::PermissionDenied { .. } => "permission_denied",
         AgentEvent::PermissionRequest { .. } => "permission_request",

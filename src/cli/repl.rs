@@ -545,6 +545,15 @@ pub async fn start_cli() -> Result<()> {
                         mc.lock().on_provider_error();
                     }
                 }
+                AgentEvent::ProviderError {
+                    message, telemetry, ..
+                } => {
+                    eprintln!("  [error] {message}");
+                    crate::debug::debug("provider", &format!("telemetry: {telemetry:?}"));
+                    if let Some(mc) = &ctx.metrics_collector {
+                        mc.lock().on_provider_error();
+                    }
+                }
                 _ => {}
             }
         }
