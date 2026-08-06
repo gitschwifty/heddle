@@ -27,6 +27,11 @@ pub enum AgentEvent {
     RoutedModel {
         model: String,
     },
+    /// An upstream provider observed in the response. Absence deliberately
+    /// remains unknown; callers must not infer this from the routed model.
+    UpstreamProvider {
+        provider: String,
+    },
     LoopDetected {
         count: u32,
     },

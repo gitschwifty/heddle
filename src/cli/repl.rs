@@ -531,6 +531,9 @@ pub async fn start_cli() -> Result<()> {
                         println!("  [model: {model}]");
                     }
                 }
+                AgentEvent::UpstreamProvider { provider } => {
+                    crate::debug::debug("provider", &format!("upstream provider: {provider}"));
+                }
                 AgentEvent::LoopDetected { count } => {
                     eprintln!(
                         "\n  [warning] Doom loop detected: {count} identical tool call iterations. Stopping."

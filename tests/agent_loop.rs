@@ -103,6 +103,7 @@ fn event_kind(e: &AgentEvent) -> &'static str {
     match e {
         AgentEvent::Usage { .. } => "usage",
         AgentEvent::RoutedModel { .. } => "routed_model",
+        AgentEvent::UpstreamProvider { .. } => "upstream_provider",
         AgentEvent::AssistantMessage { .. } => "assistant_message",
         AgentEvent::ToolStart { .. } => "tool_start",
         AgentEvent::ToolEnd { .. } => "tool_end",
@@ -357,6 +358,8 @@ async fn usage_event_yields_token_counts() {
 async fn no_usage_event_when_response_usage_absent() {
     let no_usage = ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "x".to_string(),
         choices: vec![heddle::types::Choice {
             index: 0,
@@ -409,6 +412,8 @@ async fn two_llm_calls_produce_two_usage_events() {
 async fn usage_includes_cost_when_present() {
     let with_cost = ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "x".to_string(),
         choices: vec![heddle::types::Choice {
             index: 0,

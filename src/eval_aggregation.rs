@@ -83,6 +83,32 @@ struct AggregateSnapshot {
     runs: Vec<AggregateRun>,
 }
 
+#[derive(Debug, Serialize)]
+struct ReliabilityMetric {
+    mean: f64,
+    min: f64,
+    max: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct ReliabilityGroup {
+    task: String,
+    prompt: String,
+    requested_model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routed_models: Option<String>,
+    observations: usize,
+    passed: usize,
+    pass_rate: Option<f64>,
+    statuses: BTreeMap<String, usize>,
+    failure_causes: BTreeMap<String, usize>,
+    duration_ms: ReliabilityMetric,
+    tokens: ReliabilityMetric,
+    cost_usd: ReliabilityMetric,
+    turns: ReliabilityMetric,
+    tool_calls: ReliabilityMetric,
+}
+
 fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(value)?)))
 }
@@ -317,6 +343,9 @@ fn failure_drilldown_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
             let routing = trace
                 .and_then(|trace| trace.routed_model_change.clone())
                 .unwrap_or_default();
+            let provider_switch = trace
+                .and_then(|trace| trace.upstream_provider_change.clone())
+                .unwrap_or_default();
             rows.push(vec![
                 run.model.clone(),
                 result.task_id.clone(),
@@ -325,10 +354,92 @@ fn failure_drilldown_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
                 tools,
                 tool_failures,
                 routing,
+                provider_switch,
             ]);
         }
     }
     rows
+}
+
+fn metric(values: impl Iterator<Item = f64>) -> ReliabilityMetric {
+    let values: Vec<f64> = values.collect();
+    let count = values.len() as f64;
+    ReliabilityMetric {
+        mean: values.iter().sum::<f64>() / count,
+        min: values.iter().copied().reduce(f64::min).unwrap_or(0.0),
+        max: values.iter().copied().reduce(f64::max).unwrap_or(0.0),
+    }
+}
+
+fn routed_model_key(result: &TaskResult) -> Option<String> {
+    let models: Vec<&str> = result
+        .routed_models
+        .iter()
+        .map(|observation| observation.model.as_str())
+        .collect();
+    (!models.is_empty()).then(|| models.join(" -> "))
+}
+
+fn reliability_groups(runs: &[AggregateRun]) -> Vec<ReliabilityGroup> {
+    let mut groups: BTreeMap<(String, String, String, Option<String>), Vec<&TaskResult>> =
+        BTreeMap::new();
+    for run in runs.iter().filter(|run| run.included_in_quality_metrics) {
+        for result in &run.results {
+            groups
+                .entry((
+                    result.task_id.clone(),
+                    result.prompt_id.clone(),
+                    run.model.clone(),
+                    routed_model_key(result),
+                ))
+                .or_default()
+                .push(result);
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((task, prompt, requested_model, routed_models), results)| {
+            let mut statuses = BTreeMap::new();
+            let mut failure_causes = BTreeMap::new();
+            let mut passed = 0;
+            for result in &results {
+                *statuses
+                    .entry(match result_status(result) {
+                        ResultStatus::Pass => "pass",
+                        ResultStatus::Fail => "fail",
+                        ResultStatus::Limit => "limit",
+                        ResultStatus::Error => "error",
+                    }
+                    .to_string())
+                    .or_default() += 1;
+                if result_status(result) == ResultStatus::Pass {
+                    passed += 1;
+                }
+                if let Some(cause) = failure_cause(result) {
+                    *failure_causes.entry(cause.label().to_string()).or_default() += 1;
+                }
+            }
+            let observations = results.len();
+            ReliabilityGroup {
+                task,
+                prompt,
+                requested_model,
+                routed_models,
+                observations,
+                passed,
+                pass_rate: Some(passed as f64 / observations as f64),
+                statuses,
+                failure_causes,
+                duration_ms: metric(results.iter().map(|r| r.duration_ms as f64)),
+                tokens: metric(results.iter().map(|r| {
+                    (r.scores.cost.tokens_in + r.scores.cost.tokens_out) as f64
+                })),
+                cost_usd: metric(results.iter().map(|r| r.scores.cost.usd)),
+                turns: metric(results.iter().map(|r| r.scores.efficiency.turns as f64)),
+                tool_calls: metric(results.iter().map(|r| r.scores.efficiency.tool_calls as f64)),
+            }
+        })
+        .collect()
 }
 
 fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
@@ -340,6 +451,11 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
     fs::write(
         output.join("runs.json"),
         serde_json::to_string_pretty(snapshot)?,
+    )?;
+    let reliability = reliability_groups(&snapshot.runs);
+    fs::write(
+        output.join("reliability.json"),
+        serde_json::to_string_pretty(&reliability)?,
     )?;
     let excluded = snapshot
         .runs
@@ -391,6 +507,35 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
             ),
         )?;
     }
+    let reliability_rows = reliability
+        .iter()
+        .map(|group| {
+            vec![
+                group.task.clone(),
+                group.prompt.clone(),
+                group.requested_model.clone(),
+                group.routed_models.clone().unwrap_or_else(|| "—".into()),
+                group.observations.to_string(),
+                format!("{}/{} ({:.0}%)", group.passed, group.observations, group.pass_rate.unwrap_or(0.0) * 100.0),
+                group.statuses.iter().map(|(status, count)| format!("{status}={count}")).collect::<Vec<_>>().join(", "),
+                if group.failure_causes.is_empty() { "—".into() } else { group.failure_causes.iter().map(|(cause, count)| format!("{cause}={count}")).collect::<Vec<_>>().join(", ") },
+                format!("{:.0}/{:.0}/{:.0}", group.duration_ms.min, group.duration_ms.mean, group.duration_ms.max),
+                format!("{:.0}/{:.0}/{:.0}", group.tokens.min, group.tokens.mean, group.tokens.max),
+                format!("{:.1}/{:.1}/{:.1}", group.turns.min, group.turns.mean, group.turns.max),
+                format!("{:.1}/{:.1}/{:.1}", group.tool_calls.min, group.tool_calls.mean, group.tool_calls.max),
+            ]
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        output.join("reliability.md"),
+        format!(
+            "{preamble}## Repeated-run reliability\n\nMetric ranges are `min/mean/max`; one observation therefore shows the same value three times.\n\n{}",
+            markdown_table(
+                &["task", "prompt", "requested model", "routed", "observations", "pass rate", "statuses", "failure causes", "duration ms", "tokens", "turns", "tool calls"],
+                &reliability_rows,
+            )
+        ),
+    )?;
     fs::write(
         output.join("by-tag.md"),
         format!(
@@ -413,7 +558,8 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
                     "cause",
                     "tools",
                     "tool failures",
-                    "routing change"
+                    "routing change",
+                    "provider switch"
                 ],
                 &failure_drilldown_rows(&snapshot.runs),
             )

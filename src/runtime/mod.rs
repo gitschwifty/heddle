@@ -34,6 +34,8 @@ pub struct RuntimeStatus {
     pub session_id: String,
     pub model: String,
     pub last_routed_model: Option<String>,
+    pub last_upstream_provider: Option<String>,
+    pub upstream_provider_history: Vec<String>,
     pub messages_count: u64,
     pub active: bool,
     pub total_input_tokens: u64,
@@ -183,6 +185,9 @@ pub enum RuntimeEvent {
     RoutedModel {
         model: String,
     },
+    UpstreamProvider {
+        provider: String,
+    },
     Error {
         error: RuntimeError,
     },
@@ -211,6 +216,8 @@ pub enum RuntimeEvent {
 pub struct HeddleRuntime {
     session: SessionContext,
     last_routed_model: Option<String>,
+    last_upstream_provider: Option<String>,
+    upstream_provider_history: Vec<String>,
 }
 
 impl HeddleRuntime {
@@ -223,6 +230,8 @@ impl HeddleRuntime {
         Self {
             session,
             last_routed_model: None,
+            last_upstream_provider: None,
+            upstream_provider_history: Vec::new(),
         }
     }
 
@@ -244,6 +253,8 @@ impl HeddleRuntime {
             session_id: self.session.session_id.clone(),
             model: self.session.config.model.clone(),
             last_routed_model: self.last_routed_model.clone(),
+            last_upstream_provider: self.last_upstream_provider.clone(),
+            upstream_provider_history: self.upstream_provider_history.clone(),
             messages_count: self
                 .session
                 .messages
@@ -365,6 +376,15 @@ impl HeddleRuntime {
                 AgentEvent::RoutedModel { model } => {
                     pending_routed_model = Some(model.clone());
                     self.last_routed_model = Some(model);
+                }
+                AgentEvent::UpstreamProvider { provider } => {
+                    if self.upstream_provider_history.last() != Some(&provider) {
+                        if self.last_upstream_provider.is_some() {
+                            crate::debug::debug("provider", &format!("upstream provider switch: {provider}"));
+                        }
+                        self.upstream_provider_history.push(provider.clone());
+                    }
+                    self.last_upstream_provider = Some(provider);
                 }
                 AgentEvent::LoopDetected { count } => {
                     error = Some(RuntimeError {
@@ -509,6 +529,9 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
         }
         AgentEvent::RoutedModel { model } => Some(RuntimeEvent::RoutedModel {
             model: model.clone(),
+        }),
+        AgentEvent::UpstreamProvider { provider } => Some(RuntimeEvent::UpstreamProvider {
+            provider: provider.clone(),
         }),
         AgentEvent::LoopDetected { count } => Some(RuntimeEvent::Error {
             error: RuntimeError {

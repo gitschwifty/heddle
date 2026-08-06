@@ -22,6 +22,8 @@ use heddle::types::{
 pub fn text_response(content: &str) -> ChatCompletionResponse {
     ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![Choice {
             index: 0,
@@ -55,6 +57,8 @@ pub fn tool_call_response(calls: &[(&str, Value)]) -> ChatCompletionResponse {
         .collect();
     ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![Choice {
             index: 0,
@@ -76,6 +80,8 @@ pub fn tool_call_response(calls: &[(&str, Value)]) -> ChatCompletionResponse {
 pub fn text_chunk(content: &str) -> StreamChunk {
     StreamChunk {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![StreamChoice {
             index: 0,
@@ -93,6 +99,8 @@ pub fn text_chunk(content: &str) -> StreamChunk {
 pub fn finish_chunk(reason: &str) -> StreamChunk {
     StreamChunk {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![StreamChoice {
             index: 0,
@@ -111,6 +119,8 @@ pub fn tool_call_chunk(
 ) -> StreamChunk {
     StreamChunk {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![StreamChoice {
             index: 0,
@@ -140,6 +150,8 @@ pub fn tool_call_chunk(
 pub fn usage_chunk(prompt: u64, completion: u64, total: u64, cost: Option<f64>) -> StreamChunk {
     StreamChunk {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![StreamChoice {
             index: 0,

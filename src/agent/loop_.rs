@@ -241,6 +241,14 @@ pub fn run_agent_loop<'a>(
             if let Some(model) = response.model.clone() {
                 yield AgentEvent::RoutedModel { model };
             }
+            if let Some(provider) = response.provider.clone().or_else(|| {
+                response
+                    .openrouter_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.selected_provider().map(str::to_string))
+            }) {
+                yield AgentEvent::UpstreamProvider { provider };
+            }
             let response_usage = response.usage.clone();
             let choice = match response.choices.into_iter().next() {
                 Some(c) => c,
@@ -434,6 +442,7 @@ pub fn run_agent_loop_streaming<'a>(
             let mut stream_usage = None;
             let mut finish_reasons: Vec<String> = Vec::new();
             let mut last_routed_model: Option<String> = None;
+            let mut last_upstream_provider: Option<String> = None;
             let mut usage_generation_id: Option<String> = None;
 
             loop {
@@ -461,6 +470,17 @@ pub fn run_agent_loop_streaming<'a>(
                     if last_routed_model.as_deref() != Some(model.as_str()) {
                         last_routed_model = Some(model.clone());
                         yield AgentEvent::RoutedModel { model };
+                    }
+                }
+                if let Some(provider) = chunk.provider.clone().or_else(|| {
+                    chunk
+                        .openrouter_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.selected_provider().map(str::to_string))
+                }) {
+                    if last_upstream_provider.as_deref() != Some(provider.as_str()) {
+                        last_upstream_provider = Some(provider.clone());
+                        yield AgentEvent::UpstreamProvider { provider };
                     }
                 }
                 let choice = match chunk.choices.into_iter().next() {

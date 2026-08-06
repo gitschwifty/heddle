@@ -271,6 +271,8 @@ async fn filters_tools_when_tools_param_provided() {
 async fn returns_error_string_when_loop_has_no_content() {
     let empty = ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "x".to_string(),
         choices: vec![Choice {
             index: 0,

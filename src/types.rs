@@ -114,6 +114,12 @@ pub struct ChatCompletionResponse {
     pub id: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// OpenRouter's observed upstream provider. This is a fact reported by
+    /// the response, not the requested routing preference.
+    #[serde(default, alias = "provider_name")]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub openrouter_metadata: Option<OpenRouterMetadata>,
     pub choices: Vec<Choice>,
     #[serde(default)]
     pub usage: Option<Usage>,
@@ -168,9 +174,50 @@ pub struct StreamChunk {
     pub id: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// OpenRouter may include the upstream provider on stream chunks.
+    #[serde(default, alias = "provider_name")]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub openrouter_metadata: Option<OpenRouterMetadata>,
     pub choices: Vec<StreamChoice>,
     #[serde(default)]
     pub usage: Option<Usage>,
+}
+
+/// Additive, opt-in routing information from OpenRouter. Keep this permissive:
+/// OpenRouter may add pipeline fields without a schema bump.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenRouterMetadata {
+    #[serde(default)]
+    pub strategy: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub endpoints: Option<OpenRouterEndpoints>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenRouterEndpoints {
+    #[serde(default)]
+    pub available: Vec<OpenRouterEndpoint>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenRouterEndpoint {
+    pub provider: String,
+    #[serde(default)]
+    pub selected: bool,
+}
+
+impl OpenRouterMetadata {
+    pub fn selected_provider(&self) -> Option<&str> {
+        self.endpoints
+            .as_ref()?
+            .available
+            .iter()
+            .find(|endpoint| endpoint.selected)
+            .map(|endpoint| endpoint.provider.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -407,7 +407,10 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
         (s.runtime_metadata.clone(), s.routing.clone())
     };
     if let Some(metadata) = &mut routing {
-        metadata.routed_model = runtime.status(false).last_routed_model;
+        let status = runtime.status(false);
+        metadata.routed_model = status.last_routed_model;
+        metadata.effective_upstream_provider = status.last_upstream_provider;
+        metadata.upstream_provider_history = status.upstream_provider_history;
     }
     write_line(&build_result(
         &id,
@@ -446,6 +449,8 @@ fn handle_status(state: &Arc<Mutex<State>>, id: String) {
         runtime: s.runtime_metadata.clone(),
         routing: s.routing.clone().map(|mut metadata| {
             metadata.routed_model = status.last_routed_model.clone();
+            metadata.effective_upstream_provider = status.last_upstream_provider.clone();
+            metadata.upstream_provider_history = status.upstream_provider_history.clone();
             metadata
         }),
     });
@@ -547,6 +552,9 @@ fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
         }),
         RuntimeEvent::RoutedModel { model } => Some(WorkerEvent::RoutedModel {
             model: model.clone(),
+        }),
+        RuntimeEvent::UpstreamProvider { provider } => Some(WorkerEvent::UpstreamProvider {
+            provider: provider.clone(),
         }),
         RuntimeEvent::Error { error } => Some(WorkerEvent::Error {
             code: error.code.clone(),

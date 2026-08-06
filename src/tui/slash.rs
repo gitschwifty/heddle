@@ -55,13 +55,19 @@ pub(super) fn tui_status_text(status: Option<&RuntimeStatus>) -> String {
         .cost_usd
         .map(|cost| format!("${cost:.4}"))
         .unwrap_or_else(|| "n/a".to_string());
+    let provider = status
+        .last_upstream_provider
+        .as_deref()
+        .map(|value| format!("\nupstream provider: {value}"))
+        .unwrap_or_default();
     format!(
-        "session: {}\nmodel: {}\nmessages: {}\ntokens: {} in / {} out\ncost: {}",
+        "session: {}\nmodel: {}\nmessages: {}\ntokens: {} in / {} out\ncost: {}{}",
         status.session_id,
         display_model(status),
         status.messages_count,
         status.total_input_tokens,
         status.total_output_tokens,
-        cost
+        cost,
+        provider,
     )
 }

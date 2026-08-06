@@ -59,6 +59,10 @@ impl OpenRouterProvider {
             HeaderValue::from_str(attribution.title)?,
         );
         headers.insert("X-Title", HeaderValue::from_str(attribution.title)?);
+        // OpenRouter only returns the actual selected provider and fallback
+        // context when explicitly requested. This response-only metadata is
+        // safe to retain and lets callers distinguish facts from preferences.
+        headers.insert("X-OpenRouter-Metadata", HeaderValue::from_static("enabled"));
         if let Some(categories) = attribution.categories {
             headers.insert(
                 "X-OpenRouter-Categories",

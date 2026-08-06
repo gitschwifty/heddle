@@ -25,6 +25,8 @@ use common::Sandbox;
 fn routed_model_chunk(model: &str) -> StreamChunk {
     StreamChunk {
         model: Some(model.to_string()),
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![StreamChoice {
             index: 0,
@@ -38,6 +40,8 @@ fn routed_model_chunk(model: &str) -> StreamChunk {
 fn detailed_usage_chunk() -> StreamChunk {
     StreamChunk {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "gen-runtime-usage".to_string(),
         choices: vec![StreamChoice {
             index: 0,

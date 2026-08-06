@@ -159,6 +159,8 @@ async fn yields_error_event_when_provider_fails() {
 async fn yields_error_when_response_has_empty_choices() {
     let empty = ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "test".to_string(),
         choices: vec![],
         usage: Some(heddle::types::Usage {

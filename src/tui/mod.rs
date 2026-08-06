@@ -525,6 +525,7 @@ impl TuiApp {
                     status.last_routed_model = Some(model);
                 }
             }
+            RuntimeEvent::UpstreamProvider { .. } => {}
             RuntimeEvent::Error { error } => {
                 self.clear_pending_work();
                 self.push_transcript_row(TranscriptKind::Error, error.message);

@@ -338,6 +338,10 @@ struct TaskResult {
     /// omit this when every observed model equals the requested model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     routed_models: Vec<RoutedModelObservation>,
+    /// Upstream provider observed on each assistant response. Unlike a
+    /// requested routing policy this only records provider facts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    upstream_providers: Vec<UpstreamProviderObservation>,
     /// Provider generation IDs observed for successful model responses in this
     /// case. These make eval artifacts joinable to provider-side logs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -421,6 +425,8 @@ struct CompactTrace {
     terminal_cause: Option<FailureCause>,
     #[serde(skip_serializing_if = "Option::is_none")]
     routed_model_change: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_provider_change: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     truncated: bool,
 }
@@ -435,6 +441,12 @@ struct ToolFailureTrace {
 struct RoutedModelObservation {
     assistant_turn: u32,
     model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpstreamProviderObservation {
+    assistant_turn: u32,
+    provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1208,8 +1220,10 @@ async fn run_one(
     let mut cache_write_tokens = 0u64;
     let mut usd = 0.0f64;
     let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
+    let mut upstream_providers: Vec<UpstreamProviderObservation> = Vec::new();
     let mut generation_ids: Vec<String> = Vec::new();
     let mut pending_routed_model: Option<String> = None;
+    let mut pending_upstream_provider: Option<String> = None;
     let mut error: Option<String> = None;
     let mut error_cause: Option<FailureCause> = None;
     let mut limit: Option<LimitReason> = None;
@@ -1286,6 +1300,12 @@ async fn run_one(
                             model,
                         });
                     }
+                    if let Some(provider) = pending_upstream_provider.take() {
+                        upstream_providers.push(UpstreamProviderObservation {
+                            assistant_turn: turns,
+                            provider,
+                        });
+                    }
                     if let Some(reason) = &finish_reason {
                         finish_reasons.push(reason.clone());
                     }
@@ -1331,6 +1351,21 @@ async fn run_one(
                 }
                 AgentEvent::RoutedModel { model } => {
                     pending_routed_model = Some(model);
+                }
+                AgentEvent::UpstreamProvider { provider } => {
+                    if upstream_providers
+                        .last()
+                        .is_some_and(|previous| previous.provider != provider)
+                    {
+                        println!(
+                            "      upstream provider switch: {} -> {provider}",
+                            upstream_providers
+                                .last()
+                                .expect("checked above")
+                                .provider
+                        );
+                    }
+                    pending_upstream_provider = Some(provider);
                 }
                 AgentEvent::Error { message } => {
                     if message.contains("; retrying once") {
@@ -1405,6 +1440,7 @@ async fn run_one(
         &finish_reasons,
         failure_cause,
         &routed_models,
+        &upstream_providers,
         tool_trace_truncated,
     ));
 
@@ -1419,6 +1455,7 @@ async fn run_one(
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars,
         routed_models,
+        upstream_providers,
         generation_ids,
         run_index: 0,
         retry_attempts: Vec::new(),
@@ -1472,6 +1509,7 @@ fn error_result(
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
         routed_models: Vec::new(),
+        upstream_providers: Vec::new(),
         generation_ids: Vec::new(),
         run_index: 0,
         retry_attempts: Vec::new(),
@@ -1486,6 +1524,7 @@ fn error_result(
             finish_reasons: Vec::new(),
             terminal_cause: Some(FailureCause::HarnessInternal),
             routed_model_change: None,
+            upstream_provider_change: None,
             truncated: false,
         }),
         transcript: Vec::new(),
@@ -1602,6 +1641,7 @@ fn build_compact_trace(
     finish_reasons: &[String],
     terminal_cause: Option<FailureCause>,
     routed_models: &[RoutedModelObservation],
+    upstream_providers: &[UpstreamProviderObservation],
     tool_trace_truncated: bool,
 ) -> CompactTrace {
     let mut tool_counts = BTreeMap::new();
@@ -1616,6 +1656,17 @@ fn build_compact_trace(
             .collect::<Vec<_>>()
             .join(" -> ")
     });
+    let distinct_providers: Vec<&str> = upstream_providers
+        .iter()
+        .map(|observation| observation.provider.as_str())
+        .fold(Vec::new(), |mut providers, provider| {
+            if providers.last().copied() != Some(provider) {
+                providers.push(provider);
+            }
+            providers
+        });
+    let upstream_provider_change = (distinct_providers.len() > 1)
+        .then(|| distinct_providers.join(" -> "));
     CompactTrace {
         assistant_turns,
         tool_sequence: tool_sequence
@@ -1628,6 +1679,7 @@ fn build_compact_trace(
         finish_reasons: finish_reasons.to_vec(),
         terminal_cause,
         routed_model_change,
+        upstream_provider_change,
         truncated,
     }
 }
@@ -1796,9 +1848,13 @@ fn format_summary(results: &[TaskResult]) -> String {
         return out;
     }
     let has_routed_models = results.iter().any(|r| !r.routed_models.is_empty());
+    let has_upstream_providers = results.iter().any(|r| !r.upstream_providers.is_empty());
     let mut header = vec!["task", "prompt"];
     if has_routed_models {
         header.push("routed");
+    }
+    if has_upstream_providers {
+        header.push("provider");
     }
     header.extend([
         "outcome",
@@ -1824,6 +1880,9 @@ fn format_summary(results: &[TaskResult]) -> String {
         let mut row = vec![r.task_id.clone(), r.prompt_id.clone()];
         if has_routed_models {
             row.push(routed_model_summary(r));
+        }
+        if has_upstream_providers {
+            row.push(upstream_provider_summary(r));
         }
         row.extend([
             outcome_label(r),
@@ -1979,6 +2038,20 @@ fn routed_model_summary(r: &TaskResult) -> String {
             models.len(),
             models.last().expect("non-empty routed model list")
         ),
+    }
+}
+
+fn upstream_provider_summary(r: &TaskResult) -> String {
+    let providers = r.upstream_providers.iter().fold(Vec::new(), |mut values, observation| {
+        if values.last().copied() != Some(observation.provider.as_str()) {
+            values.push(observation.provider.as_str());
+        }
+        values
+    });
+    match providers.as_slice() {
+        [] => "-".into(),
+        [provider] => (*provider).to_string(),
+        providers => format!("switched ({}; final {})", providers.join(" -> "), providers.last().unwrap()),
     }
 }
 
@@ -2270,6 +2343,9 @@ fn format_failure_details(results: &[TaskResult]) -> String {
                 if let Some(change) = &trace.routed_model_change {
                     out.push_str(&format!("    routed-model change: {change}\n"));
                 }
+                if let Some(change) = &trace.upstream_provider_change {
+                    out.push_str(&format!("    upstream-provider switch: {change}\n"));
+                }
                 if trace.truncated {
                     out.push_str("    trace: truncated\n");
                 }
@@ -2334,6 +2410,7 @@ fn write_transcript(results_dir: &Path, r: &TaskResult, attempt: Option<u32>) ->
         "run_index": r.run_index,
         "model": r.model,
         "routed_models": r.routed_models,
+        "upstream_providers": r.upstream_providers,
         "generation_ids": r.generation_ids,
         "timestamp": r.timestamp,
         "heddle_commit": r.heddle_commit,
@@ -2365,12 +2442,13 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>
     fs::create_dir_all(&error_dir)?;
     let stem = result_artifact_stem(r, attempt);
     let contents = format!(
-        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\ngeneration_ids: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nupstream_providers: {}\ngeneration_ids: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
         r.prompt_id,
         r.run_index,
         r.model,
         routed_model_summary(r),
+        upstream_provider_summary(r),
         r.generation_ids.join(","),
         failure_cause(r).map(FailureCause::label).unwrap_or("unknown"),
         r.scores.efficiency.turns,
@@ -2731,6 +2809,7 @@ mod tests {
                     }]
                 })
                 .unwrap_or_default(),
+            upstream_providers: Vec::new(),
             generation_ids: Vec::new(),
             heddle_commit: "abc123".into(),
             evals_version: "0.1.0".into(),
@@ -2919,6 +2998,16 @@ mod tests {
                     model: "b/model".into(),
                 },
             ],
+            &[
+                UpstreamProviderObservation {
+                    assistant_turn: 1,
+                    provider: "provider-a".into(),
+                },
+                UpstreamProviderObservation {
+                    assistant_turn: 2,
+                    provider: "provider-b".into(),
+                },
+            ],
             false,
         );
         assert_eq!(trace.assistant_turns, 3);
@@ -2931,6 +3020,10 @@ mod tests {
         assert_eq!(
             trace.routed_model_change.as_deref(),
             Some("a/model -> b/model")
+        );
+        assert_eq!(
+            trace.upstream_provider_change.as_deref(),
+            Some("provider-a -> provider-b")
         );
         assert!(trace.truncated);
     }

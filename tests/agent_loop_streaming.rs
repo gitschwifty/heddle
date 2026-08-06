@@ -137,6 +137,8 @@ fn user(c: &str) -> Vec<Message> {
 fn empty_text_response() -> ChatCompletionResponse {
     ChatCompletionResponse {
         model: None,
+        provider: None,
+        openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
         choices: vec![Choice {
             index: 0,

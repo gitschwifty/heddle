@@ -41,6 +41,12 @@ pub struct RoutingMetadata {
     pub grouping_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_model: Option<String>,
+    /// Provider actually observed in a response, when supplied by the
+    /// upstream transport. It is intentionally distinct from routing input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_upstream_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_provider_history: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +160,9 @@ pub enum WorkerEvent {
     },
     RoutedModel {
         model: String,
+    },
+    UpstreamProvider {
+        provider: String,
     },
     Error {
         code: String,
