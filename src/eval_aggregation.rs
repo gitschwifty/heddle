@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::{
-    exceeded_max_tool_call_guidance, result_name_component, result_status, ComparisonConfig,
-    ResultStatus, SuiteIdentity, TaskResult,
+    exceeded_max_tool_call_guidance, failure_cause, result_name_component, result_status,
+    ComparisonConfig, FailureCause, ResultStatus, SuiteIdentity, TaskResult,
 };
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +181,7 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
         failed: usize,
         limited: usize,
         errored: usize,
+        failure_causes: BTreeMap<FailureCause, usize>,
         tool_calls: u64,
         max_tool_calls: BTreeSet<u32>,
         guidance_cases: usize,
@@ -219,6 +220,9 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
                 ResultStatus::Limit => totals.limited += 1,
                 ResultStatus::Error => totals.errored += 1,
             }
+            if let Some(cause) = failure_cause(result) {
+                *totals.failure_causes.entry(cause).or_default() += 1;
+            }
         }
     }
     groups
@@ -242,6 +246,16 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
                     totals.exceeded_max_tool_calls, totals.guidance_cases
                 )
             };
+            let failure_causes = if totals.failure_causes.is_empty() {
+                "—".into()
+            } else {
+                totals
+                    .failure_causes
+                    .iter()
+                    .map(|(cause, count)| format!("{}={count}", cause.label()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             vec![
                 first,
                 second,
@@ -253,11 +267,68 @@ fn report_rows(runs: &[AggregateRun], by_prompt: bool, by_heddle: bool) -> Vec<V
                 format!("{:.1}", totals.tool_calls as f64 / totals.cases as f64),
                 max_tool_calls,
                 exceeded_max_tool_calls,
+                failure_causes,
                 totals.tokens.to_string(),
                 format!("${:.6}", totals.usd),
             ]
         })
         .collect()
+}
+
+fn failure_causes_by_tag_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
+    let mut totals: BTreeMap<(String, FailureCause), usize> = BTreeMap::new();
+    for run in runs.iter().filter(|run| run.included_in_quality_metrics) {
+        for result in &run.results {
+            let Some(cause) = failure_cause(result) else {
+                continue;
+            };
+            for tag in &result.tags {
+                *totals.entry((tag.clone(), cause)).or_default() += 1;
+            }
+        }
+    }
+    totals
+        .into_iter()
+        .map(|((tag, cause), count)| vec![tag, cause.label().into(), count.to_string()])
+        .collect()
+}
+
+fn failure_drilldown_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    for run in runs.iter().filter(|run| run.included_in_quality_metrics) {
+        for result in &run.results {
+            let Some(cause) = failure_cause(result) else {
+                continue;
+            };
+            let trace = result.trace.as_ref();
+            let tools = trace
+                .map(|trace| trace.tool_sequence.join(" -> "))
+                .unwrap_or_default();
+            let tool_failures = trace
+                .map(|trace| {
+                    trace
+                        .tool_failures
+                        .iter()
+                        .map(|failure| format!("{}: {}", failure.name, failure.detail))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+            let routing = trace
+                .and_then(|trace| trace.routed_model_change.clone())
+                .unwrap_or_default();
+            rows.push(vec![
+                run.model.clone(),
+                result.task_id.clone(),
+                result.prompt_id.clone(),
+                cause.label().into(),
+                tools,
+                tool_failures,
+                routing,
+            ]);
+        }
+    }
+    rows
 }
 
 fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
@@ -291,6 +362,7 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
         "tools avg",
         "max tools",
         "over max",
+        "failure causes",
         "tokens",
         "cost",
     ];
@@ -319,6 +391,34 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
             ),
         )?;
     }
+    fs::write(
+        output.join("by-tag.md"),
+        format!(
+            "{preamble}## Failure causes by task tag\n\n{}",
+            markdown_table(
+                &["tag", "failure cause", "cases"],
+                &failure_causes_by_tag_rows(&snapshot.runs)
+            )
+        ),
+    )?;
+    fs::write(
+        output.join("failure-drilldown.md"),
+        format!(
+            "{preamble}## Failure trace drill-down\n\n{}",
+            markdown_table(
+                &[
+                    "model",
+                    "task",
+                    "prompt",
+                    "cause",
+                    "tools",
+                    "tool failures",
+                    "routing change"
+                ],
+                &failure_drilldown_rows(&snapshot.runs),
+            )
+        ),
+    )?;
     Ok(())
 }
 
