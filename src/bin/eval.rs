@@ -338,6 +338,10 @@ struct TaskResult {
     /// omit this when every observed model equals the requested model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     routed_models: Vec<RoutedModelObservation>,
+    /// Provider generation IDs observed for successful model responses in this
+    /// case. These make eval artifacts joinable to provider-side logs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    generation_ids: Vec<String>,
     /// 1-indexed run number when --runs N. 0 if single-run.
     #[serde(default)]
     run_index: u32,
@@ -1204,6 +1208,7 @@ async fn run_one(
     let mut cache_write_tokens = 0u64;
     let mut usd = 0.0f64;
     let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
+    let mut generation_ids: Vec<String> = Vec::new();
     let mut pending_routed_model: Option<String> = None;
     let mut error: Option<String> = None;
     let mut error_cause: Option<FailureCause> = None;
@@ -1294,7 +1299,13 @@ async fn run_one(
                         }
                     }
                 }
-                AgentEvent::Usage { usage, .. } => {
+                AgentEvent::Usage {
+                    usage,
+                    generation_id,
+                } => {
+                    if let Some(generation_id) = generation_id {
+                        generation_ids.push(generation_id);
+                    }
                     tokens_in += usage.prompt_tokens;
                     tokens_out += usage.completion_tokens;
                     cached_tokens += usage
@@ -1408,6 +1419,7 @@ async fn run_one(
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars,
         routed_models,
+        generation_ids,
         run_index: 0,
         retry_attempts: Vec::new(),
         tool_sequence,
@@ -1460,6 +1472,7 @@ fn error_result(
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
         routed_models: Vec::new(),
+        generation_ids: Vec::new(),
         run_index: 0,
         retry_attempts: Vec::new(),
         tool_sequence: Vec::new(),
@@ -2321,6 +2334,7 @@ fn write_transcript(results_dir: &Path, r: &TaskResult, attempt: Option<u32>) ->
         "run_index": r.run_index,
         "model": r.model,
         "routed_models": r.routed_models,
+        "generation_ids": r.generation_ids,
         "timestamp": r.timestamp,
         "heddle_commit": r.heddle_commit,
         "evals_version": r.evals_version,
@@ -2351,12 +2365,13 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>
     fs::create_dir_all(&error_dir)?;
     let stem = result_artifact_stem(r, attempt);
     let contents = format!(
-        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\ngeneration_ids: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
         r.prompt_id,
         r.run_index,
         r.model,
         routed_model_summary(r),
+        r.generation_ids.join(","),
         failure_cause(r).map(FailureCause::label).unwrap_or("unknown"),
         r.scores.efficiency.turns,
         r.scores.efficiency.tool_calls,
@@ -2716,6 +2731,7 @@ mod tests {
                     }]
                 })
                 .unwrap_or_default(),
+            generation_ids: Vec::new(),
             heddle_commit: "abc123".into(),
             evals_version: "0.1.0".into(),
             timestamp: "2026-07-22T00:00:00Z".into(),
@@ -2984,6 +3000,7 @@ mod tests {
         let mut result = result(0, 0, None);
         result.task_id = "task".into();
         result.prompt_id = "prompt".into();
+        result.generation_ids = vec!["gen-123".into()];
         result.transcript = vec![
             Message::System(SystemMessage {
                 content: "system instructions".into(),
@@ -3003,6 +3020,7 @@ mod tests {
                 .collect();
         assert_eq!(lines[0]["type"], "eval_transcript");
         assert_eq!(lines[0]["task_id"], "task");
+        assert_eq!(lines[0]["generation_ids"], json!(["gen-123"]));
         assert_eq!(lines[1]["role"], "system");
         assert_eq!(lines[2]["content"], "complete the task");
     }
@@ -3196,6 +3214,14 @@ mod tests {
             false,
             2,
             1,
+            &GitInfo {
+                commit: "heddle-test".into(),
+                dirty: Some(false),
+            },
+            &GitInfo {
+                commit: "evals-test".into(),
+                dirty: Some(false),
+            },
         )
         .unwrap();
 
@@ -3209,10 +3235,10 @@ mod tests {
         assert_eq!(meta["totals"]["completion_tokens"], 40);
         assert_eq!(meta["totals"]["total_tokens"], 240);
         assert_eq!(meta["totals"]["usd"], 0.02);
-        assert!(meta["heddle_commit"].is_string());
-        assert!(meta["heddle_dirty"].is_boolean());
-        assert_eq!(meta["evals_commit"], "unknown");
-        assert!(meta["evals_dirty"].is_null());
+        assert_eq!(meta["heddle_commit"], "heddle-test");
+        assert_eq!(meta["heddle_dirty"], false);
+        assert_eq!(meta["evals_commit"], "evals-test");
+        assert_eq!(meta["evals_dirty"], false);
         assert_eq!(
             meta["cache_prewarm"]["session_id"],
             "heddle-eval-cache-test"
@@ -3286,6 +3312,14 @@ mod tests {
                 budget_stopped,
                 if budget_stopped { 2 } else { 1 },
                 1,
+                &GitInfo {
+                    commit: "heddle-test".into(),
+                    dirty: Some(false),
+                },
+                &GitInfo {
+                    commit: "evals-test".into(),
+                    dirty: Some(false),
+                },
             )
             .unwrap();
             if budget_stopped {
@@ -3595,6 +3629,11 @@ async fn cmd_run(
     if chosen_prompts.is_empty() || chosen_tasks.is_empty() {
         bail!("nothing to run (no prompts or no tasks selected)");
     }
+    // Snapshot provenance before prewarming, smoke checks, or any provider
+    // work starts. A long-running eval must describe the code it began with,
+    // not edits made while it was still running.
+    let start_heddle_git = heddle_git_info();
+    let start_evals_git = git_info(evals);
 
     if cache_ttl_1h && !cache_prewarm {
         bail!("--cache-ttl-1h requires --cache-prewarm");
@@ -3923,6 +3962,8 @@ async fn cmd_run(
         budget_stopped,
         total_pairs * runs as usize,
         runs,
+        &start_heddle_git,
+        &start_evals_git,
     )?;
     println!("Saved -> {}", compact_results_location(&results_dir));
     println!("Suite -> {suite_provenance}");
@@ -4336,7 +4377,7 @@ fn format_dirty(dirty: Option<bool>) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 fn write_run_artifacts(
     results_dir: &Path,
-    evals_dir: &Path,
+    _evals_dir: &Path,
     model: &str,
     prompts: &[String],
     tasks: &[String],
@@ -4355,6 +4396,8 @@ fn write_run_artifacts(
     budget_stopped: bool,
     planned_results: usize,
     runs_per_case: u32,
+    start_heddle_git: &GitInfo,
+    start_evals_git: &GitInfo,
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
     let reported = reported_results(results);
@@ -4387,14 +4430,12 @@ fn write_run_artifacts(
             .sum(),
     };
     let totals = run_totals_from_refs(reported.iter().copied());
-    let heddle_git = heddle_git_info();
-    let evals_git = git_info(evals_dir);
     let meta = RunMeta {
         timestamp: Utc::now().to_rfc3339(),
-        heddle_commit: heddle_git.commit,
-        heddle_dirty: heddle_git.dirty,
-        evals_commit: evals_git.commit,
-        evals_dirty: evals_git.dirty,
+        heddle_commit: start_heddle_git.commit.clone(),
+        heddle_dirty: start_heddle_git.dirty,
+        evals_commit: start_evals_git.commit.clone(),
+        evals_dirty: start_evals_git.dirty,
         evals_version: "0.1.0".into(),
         model: model.to_string(),
         openrouter_routing: "balanced".into(),
