@@ -141,7 +141,7 @@ fn find_run_dirs(root: &Path) -> Result<Vec<PathBuf>> {
             let path = entry.path();
             if !path
                 .components()
-                .any(|part| part.as_os_str() == "aggregate")
+                .any(|part| matches!(part.as_os_str().to_str(), Some("aggregate" | "aggregates")))
             {
                 if let Some(parent) = path.parent() {
                     dirs.insert(parent.to_path_buf());

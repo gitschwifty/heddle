@@ -98,6 +98,10 @@ enum Cmd {
         /// Optional label appended to the generated result directory name.
         #[arg(long, conflicts_with = "results_dir")]
         tag: Option<String>,
+        /// Human-readable suite family label. Required to create a new
+        /// non-default suite root when no matching fingerprint exists.
+        #[arg(long, conflicts_with = "results_dir")]
+        suite_label: Option<String>,
         /// Number of times to run each (task, prompt) pair. When >1, the
         /// summary aggregates with mean ± stddev per pair. Useful for
         /// averaging out LLM stochastic variance.
@@ -123,7 +127,7 @@ enum Cmd {
     /// Rebuild cross-run reports from completed eval artifacts.
     Aggregate {
         /// Promoted run root to scan when --run is omitted.
-        #[arg(long, default_value = "eval-results/runs")]
+        #[arg(long, default_value = "evals/results")]
         results_root: PathBuf,
         /// Completed run directory to include. Repeat to select runs
         /// explicitly; otherwise all completed runs beneath --results-root
@@ -137,7 +141,7 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         profile_label: String,
         /// Root directory for managed aggregate reports.
-        #[arg(long, default_value = "eval-results/aggregates")]
+        #[arg(long, default_value = "evals/results/aggregates")]
         aggregate_root: PathBuf,
         /// Override the generated aggregate output directory.
         #[arg(long)]
@@ -153,6 +157,10 @@ struct Manifest {
     version: String,
     #[serde(default)]
     default_model: Option<String>,
+    /// Family label for the full matrix and named smoke profile. The suite
+    /// fingerprint still distinguishes behaviorally different selections.
+    #[serde(default)]
+    suite_label: Option<String>,
     #[serde(default)]
     defaults: ManifestDefaults,
 }
@@ -2140,6 +2148,17 @@ fn result_artifact_stem(r: &TaskResult) -> String {
     }
 }
 
+fn compact_results_location(results_dir: &Path) -> String {
+    let mut components: Vec<String> = results_dir
+        .components()
+        .rev()
+        .take(3)
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components.reverse();
+    components.join("/")
+}
+
 fn write_transcript(results_dir: &Path, r: &TaskResult) -> Result<()> {
     let transcript_dir = results_dir.join("transcripts");
     fs::create_dir_all(&transcript_dir)?;
@@ -2247,6 +2266,7 @@ async fn main() -> Result<()> {
             budget_stop_usd,
             results_dir,
             tag,
+            suite_label,
             runs,
             record_all_text,
             cache_prewarm,
@@ -2266,6 +2286,7 @@ async fn main() -> Result<()> {
                 budget_stop_usd,
                 results_dir,
                 tag.as_deref(),
+                suite_label.as_deref(),
                 runs.max(1),
                 record_all_text,
                 cache_prewarm,
@@ -2460,6 +2481,54 @@ mod tests {
         assert_eq!(
             default_result_dir_name("20260728T010203", "openrouter/free", None),
             "20260728T010203"
+        );
+    }
+
+    #[test]
+    fn compact_results_location_uses_suite_model_and_run() {
+        assert_eq!(
+            compact_results_location(Path::new(
+                "/tmp/heddle-eval-results/base-evals-v1.1__s-7f1a908e/deepseek-v4-flash/20260806T040420"
+            )),
+            "base-evals-v1.1__s-7f1a908e/deepseek-v4-flash/20260806T040420"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn suite_root_creation_writes_metadata_and_is_reused_by_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let evals_dir = dir.path().join("evals");
+        let results_repo = dir.path().join("heddle-eval-results");
+        std::fs::create_dir_all(&evals_dir).unwrap();
+        std::fs::create_dir_all(results_repo.join(".git")).unwrap();
+        std::os::unix::fs::symlink(&results_repo, evals_dir.join("results")).unwrap();
+        let suite = SuiteIdentity {
+            fingerprint: "1234567890abcdef".into(),
+            source: "test".into(),
+        };
+
+        let created =
+            resolve_suite_root(&evals_dir, &suite, Some("focused repair"), false).unwrap();
+        assert_eq!(created.file_name().unwrap(), "focused-repair__s-12345678");
+        assert_eq!(
+            suite_from_root(&created).unwrap().unwrap().fingerprint,
+            suite.fingerprint
+        );
+
+        let reused = resolve_suite_root(&evals_dir, &suite, None, false).unwrap();
+        assert_eq!(reused, created);
+
+        let changed_suite = SuiteIdentity {
+            fingerprint: "abcdef1234567890".into(),
+            source: "test".into(),
+        };
+        let error = resolve_suite_root(&evals_dir, &changed_suite, Some("focused repair"), true)
+            .unwrap_err();
+        assert!(error.to_string().contains("bump suite_label"));
+        assert!(
+            resolve_suite_root(&evals_dir, &changed_suite, Some("focused repair v2"), true,)
+                .is_ok()
         );
     }
 
@@ -3259,6 +3328,7 @@ async fn cmd_run(
     budget_stop_usd_flag: Option<f64>,
     results_dir: Option<PathBuf>,
     tag: Option<&str>,
+    suite_label_flag: Option<&str>,
     runs: u32,
     record_all_text: bool,
     cache_prewarm: bool,
@@ -3363,15 +3433,48 @@ async fn cmd_run(
     }
     let smoke_count = chosen_tasks.iter().filter(|t| t.spec.smoke).count();
 
+    let suite = suite_identity(&chosen_prompts, &chosen_tasks)?;
     let ts = Utc::now().format("%Y%m%dT%H%M%S").to_string();
-    let results_dir = results_dir.unwrap_or_else(|| {
-        evals
-            .join("results")
-            .join(model_result_dir_name(&model))
-            .join(default_result_dir_name(&ts, &model, tag))
-    });
+    let (results_dir, suite_root_name) = match results_dir {
+        Some(path) => (path, None),
+        None => {
+            let is_canonical_full_suite =
+                prompts == "all" && tasks == "all" && tags == "all" && !static_context_only;
+            let uses_manifest_label = is_canonical_full_suite || tags == "smoke";
+            let requested_label = suite_label_flag.or_else(|| {
+                uses_manifest_label
+                    .then_some(manifest.suite_label.as_deref())
+                    .flatten()
+            });
+            let suite_root = resolve_suite_root(
+                evals,
+                &suite,
+                requested_label,
+                is_canonical_full_suite && suite_label_flag.is_none(),
+            )?;
+            let suite_root_name = suite_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string);
+            (
+                suite_root
+                    .join(model_result_dir_name(&model))
+                    .join(default_result_dir_name(&ts, &model, tag)),
+                suite_root_name,
+            )
+        }
+    };
+    let suite_provenance = format!(
+        "{} (fingerprint: {}; source: {})",
+        suite_root_name
+            .as_deref()
+            .unwrap_or("<explicit results-dir>"),
+        suite.fingerprint,
+        suite.source,
+    );
     let total_pairs = smoke_pairs.len() + matrix_pairs.len();
     println!("Running {total_pairs} (task, prompt) pairs against {model}");
+    println!("Suite -> {suite_provenance}");
     let cache_prewarm_run = if let Some(cache) = &cache {
         println!(
             "Prewarming {} stable prompt prefix(es) with session {}",
@@ -3412,7 +3515,7 @@ async fn cmd_run(
             matrix_pairs.len()
         );
     }
-    println!("Results -> {}", results_dir.display());
+    println!("Saving -> {}", compact_results_location(&results_dir));
 
     let mut results: Vec<TaskResult> = Vec::new();
     let mut smoke_failed = false;
@@ -3571,8 +3674,6 @@ async fn cmd_run(
             openrouter_routing: "balanced",
         },
     );
-    let suite = suite_identity(&chosen_prompts, &chosen_tasks)?;
-
     write_run_artifacts(
         &results_dir,
         evals,
@@ -3601,10 +3702,8 @@ async fn cmd_run(
         total_pairs * runs as usize,
         runs,
     )?;
-    println!(
-        "Wrote summary.md, summary.json, run_meta.json -> {}",
-        results_dir.display()
-    );
+    println!("Saved -> {}", compact_results_location(&results_dir));
+    println!("Suite -> {suite_provenance}");
     Ok(())
 }
 
@@ -3660,6 +3759,182 @@ struct ComparisonConfig {
 struct SuiteIdentity {
     fingerprint: String,
     source: String,
+}
+
+const SUITE_METADATA_FILE: &str = "suite.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SuiteDirectoryMetadata {
+    schema_version: u32,
+    label: String,
+    fingerprint: String,
+    fingerprint_source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredSuiteIdentity {
+    #[serde(default)]
+    suite: Option<SuiteIdentity>,
+}
+
+fn suite_directory_name(label: &str, fingerprint: &str) -> String {
+    format!(
+        "{}__s-{}",
+        result_name_component(label, "suite"),
+        short_hash(fingerprint)
+    )
+}
+
+fn short_hash(value: &str) -> String {
+    value.chars().take(8).collect()
+}
+
+fn suite_directory_metadata(label: &str, suite: &SuiteIdentity) -> SuiteDirectoryMetadata {
+    SuiteDirectoryMetadata {
+        schema_version: 1,
+        label: label.to_string(),
+        fingerprint: suite.fingerprint.clone(),
+        fingerprint_source: suite.source.clone(),
+    }
+}
+
+fn suite_from_root(root: &Path) -> Result<Option<SuiteIdentity>> {
+    let metadata_path = root.join(SUITE_METADATA_FILE);
+    if metadata_path.is_file() {
+        let metadata: SuiteDirectoryMetadata = serde_json::from_str(
+            &fs::read_to_string(&metadata_path)
+                .with_context(|| format!("reading {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("parsing {}", metadata_path.display()))?;
+        return Ok(Some(SuiteIdentity {
+            fingerprint: metadata.fingerprint,
+            source: metadata.fingerprint_source,
+        }));
+    }
+
+    // Roots migrated before suite.json existed can establish their identity
+    // from one immutable run artifact, then receive suite.json on reuse.
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        if entry.file_type().is_file() && entry.file_name() == "run_meta.json" {
+            let stored: StoredSuiteIdentity = serde_json::from_str(
+                &fs::read_to_string(entry.path())
+                    .with_context(|| format!("reading {}", entry.path().display()))?,
+            )
+            .with_context(|| format!("parsing {}", entry.path().display()))?;
+            return Ok(stored.suite);
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_suite_root(
+    evals: &Path,
+    suite: &SuiteIdentity,
+    requested_label: Option<&str>,
+    require_new_family_label: bool,
+) -> Result<PathBuf> {
+    let results_link = evals.join("results");
+    let link_metadata = fs::symlink_metadata(&results_link)
+        .with_context(|| format!("reading results link {}", results_link.display()))?;
+    if !link_metadata.file_type().is_symlink() {
+        bail!(
+            "{} must be a symlink to the canonical eval results repository; use --results-dir for an explicit temporary output path",
+            results_link.display()
+        );
+    }
+    let results_root = fs::canonicalize(&results_link).with_context(|| {
+        format!(
+            "resolving {} (expected a live canonical results repository)",
+            results_link.display()
+        )
+    })?;
+    if !results_root.join(".git").exists() {
+        bail!(
+            "{} does not resolve to a git results repository (missing .git)",
+            results_link.display()
+        );
+    }
+
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(&results_root)
+        .with_context(|| format!("reading {}", results_root.display()))?
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_dir() || !entry.file_name().to_string_lossy().contains("__s-") {
+            continue;
+        }
+        if suite_from_root(&path)?.is_some_and(|existing| existing.fingerprint == suite.fingerprint)
+        {
+            matches.push(path);
+        }
+    }
+    match matches.len() {
+        1 => {
+            let root = matches.pop().expect("one suite root");
+            let metadata_path = root.join(SUITE_METADATA_FILE);
+            if !metadata_path.exists() {
+                let label = root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.split_once("__s-").map(|(label, _)| label))
+                    .unwrap_or("suite");
+                fs::write(
+                    &metadata_path,
+                    serde_json::to_string_pretty(&suite_directory_metadata(label, suite))?,
+                )?;
+            }
+            Ok(root)
+        }
+        0 => {
+            let label = requested_label.ok_or_else(|| {
+                anyhow!(
+                    "no retained suite matches fingerprint {}. Re-run with --suite-label <name> to create <name>__s-{}",
+                    suite.fingerprint,
+                    short_hash(&suite.fingerprint)
+                )
+            })?;
+            let label_component = result_name_component(label, "suite");
+            if require_new_family_label
+                && fs::read_dir(&results_root)?
+                    .flatten()
+                    .any(|entry| {
+                        entry.path().is_dir()
+                            && entry
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with(&format!("{label_component}__s-"))
+                    })
+            {
+                bail!(
+                    "manifest suite_label {label:?} already has retained suite roots but none matches fingerprint {}; bump suite_label (for example, a new base-evals version) before creating a new full-suite root",
+                    suite.fingerprint
+                );
+            }
+            let root = results_root.join(suite_directory_name(label, &suite.fingerprint));
+            if root.exists() {
+                bail!(
+                    "suite directory {} already exists but does not match fingerprint {}",
+                    root.display(),
+                    suite.fingerprint
+                );
+            }
+            fs::create_dir_all(&root)
+                .with_context(|| format!("creating suite root {}", root.display()))?;
+            fs::write(
+                root.join(SUITE_METADATA_FILE),
+                serde_json::to_string_pretty(&suite_directory_metadata(label, suite))?,
+            )?;
+            Ok(root)
+        }
+        _ => bail!(
+            "multiple retained suite directories match fingerprint {}; resolve the duplicate roots before running",
+            suite.fingerprint
+        ),
+    }
 }
 
 fn hash_file(hasher: &mut Sha256, label: &str, path: &Path) -> Result<()> {
