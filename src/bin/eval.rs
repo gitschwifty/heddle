@@ -311,6 +311,10 @@ struct Task {
 struct TaskResult {
     task_id: String,
     prompt_id: String,
+    /// Task capability labels, retained in result artifacts so aggregate
+    /// reports can show which classes of work produced failures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
     /// Requested model. Run metadata owns this for persisted results, so do
     /// not repeat it in every per-case or aggregate result record.
     #[serde(default, skip_serializing)]
@@ -339,6 +343,10 @@ struct TaskResult {
     /// `--record-all-text` to include it for passing runs too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     assistant_messages: Vec<AssistantTrace>,
+    /// Bounded durable execution evidence. Unlike the full transcript this is
+    /// retained in the per-case artifact after transcript cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trace: Option<CompactTrace>,
     /// Complete model-facing conversation retained only in the per-run
     /// transcript artifact, not duplicated in the result JSON.
     #[serde(skip, default)]
@@ -351,6 +359,39 @@ struct AssistantTrace {
     #[serde(skip_serializing_if = "Option::is_none")]
     finish_reason: Option<String>,
     text: String,
+}
+
+const TRACE_MAX_TOOL_EVENTS: usize = 32;
+const TRACE_MAX_FAILURES: usize = 8;
+const TRACE_MAX_FAILURE_BYTES: usize = 2_048;
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CompactTrace {
+    assistant_turns: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_sequence: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    tool_counts: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_failures: Vec<ToolFailureTrace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    finish_reasons: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_cause: Option<FailureCause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routed_model_change: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ToolFailureTrace {
+    name: String,
+    detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,7 +409,51 @@ struct Scores {
     /// artifacts derive max-turn limits from their legacy error message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit: Option<LimitReason>,
+    /// Stable explanation for every non-passing result written by current
+    /// harnesses. `error` remains the original diagnostic detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_cause: Option<FailureCause>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum FailureCause {
+    NoOp,
+    WrongChangedFile,
+    MissingExpectedChange,
+    UnexpectedExtraFile,
+    WrongDiff,
+    MaxTurns,
+    TokenBudget,
+    DoomLoop,
+    Timeout,
+    ProviderApi,
+    Transport,
+    Tool,
+    Permission,
+    HarnessInternal,
+}
+
+impl FailureCause {
+    fn label(self) -> &'static str {
+        match self {
+            Self::NoOp => "no_op",
+            Self::WrongChangedFile => "wrong_changed_file",
+            Self::MissingExpectedChange => "missing_expected_change",
+            Self::UnexpectedExtraFile => "unexpected_extra_file",
+            Self::WrongDiff => "wrong_diff",
+            Self::MaxTurns => "max_turns",
+            Self::TokenBudget => "token_budget",
+            Self::DoomLoop => "doom_loop",
+            Self::Timeout => "timeout",
+            Self::ProviderApi => "provider_api",
+            Self::Transport => "transport",
+            Self::Tool => "tool",
+            Self::Permission => "permission",
+            Self::HarnessInternal => "harness_internal",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -385,6 +470,16 @@ impl LimitReason {
             Self::MaxTurns => "max_turns",
             Self::TokenBudget => "token_budget",
             Self::DoomLoop => "doom_loop",
+        }
+    }
+}
+
+impl From<LimitReason> for FailureCause {
+    fn from(value: LimitReason) -> Self {
+        match value {
+            LimitReason::MaxTurns => Self::MaxTurns,
+            LimitReason::TokenBudget => Self::TokenBudget,
+            LimitReason::DoomLoop => Self::DoomLoop,
         }
     }
 }
@@ -1078,8 +1173,11 @@ async fn run_one(
     let mut routed_models: Vec<RoutedModelObservation> = Vec::new();
     let mut pending_routed_model: Option<String> = None;
     let mut error: Option<String> = None;
+    let mut error_cause: Option<FailureCause> = None;
     let mut limit: Option<LimitReason> = None;
     let mut tool_sequence: Vec<String> = Vec::new();
+    let mut tool_failures: Vec<ToolFailureTrace> = Vec::new();
+    let mut tool_trace_truncated = false;
     let mut finish_reasons: Vec<String> = Vec::new();
     let mut assistant_messages: Vec<AssistantTrace> = Vec::new();
     let mut budget_exceeded = false;
@@ -1104,6 +1202,7 @@ async fn run_one(
                 Ok(None) => break,
                 Err(_) => {
                     error = Some(format!("Task timed out after {effective_timeout_secs}s"));
+                    error_cause = Some(FailureCause::Timeout);
                     break;
                 }
             };
@@ -1114,6 +1213,22 @@ async fn run_one(
                     println!("      -> {name}");
                     std::io::Write::flush(&mut std::io::stdout()).ok();
                     tool_sequence.push(name);
+                }
+                AgentEvent::ToolEnd { name, result, .. } => {
+                    if is_tool_failure(&result) {
+                        let detail = truncate_trace_detail(&result);
+                        let used_bytes: usize = tool_failures
+                            .iter()
+                            .map(|failure| failure.detail.len())
+                            .sum();
+                        if tool_failures.len() < TRACE_MAX_FAILURES
+                            && used_bytes + detail.len() <= TRACE_MAX_FAILURE_BYTES
+                        {
+                            tool_failures.push(ToolFailureTrace { name, detail });
+                        } else {
+                            tool_trace_truncated = true;
+                        }
+                    }
                 }
                 AgentEvent::AssistantMessage {
                     message,
@@ -1173,8 +1288,14 @@ async fn run_one(
                     if message.starts_with("Max iterations (") {
                         limit = Some(LimitReason::MaxTurns);
                     } else {
+                        error_cause = Some(classify_runtime_error(&message));
                         error = Some(message);
                     }
+                    break;
+                }
+                AgentEvent::PermissionDenied { reason, .. } => {
+                    error = Some(reason);
+                    error_cause = Some(FailureCause::Permission);
                     break;
                 }
                 AgentEvent::LoopDetected { .. } => {
@@ -1194,6 +1315,18 @@ async fn run_one(
         &task.dir.join(task.spec.score.outcome.expected_dir.as_str()),
     );
     let passed = diff.is_empty() && error.is_none();
+    let failure_cause = if passed {
+        None
+    } else if let Some(limit) = limit {
+        Some(limit.into())
+    } else if let Some(cause) = error_cause {
+        Some(cause)
+    } else {
+        Some(classify_workspace_failure(
+            &diff_dirs(workspace, &task.dir.join("before")),
+            &diff,
+        ))
+    };
     if passed && !options.record_all_text {
         assistant_messages.clear();
     }
@@ -1210,10 +1343,20 @@ async fn run_one(
     {
         routed_models.clear();
     }
+    let trace = Some(build_compact_trace(
+        turns,
+        &tool_sequence,
+        &tool_failures,
+        &finish_reasons,
+        failure_cause,
+        &routed_models,
+        tool_trace_truncated,
+    ));
 
     TaskResult {
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
+        tags: task.spec.tags.clone(),
         model: model.to_string(),
         heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
@@ -1225,6 +1368,7 @@ async fn run_one(
         tool_sequence,
         finish_reasons,
         assistant_messages,
+        trace,
         transcript: messages,
         scores: Scores {
             outcome: OutcomeScore {
@@ -1247,6 +1391,7 @@ async fn run_one(
                 usd,
             },
             limit,
+            failure_cause,
             error,
         },
     }
@@ -1262,6 +1407,7 @@ fn error_result(
     TaskResult {
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
+        tags: task.spec.tags.clone(),
         model: model.to_string(),
         heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
@@ -1273,6 +1419,16 @@ fn error_result(
         tool_sequence: Vec::new(),
         finish_reasons: Vec::new(),
         assistant_messages: Vec::new(),
+        trace: Some(CompactTrace {
+            assistant_turns: 0,
+            tool_sequence: Vec::new(),
+            tool_counts: BTreeMap::new(),
+            tool_failures: Vec::new(),
+            finish_reasons: Vec::new(),
+            terminal_cause: Some(FailureCause::HarnessInternal),
+            routed_model_change: None,
+            truncated: false,
+        }),
         transcript: Vec::new(),
         scores: Scores {
             outcome: OutcomeScore {
@@ -1295,8 +1451,100 @@ fn error_result(
                 usd: 0.0,
             },
             limit: None,
+            failure_cause: Some(FailureCause::HarnessInternal),
             error: Some(err),
         },
+    }
+}
+
+fn classify_runtime_error(message: &str) -> FailureCause {
+    let message = message.to_ascii_lowercase();
+    if message.contains("api error") || message.contains("provider") {
+        FailureCause::ProviderApi
+    } else if message.contains("connection")
+        || message.contains("network")
+        || message.contains("dns")
+        || message.contains("socket")
+        || message.contains("transport")
+    {
+        FailureCause::Transport
+    } else if message.contains("permission") || message.contains("denied") {
+        FailureCause::Permission
+    } else if message.contains("tool") {
+        FailureCause::Tool
+    } else {
+        FailureCause::HarnessInternal
+    }
+}
+
+fn classify_workspace_failure(
+    changes_from_before: &[DirDiffEntry],
+    expected_diff: &[DirDiffEntry],
+) -> FailureCause {
+    if changes_from_before.is_empty() {
+        return FailureCause::NoOp;
+    }
+    let kinds: std::collections::BTreeSet<&str> = expected_diff
+        .iter()
+        .map(|entry| entry.kind.as_str())
+        .collect();
+    match kinds.len() {
+        1 if kinds.contains("differs") => FailureCause::WrongChangedFile,
+        1 if kinds.contains("missing") => FailureCause::MissingExpectedChange,
+        1 if kinds.contains("unexpected") => FailureCause::UnexpectedExtraFile,
+        _ => FailureCause::WrongDiff,
+    }
+}
+
+fn is_tool_failure(result: &str) -> bool {
+    result.trim_start().starts_with("Error:")
+}
+
+fn truncate_trace_detail(detail: &str) -> String {
+    if detail.len() <= TRACE_MAX_FAILURE_BYTES {
+        return detail.to_string();
+    }
+    let mut end = TRACE_MAX_FAILURE_BYTES;
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &detail[..end])
+}
+
+fn build_compact_trace(
+    assistant_turns: u32,
+    tool_sequence: &[String],
+    tool_failures: &[ToolFailureTrace],
+    finish_reasons: &[String],
+    terminal_cause: Option<FailureCause>,
+    routed_models: &[RoutedModelObservation],
+    tool_trace_truncated: bool,
+) -> CompactTrace {
+    let mut tool_counts = BTreeMap::new();
+    for name in tool_sequence {
+        *tool_counts.entry(name.clone()).or_default() += 1;
+    }
+    let truncated = tool_trace_truncated || tool_sequence.len() > TRACE_MAX_TOOL_EVENTS;
+    let routed_model_change = (routed_models.len() > 1).then(|| {
+        routed_models
+            .iter()
+            .map(|observation| observation.model.as_str())
+            .collect::<Vec<_>>()
+            .join(" -> ")
+    });
+    CompactTrace {
+        assistant_turns,
+        tool_sequence: tool_sequence
+            .iter()
+            .take(TRACE_MAX_TOOL_EVENTS)
+            .cloned()
+            .collect(),
+        tool_counts,
+        tool_failures: tool_failures.to_vec(),
+        finish_reasons: finish_reasons.to_vec(),
+        terminal_cause,
+        routed_model_change,
+        truncated,
     }
 }
 
@@ -1358,6 +1606,29 @@ fn result_status(result: &TaskResult) -> ResultStatus {
     } else {
         ResultStatus::Fail
     }
+}
+
+fn failure_cause(result: &TaskResult) -> Option<FailureCause> {
+    result.scores.failure_cause
+}
+
+fn failure_cause_summary<'a>(results: impl IntoIterator<Item = &'a TaskResult>) -> Option<String> {
+    let mut counts: BTreeMap<FailureCause, usize> = BTreeMap::new();
+    for result in results {
+        if let Some(cause) = failure_cause(result) {
+            *counts.entry(cause).or_default() += 1;
+        }
+    }
+    (!counts.is_empty()).then(|| {
+        format!(
+            "failure causes: {}\n",
+            counts
+                .into_iter()
+                .map(|(cause, count)| format!("{}={count}", cause.label()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
 }
 
 fn outcome_label(result: &TaskResult) -> &'static str {
@@ -1513,6 +1784,9 @@ fn format_summary(results: &[TaskResult]) -> String {
         out.push_str(&format!(
             "{over_tool_call_guidance} exceeded maximum tool-call guidance (not a failure)\n"
         ));
+    }
+    if let Some(causes) = failure_cause_summary(results.iter()) {
+        out.push_str(&causes);
     }
     let cached_total = results
         .iter()
@@ -1748,6 +2022,9 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             "{over_tool_call_guidance} exceeded maximum tool-call guidance (not a failure)\n"
         ));
     }
+    if let Some(causes) = failure_cause_summary(reported_results.iter().copied()) {
+        out.push_str(&causes);
+    }
     let cached_total = reported_results
         .iter()
         .map(|r| r.scores.cost.cached_tokens)
@@ -1799,6 +2076,9 @@ fn format_failure_details(results: &[TaskResult]) -> String {
         } else if let Some(e) = &r.scores.error {
             out.push_str(&format!("    error: {e}\n"));
         }
+        if let Some(cause) = failure_cause(r) {
+            out.push_str(&format!("    cause: {}\n", cause.label()));
+        }
         if !r.scores.outcome.diff_files.is_empty() {
             for d in &r.scores.outcome.diff_files {
                 out.push_str(&format!("    diff: {} ({})\n", d.path, d.kind));
@@ -1806,6 +2086,23 @@ fn format_failure_details(results: &[TaskResult]) -> String {
         }
         if !r.tool_sequence.is_empty() {
             out.push_str(&format!("    tools: {}\n", r.tool_sequence.join(" -> ")));
+        }
+        if let Some(trace) = &r.trace {
+            if !trace.tool_failures.is_empty() {
+                let failures = trace
+                    .tool_failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.name, failure.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                out.push_str(&format!("    tool failures: {failures}\n"));
+            }
+            if let Some(change) = &trace.routed_model_change {
+                out.push_str(&format!("    routed-model change: {change}\n"));
+            }
+            if trace.truncated {
+                out.push_str("    trace: truncated\n");
+            }
         }
     }
     out.push('\n');
@@ -1873,12 +2170,13 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult) -> Result<()> {
     fs::create_dir_all(&error_dir)?;
     let stem = result_artifact_stem(r);
     let contents = format!(
-        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
         r.prompt_id,
         r.run_index,
         r.model,
         routed_model_summary(r),
+        failure_cause(r).map(FailureCause::label).unwrap_or("unknown"),
         r.scores.efficiency.turns,
         r.scores.efficiency.tool_calls,
         r.scores.cost.tokens_in,
@@ -2171,6 +2469,7 @@ mod tests {
         TaskResult {
             task_id: "task-1".into(),
             prompt_id: "prompt-1".into(),
+            tags: Vec::new(),
             model: "openrouter/auto".into(),
             routed_models: routed_model
                 .map(|model| {
@@ -2205,6 +2504,7 @@ mod tests {
                     usd: 0.01,
                 },
                 limit: None,
+                failure_cause: None,
                 error: None,
             },
             rendered_system_prompt_chars: 10,
@@ -2212,6 +2512,7 @@ mod tests {
             tool_sequence: Vec::new(),
             finish_reasons: Vec::new(),
             assistant_messages: Vec::new(),
+            trace: None,
             transcript: Vec::new(),
         }
     }
@@ -2256,6 +2557,128 @@ mod tests {
         assert_eq!(parsed.scores.cost.cache_write_tokens, 0);
         assert_eq!(parsed.scores.efficiency.max_tool_calls, None);
         assert_eq!(parsed.scores.efficiency.exceeded_max_tool_calls, None);
+        assert_eq!(parsed.scores.failure_cause, None);
+    }
+
+    #[test]
+    fn failure_taxonomy_classifies_workspace_execution_and_limit_causes() {
+        let changed = vec![DirDiffEntry {
+            path: "src/lib.rs".into(),
+            kind: "differs".into(),
+        }];
+        assert_eq!(
+            classify_workspace_failure(&[], &changed),
+            FailureCause::NoOp
+        );
+        assert_eq!(
+            classify_workspace_failure(&changed, &changed),
+            FailureCause::WrongChangedFile
+        );
+        assert_eq!(
+            classify_workspace_failure(
+                &changed,
+                &[DirDiffEntry {
+                    path: "new.rs".into(),
+                    kind: "missing".into()
+                }]
+            ),
+            FailureCause::MissingExpectedChange
+        );
+        assert_eq!(
+            classify_workspace_failure(
+                &changed,
+                &[DirDiffEntry {
+                    path: "scratch.txt".into(),
+                    kind: "unexpected".into()
+                }]
+            ),
+            FailureCause::UnexpectedExtraFile
+        );
+        assert_eq!(
+            classify_workspace_failure(
+                &changed,
+                &[
+                    DirDiffEntry {
+                        path: "a".into(),
+                        kind: "missing".into()
+                    },
+                    DirDiffEntry {
+                        path: "b".into(),
+                        kind: "unexpected".into()
+                    },
+                ]
+            ),
+            FailureCause::WrongDiff
+        );
+        assert_eq!(
+            classify_runtime_error("OpenRouter API error (429)"),
+            FailureCause::ProviderApi
+        );
+        assert_eq!(
+            classify_runtime_error("connection reset by peer"),
+            FailureCause::Transport
+        );
+        assert_eq!(
+            classify_runtime_error("tool execution failed"),
+            FailureCause::Tool
+        );
+        assert_eq!(
+            classify_runtime_error("permission denied"),
+            FailureCause::Permission
+        );
+        assert_eq!(
+            FailureCause::from(LimitReason::MaxTurns),
+            FailureCause::MaxTurns
+        );
+        assert_eq!(
+            FailureCause::from(LimitReason::TokenBudget),
+            FailureCause::TokenBudget
+        );
+        assert_eq!(
+            FailureCause::from(LimitReason::DoomLoop),
+            FailureCause::DoomLoop
+        );
+        assert_eq!(FailureCause::Timeout.label(), "timeout");
+    }
+
+    #[test]
+    fn compact_trace_is_bounded_and_records_terminal_evidence() {
+        let tools = (0..(TRACE_MAX_TOOL_EVENTS + 2))
+            .map(|_| "read_file".to_string())
+            .collect::<Vec<_>>();
+        let trace = build_compact_trace(
+            3,
+            &tools,
+            &[ToolFailureTrace {
+                name: "edit_file".into(),
+                detail: "Error: denied".into(),
+            }],
+            &["tool_calls".into()],
+            Some(FailureCause::Permission),
+            &[
+                RoutedModelObservation {
+                    assistant_turn: 1,
+                    model: "a/model".into(),
+                },
+                RoutedModelObservation {
+                    assistant_turn: 2,
+                    model: "b/model".into(),
+                },
+            ],
+            false,
+        );
+        assert_eq!(trace.assistant_turns, 3);
+        assert_eq!(trace.tool_sequence.len(), TRACE_MAX_TOOL_EVENTS);
+        assert_eq!(
+            trace.tool_counts["read_file"],
+            (TRACE_MAX_TOOL_EVENTS + 2) as u32
+        );
+        assert_eq!(trace.terminal_cause, Some(FailureCause::Permission));
+        assert_eq!(
+            trace.routed_model_change.as_deref(),
+            Some("a/model -> b/model")
+        );
+        assert!(trace.truncated);
     }
 
     #[test]

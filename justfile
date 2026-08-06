@@ -47,6 +47,12 @@ eval model="openrouter/free" evals="evals" prompts="all" tasks="all" tag="": bui
 eval-smoke: build-eval
 	./target/release/eval run --prompts default --tags smoke --model openrouter/free --runs 1 --tag free-smoke
 
+# Reviewed paid-quality baseline. The pinned Luna run passed the current full
+# active matrix without a budget overrun. Use `just eval-quality 3` when a
+# stability sample is needed; each invocation remains the same profile.
+eval-quality runs="1": build-eval
+	./target/release/eval run --prompts all --tasks all --model openai/gpt-5.6-luna --runs {{runs}} --max-tokens-per-task 10000 --max-tokens-per-response 1500 --max-turns 8 --task-timeout-secs 150 --tag paid-quality-luna
+
 # Run the full prompt/task matrix. Example: `just run-evals z-ai/glm-4.7-flash 3 repeat-3`.
 run-evals model="openrouter/free" runs="1" tag="": build-eval
 	./target/release/eval run --prompts all --tasks all --model {{model}} --runs {{runs}}{{ if tag != "" { " --tag " + tag } else { "" } }}
