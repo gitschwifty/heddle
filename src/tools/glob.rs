@@ -65,12 +65,17 @@ impl HeddleTool for GlobTool {
         let base = Path::new(&path_arg);
         let allow_excluded = explicitly_targets_excluded(&pattern, &path_arg);
         let mut results = Vec::new();
+        let mut skipped_dirs = Vec::new();
         for entry in WalkDir::new(base)
             .into_iter()
             .filter_entry(|entry| {
-                allow_excluded
-                    || !entry.file_type().is_dir()
-                    || !EXCLUDED_DIRS.iter().any(|dir| entry.file_name() == *dir)
+                let excluded = !allow_excluded
+                    && entry.file_type().is_dir()
+                    && EXCLUDED_DIRS.iter().any(|dir| entry.file_name() == *dir);
+                if excluded {
+                    skipped_dirs.push(entry.path().to_string_lossy().into_owned());
+                }
+                !excluded
             })
             .filter_map(|e| e.ok())
         {
@@ -90,6 +95,13 @@ impl HeddleTool for GlobTool {
                     .unwrap_or_else(|_| entry.path().to_path_buf());
                 results.push(abs.to_string_lossy().into_owned());
             }
+        }
+        if !skipped_dirs.is_empty() {
+            results.extend(skipped_dirs.into_iter().map(|path| {
+                format!(
+                    "[skipped generated/VCS directory: {path}; search it explicitly to inspect it]"
+                )
+            }));
         }
         if results.is_empty() {
             "No files matched the pattern.".to_string()

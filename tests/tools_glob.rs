@@ -81,6 +81,10 @@ async fn skips_generated_trees_during_broad_discovery_but_allows_narrow_requests
         .await;
     assert!(broad.contains("src.txt"), "got: {broad}");
     assert!(!broad.contains("generated.txt"), "got: {broad}");
+    assert!(
+        broad.contains("skipped generated/VCS directory"),
+        "got: {broad}"
+    );
 
     let narrow = tool
         .execute(
