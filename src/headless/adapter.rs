@@ -39,6 +39,7 @@ use crate::session::setup::{
     create_session, PermissionOverrides, RuntimePlacement, SessionContext, SessionOptions,
 };
 use crate::tools::ask_user::create_ask_user_tool;
+use crate::tools::registry::ToolRegistry;
 
 struct State {
     runtime: Option<HeddleRuntime>,
@@ -272,11 +273,15 @@ fn build_session_options(
 }
 
 fn wire_ipc_overrides(mut session: SessionContext, config: &InitConfig) -> SessionContext {
-    let _ = session
-        .registry
-        .register(create_ask_user_tool(Arc::new(|_question, _options| {
-            Box::pin(async move { "User interaction not available in headless mode".to_string() })
-        })));
+    if config.tools.iter().any(|name| name == "ask_user") {
+        let _ = session
+            .registry
+            .register(create_ask_user_tool(Arc::new(|_question, _options| {
+                Box::pin(
+                    async move { "User interaction not available in headless mode".to_string() },
+                )
+            })));
+    }
 
     if session.features.hooks {
         let mut hooks = session.config.hooks.clone().unwrap_or_default();
@@ -301,7 +306,16 @@ fn wire_ipc_overrides(mut session: SessionContext, config: &InitConfig) -> Sessi
             )));
         }
     }
+    // A headless caller's inventory is a capability boundary, not a hint for
+    // filtering only the default file tools. Session setup may have added
+    // interactive conveniences such as subagent or task tools; retain them
+    // here only when the IPC init explicitly requested their names.
+    session.registry = restrict_headless_registry(session.registry, &config.tools);
     session
+}
+
+fn restrict_headless_registry(registry: ToolRegistry, tools: &[String]) -> ToolRegistry {
+    registry.subset(tools)
 }
 
 async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
@@ -586,5 +600,27 @@ fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
         RuntimeEvent::PermissionRequested { .. }
         | RuntimeEvent::AssistantMessage { .. }
         | RuntimeEvent::TurnStateChanged { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod headless_tool_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_removes_session_added_tools_unless_explicitly_requested() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(create_ask_user_tool(Arc::new(|_question, _options| {
+                Box::pin(async move { "unavailable".to_string() })
+            })))
+            .unwrap();
+
+        assert!(restrict_headless_registry(registry.clone(), &[])
+            .get("ask_user")
+            .is_none());
+        assert!(restrict_headless_registry(registry, &["ask_user".into()])
+            .get("ask_user")
+            .is_some());
     }
 }
