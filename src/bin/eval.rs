@@ -1593,16 +1593,16 @@ async fn run_one(
     {
         routed_models.clear();
     }
-    let trace = Some(build_compact_trace(
-        turns,
-        &tool_sequence,
-        &tool_failures,
-        &finish_reasons,
-        failure_cause,
-        &routed_models,
-        &upstream_providers,
+    let trace = Some(build_compact_trace(CompactTraceInput {
+        assistant_turns: turns,
+        tool_sequence: &tool_sequence,
+        tool_failures: &tool_failures,
+        finish_reasons: &finish_reasons,
+        terminal_cause: failure_cause,
+        routed_models: &routed_models,
+        upstream_providers: &upstream_providers,
         tool_trace_truncated,
-    ));
+    }));
 
     TaskResult {
         task_id: task.spec.id.clone(),
@@ -1808,16 +1808,28 @@ fn truncate_trace_detail(detail: &str) -> String {
     format!("{}…", &detail[..end])
 }
 
-fn build_compact_trace(
+struct CompactTraceInput<'a> {
     assistant_turns: u32,
-    tool_sequence: &[String],
-    tool_failures: &[ToolFailureTrace],
-    finish_reasons: &[String],
+    tool_sequence: &'a [String],
+    tool_failures: &'a [ToolFailureTrace],
+    finish_reasons: &'a [String],
     terminal_cause: Option<FailureCause>,
-    routed_models: &[RoutedModelObservation],
-    upstream_providers: &[UpstreamProviderObservation],
+    routed_models: &'a [RoutedModelObservation],
+    upstream_providers: &'a [UpstreamProviderObservation],
     tool_trace_truncated: bool,
-) -> CompactTrace {
+}
+
+fn build_compact_trace(input: CompactTraceInput<'_>) -> CompactTrace {
+    let CompactTraceInput {
+        assistant_turns,
+        tool_sequence,
+        tool_failures,
+        finish_reasons,
+        terminal_cause,
+        routed_models,
+        upstream_providers,
+        tool_trace_truncated,
+    } = input;
     let mut tool_counts = BTreeMap::new();
     for name in tool_sequence {
         *tool_counts.entry(name.clone()).or_default() += 1;
@@ -1974,9 +1986,7 @@ struct RetryPolicy {
 }
 
 fn retry_policy(result: &TaskResult) -> Option<RetryPolicy> {
-    if result.scores.error.is_none() {
-        return None;
-    }
+    result.scores.error.as_ref()?;
     if failure_cause(result) == Some(FailureCause::Transport) {
         return Some(RetryPolicy {
             reason: "transport_failure".into(),
@@ -3206,16 +3216,16 @@ mod tests {
         let tools = (0..(TRACE_MAX_TOOL_EVENTS + 2))
             .map(|_| "read_file".to_string())
             .collect::<Vec<_>>();
-        let trace = build_compact_trace(
-            3,
-            &tools,
-            &[ToolFailureTrace {
+        let trace = build_compact_trace(CompactTraceInput {
+            assistant_turns: 3,
+            tool_sequence: &tools,
+            tool_failures: &[ToolFailureTrace {
                 name: "edit_file".into(),
                 detail: "Error: denied".into(),
             }],
-            &["tool_calls".into()],
-            Some(FailureCause::Permission),
-            &[
+            finish_reasons: &["tool_calls".into()],
+            terminal_cause: Some(FailureCause::Permission),
+            routed_models: &[
                 RoutedModelObservation {
                     assistant_turn: 1,
                     model: "a/model".into(),
@@ -3225,7 +3235,7 @@ mod tests {
                     model: "b/model".into(),
                 },
             ],
-            &[
+            upstream_providers: &[
                 UpstreamProviderObservation {
                     assistant_turn: 1,
                     provider: "provider-a".into(),
@@ -3235,8 +3245,8 @@ mod tests {
                     provider: "provider-b".into(),
                 },
             ],
-            false,
-        );
+            tool_trace_truncated: false,
+        });
         assert_eq!(trace.assistant_turns, 3);
         assert_eq!(trace.tool_sequence.len(), TRACE_MAX_TOOL_EVENTS);
         assert_eq!(
