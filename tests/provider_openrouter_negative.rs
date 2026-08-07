@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::ProviderConfig;
+use heddle::provider::types::{ProviderConfig, ProviderFailure};
 use heddle::types::{Message, UserMessage};
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -41,7 +41,7 @@ async fn send_errors_on_network_failure() {
 }
 
 #[tokio::test]
-async fn send_includes_status_code_in_error() {
+async fn send_http_error_retains_typed_status_and_safe_detail() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -56,11 +56,15 @@ async fn send_includes_status_code_in_error() {
         .send(&user_msgs(), None, &json!({}))
         .await
         .expect_err("expected error");
-    assert!(err.to_string().contains("401"), "got: {err}");
+    let failure = err
+        .downcast_ref::<ProviderFailure>()
+        .expect("HTTP failure should retain typed provider telemetry");
+    assert_eq!(failure.telemetry.status, Some(401));
+    assert_eq!(failure.telemetry.detail.as_deref(), Some("Unauthorized"));
 }
 
 #[tokio::test]
-async fn send_includes_error_body_in_error() {
+async fn send_non_json_error_body_is_not_exposed_as_normal_telemetry() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -73,9 +77,14 @@ async fn send_includes_error_body_in_error() {
         .send(&user_msgs(), None, &json!({}))
         .await
         .expect_err("expected error");
+    let failure = err
+        .downcast_ref::<ProviderFailure>()
+        .expect("HTTP failure should retain typed provider telemetry");
+    assert_eq!(failure.telemetry.status, Some(500));
+    assert!(failure.telemetry.detail.is_none());
     assert!(
-        err.to_string().contains("Internal server error"),
-        "got: {err}"
+        !err.to_string().contains("Internal server error"),
+        "raw provider body must not be exposed: {err}"
     );
 }
 
