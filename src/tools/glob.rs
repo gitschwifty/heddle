@@ -12,6 +12,18 @@ use super::types::{ExecOptions, HeddleTool};
 
 pub struct GlobTool;
 
+const EXCLUDED_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", "build"];
+
+fn explicitly_targets_excluded(pattern: &str, path: &str) -> bool {
+    let path = path.trim_matches('/');
+    EXCLUDED_DIRS.iter().any(|dir| {
+        path.split('/').any(|component| component == *dir)
+            || pattern
+                .trim_start_matches("./")
+                .starts_with(&format!("{dir}/"))
+    })
+}
+
 pub fn create_glob_tool() -> Arc<dyn HeddleTool> {
     Arc::new(GlobTool)
 }
@@ -51,8 +63,17 @@ impl HeddleTool for GlobTool {
             Err(e) => return format!("Error: invalid glob: {e}"),
         };
         let base = Path::new(&path_arg);
+        let allow_excluded = explicitly_targets_excluded(&pattern, &path_arg);
         let mut results = Vec::new();
-        for entry in WalkDir::new(base).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(base)
+            .into_iter()
+            .filter_entry(|entry| {
+                allow_excluded
+                    || !entry.file_type().is_dir()
+                    || !EXCLUDED_DIRS.iter().any(|dir| entry.file_name() == *dir)
+            })
+            .filter_map(|e| e.ok())
+        {
             if !entry.file_type().is_file() {
                 continue;
             }

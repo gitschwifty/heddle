@@ -353,6 +353,9 @@ struct TaskResult {
     /// Sanitized diagnostics retained only in this run's separate debug log.
     #[serde(skip, default)]
     debug_errors: Vec<ProviderDebugError>,
+    /// Supplementary per-call evidence, written only to call-telemetry.jsonl.
+    #[serde(skip, default)]
+    call_telemetry: Vec<CallTelemetry>,
     /// 1-indexed run number when --runs N. 0 if single-run.
     #[serde(default)]
     run_index: u32,
@@ -391,6 +394,12 @@ struct RetryAttempt {
     provider_telemetry: Vec<ProviderTelemetry>,
     #[serde(skip, default)]
     debug_errors: Vec<ProviderDebugError>,
+    #[serde(skip, default)]
+    call_telemetry: Vec<CallTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_delay_ms: Option<u64>,
 }
 
 impl RetryAttempt {
@@ -403,6 +412,9 @@ impl RetryAttempt {
             cost: result.scores.cost.clone(),
             provider_telemetry: result.provider_telemetry.clone(),
             debug_errors: result.debug_errors.clone(),
+            call_telemetry: result.call_telemetry.clone(),
+            retry_reason: None,
+            retry_delay_ms: None,
         })
     }
 }
@@ -467,6 +479,70 @@ struct ProviderDebugError {
     timestamp: String,
     detail: String,
     telemetry: ProviderTelemetry,
+}
+
+/// One safe, decoded provider-call observation. This intentionally lives only
+/// in the invocation-level JSONL log so normal case artifacts stay compact.
+#[derive(Debug, Clone, Serialize)]
+struct CallTelemetry {
+    task_id: String,
+    prompt_id: String,
+    run_index: u32,
+    attempt: u32,
+    timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assistant_turn: Option<u32>,
+    requested_model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routed_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_telemetry: Option<ProviderTelemetry>,
+}
+
+impl CallTelemetry {
+    fn new(task: &Task, prompt: &Prompt, model: &str) -> Self {
+        Self {
+            task_id: task.spec.id.clone(),
+            prompt_id: prompt.id.clone(),
+            run_index: 0,
+            attempt: 1,
+            timestamp: Utc::now().to_rfc3339(),
+            assistant_turn: None,
+            requested_model: model.to_string(),
+            routed_model: None,
+            provider: None,
+            generation_id: None,
+            finish_reason: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            cached_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+            usd: None,
+            provider_telemetry: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1244,6 +1320,8 @@ async fn run_one(
     let mut generation_ids: Vec<String> = Vec::new();
     let mut provider_telemetry: Vec<ProviderTelemetry> = Vec::new();
     let mut debug_errors: Vec<ProviderDebugError> = Vec::new();
+    let mut call_telemetry: Vec<CallTelemetry> = Vec::new();
+    let mut current_call: Option<CallTelemetry> = None;
     let mut pending_routed_model: Option<String> = None;
     let mut pending_upstream_provider: Option<String> = None;
     let mut error: Option<String> = None;
@@ -1315,7 +1393,11 @@ async fn run_one(
                     message,
                     finish_reason,
                 } => {
+                    let call =
+                        current_call.get_or_insert_with(|| CallTelemetry::new(task, prompt, model));
                     turns += 1;
+                    call.assistant_turn = Some(turns);
+                    call.finish_reason = finish_reason.clone();
                     if let Some(model) = pending_routed_model.take() {
                         routed_models.push(RoutedModelObservation {
                             assistant_turn: turns,
@@ -1345,9 +1427,28 @@ async fn run_one(
                     usage,
                     generation_id,
                 } => {
+                    let call =
+                        current_call.get_or_insert_with(|| CallTelemetry::new(task, prompt, model));
                     if let Some(generation_id) = generation_id {
-                        generation_ids.push(generation_id);
+                        generation_ids.push(generation_id.clone());
+                        call.generation_id = Some(generation_id);
                     }
+                    call.prompt_tokens = Some(usage.prompt_tokens);
+                    call.completion_tokens = Some(usage.completion_tokens);
+                    call.total_tokens = Some(usage.total_tokens);
+                    call.cached_tokens = usage
+                        .prompt_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.cached_tokens);
+                    call.cache_write_tokens = usage
+                        .prompt_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.cache_write_tokens);
+                    call.reasoning_tokens = usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.reasoning_tokens);
+                    call.usd = usage.cost;
                     tokens_in += usage.prompt_tokens;
                     tokens_out += usage.completion_tokens;
                     cached_tokens += usage
@@ -1372,6 +1473,12 @@ async fn run_one(
                     }
                 }
                 AgentEvent::RoutedModel { model } => {
+                    if let Some(call) = current_call.take() {
+                        call_telemetry.push(call);
+                    }
+                    let call = current_call
+                        .get_or_insert_with(|| CallTelemetry::new(task, prompt, &model));
+                    call.routed_model = Some(model.clone());
                     pending_routed_model = Some(model);
                 }
                 AgentEvent::UpstreamProvider { provider } => {
@@ -1384,9 +1491,15 @@ async fn run_one(
                             upstream_providers.last().expect("checked above").provider
                         );
                     }
+                    let call =
+                        current_call.get_or_insert_with(|| CallTelemetry::new(task, prompt, model));
+                    call.provider = Some(provider.clone());
                     pending_upstream_provider = Some(provider);
                 }
                 AgentEvent::Error { message } => {
+                    if let Some(call) = current_call.take() {
+                        call_telemetry.push(call);
+                    }
                     if message.contains("; retrying once") {
                         continue;
                     }
@@ -1403,6 +1516,14 @@ async fn run_one(
                     telemetry,
                     debug_detail,
                 } => {
+                    if let Some(call) = current_call.take() {
+                        call_telemetry.push(call);
+                    }
+                    let mut failed_call = CallTelemetry::new(task, prompt, model);
+                    failed_call.provider = telemetry.provider.clone();
+                    failed_call.generation_id = telemetry.generation_id.clone();
+                    failed_call.provider_telemetry = Some(telemetry.clone());
+                    call_telemetry.push(failed_call);
                     if let Some(detail) = debug_detail {
                         debug_errors.push(ProviderDebugError {
                             timestamp: Utc::now().to_rfc3339(),
@@ -1427,6 +1548,9 @@ async fn run_one(
                 _ => {}
             }
         }
+    }
+    if let Some(call) = current_call.take() {
+        call_telemetry.push(call);
     }
     if let Some(prev) = prev_cwd {
         let _ = std::env::set_current_dir(prev);
@@ -1495,6 +1619,7 @@ async fn run_one(
         generation_ids,
         provider_telemetry,
         debug_errors,
+        call_telemetry,
         run_index: 0,
         retry_attempts: Vec::new(),
         tool_sequence,
@@ -1551,6 +1676,7 @@ fn error_result(
         generation_ids: Vec::new(),
         provider_telemetry: Vec::new(),
         debug_errors: Vec::new(),
+        call_telemetry: Vec::new(),
         run_index: 0,
         retry_attempts: Vec::new(),
         tool_sequence: Vec::new(),
@@ -1603,19 +1729,27 @@ async fn run_with_provider_retry(
     options: &RunOneOptions,
 ) -> (TaskResult, Option<TaskResult>) {
     let first = run_one(task, prompt, model, api_key, options).await;
-    if !retryable_provider_error(&first) {
+    let Some(policy) = retry_policy(&first) else {
         return (first, None);
-    }
+    };
 
     let cause = failure_cause(&first)
         .expect("retryable_provider_error requires a structured failure cause");
     println!(
-        "      retrying from a fresh workspace and conversation after {}",
-        cause.label()
+        "      retrying from a fresh workspace and conversation after {} ({})",
+        cause.label(),
+        policy.reason
     );
+    if !policy.delay.is_zero() {
+        sleep(policy.delay).await;
+    }
     let mut retry = run_one(task, prompt, model, api_key, options).await;
     if let Some(attempt) = RetryAttempt::from_result(&first, 1) {
-        retry.retry_attempts.push(attempt);
+        retry.retry_attempts.push(RetryAttempt {
+            retry_reason: Some(policy.reason),
+            retry_delay_ms: (!policy.delay.is_zero()).then_some(policy.delay.as_millis() as u64),
+            ..attempt
+        });
     }
     (retry, Some(first))
 }
@@ -1834,11 +1968,51 @@ fn retry_error_attempt_count(result: &TaskResult) -> usize {
         + usize::from(result_status(result) == ResultStatus::Error && retry_count(result) > 0)
 }
 
-fn retryable_provider_error(result: &TaskResult) -> bool {
-    matches!(
-        failure_cause(result),
-        Some(FailureCause::ProviderApi | FailureCause::Transport)
-    ) && result.scores.error.is_some()
+struct RetryPolicy {
+    reason: String,
+    delay: Duration,
+}
+
+fn retry_policy(result: &TaskResult) -> Option<RetryPolicy> {
+    if result.scores.error.is_none() {
+        return None;
+    }
+    if failure_cause(result) == Some(FailureCause::Transport) {
+        return Some(RetryPolicy {
+            reason: "transport_failure".into(),
+            delay: Duration::ZERO,
+        });
+    }
+    if failure_cause(result) != Some(FailureCause::ProviderApi) {
+        return None;
+    }
+    let telemetry = result.provider_telemetry.last()?;
+    let error_type = telemetry
+        .error_type
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let retryable_type = [
+        "rate_limit",
+        "overload",
+        "temporarily_unavailable",
+        "server_error",
+    ]
+    .iter()
+    .any(|kind| error_type.contains(kind));
+    let retryable_status = matches!(telemetry.status, Some(408 | 429 | 500 | 502 | 503 | 504));
+    if !retryable_type && !retryable_status {
+        return None;
+    }
+    let delay = Duration::from_millis(telemetry.retry_after_ms.unwrap_or(0).min(10_000));
+    Some(RetryPolicy {
+        reason: if retryable_type {
+            format!("provider_{error_type}")
+        } else {
+            format!("http_{}", telemetry.status.unwrap_or_default())
+        },
+        delay,
+    })
 }
 
 fn attempt_cost(result: &TaskResult) -> CostScore {
@@ -2863,6 +3037,7 @@ mod tests {
             generation_ids: Vec::new(),
             provider_telemetry: Vec::new(),
             debug_errors: Vec::new(),
+            call_telemetry: Vec::new(),
             heddle_commit: "abc123".into(),
             evals_version: "0.1.0".into(),
             timestamp: "2026-07-22T00:00:00Z".into(),
@@ -3250,6 +3425,9 @@ mod tests {
             },
             provider_telemetry: Vec::new(),
             debug_errors: Vec::new(),
+            call_telemetry: Vec::new(),
+            retry_reason: None,
+            retry_delay_ms: None,
         });
 
         let summary = format_summary(std::slice::from_ref(&final_result));
@@ -4550,6 +4728,7 @@ fn write_run_artifacts(
 ) -> Result<()> {
     fs::create_dir_all(results_dir)?;
     write_debug_error_log(results_dir, results)?;
+    write_call_telemetry_log(results_dir, results)?;
     let reported = reported_results(results);
 
     let passed = reported
@@ -4723,6 +4902,34 @@ fn write_debug_error_log(results_dir: &Path, results: &[TaskResult]) -> Result<(
     if !entries.is_empty() {
         fs::write(
             results_dir.join("debug-errors.jsonl"),
+            format!("{}\n", entries.join("\n")),
+        )?;
+    }
+    Ok(())
+}
+
+fn write_call_telemetry_log(results_dir: &Path, results: &[TaskResult]) -> Result<()> {
+    let mut entries = Vec::new();
+    for result in results {
+        for retry in &result.retry_attempts {
+            for call in &retry.call_telemetry {
+                let mut call = call.clone();
+                call.run_index = result.run_index;
+                call.attempt = retry.attempt;
+                entries.push(serde_json::to_string(&call)?);
+            }
+        }
+        let attempt = result.retry_attempts.len() as u32 + 1;
+        for call in &result.call_telemetry {
+            let mut call = call.clone();
+            call.run_index = result.run_index;
+            call.attempt = attempt;
+            entries.push(serde_json::to_string(&call)?);
+        }
+    }
+    if !entries.is_empty() {
+        fs::write(
+            results_dir.join("call-telemetry.jsonl"),
             format!("{}\n", entries.join("\n")),
         )?;
     }

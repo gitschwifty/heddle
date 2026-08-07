@@ -28,6 +28,21 @@ use crate::types::{
 
 const DEFAULT_MAX_ITERATIONS: u32 = 20;
 const DEFAULT_DOOM_LOOP_THRESHOLD: u32 = 3;
+const MAX_TOOL_RESULT_BYTES: usize = 24 * 1024;
+
+fn bound_tool_result_for_history(result: String) -> String {
+    if result.len() <= MAX_TOOL_RESULT_BYTES {
+        return result;
+    }
+    let mut end = MAX_TOOL_RESULT_BYTES;
+    while !result.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n\n[tool output truncated after {} bytes; refine the path, glob, or query to inspect a smaller result]",
+        &result[..end], MAX_TOOL_RESULT_BYTES
+    )
+}
 const DEFAULT_EMPTY_RESPONSE_RETRIES: u32 = 1;
 
 /// Returned by the permission resolver callback.
@@ -365,9 +380,9 @@ pub fn run_agent_loop<'a>(
 
                 yield AgentEvent::ToolStart { name: call.function.name.clone(), call: call.clone() };
                 let exec_opts = ExecOptions { signal: options.signal.clone() };
-                let result = registry
+                let result = bound_tool_result_for_history(registry
                     .execute(&call.function.name, &call.function.arguments, exec_opts)
-                    .await;
+                    .await);
                 yield AgentEvent::ToolEnd {
                     name: call.function.name.clone(),
                     result: result.clone(),
@@ -648,9 +663,9 @@ pub fn run_agent_loop_streaming<'a>(
                 }
                 yield AgentEvent::ToolStart { name: call.function.name.clone(), call: call.clone() };
                 let exec_opts = ExecOptions { signal: options.signal.clone() };
-                let result = registry
+                let result = bound_tool_result_for_history(registry
                     .execute(&call.function.name, &call.function.arguments, exec_opts)
-                    .await;
+                    .await);
                 yield AgentEvent::ToolEnd {
                     name: call.function.name.clone(),
                     result: result.clone(),
@@ -726,5 +741,12 @@ mod tests {
     fn provider_history_preserves_valid_object_arguments() {
         let calls = tool_calls_for_provider_history(&[tool_call(r#"{"path":"README.md"}"#)]);
         assert_eq!(calls[0].function.arguments, r#"{"path":"README.md"}"#);
+    }
+
+    #[test]
+    fn oversized_tool_results_are_bounded_before_history_replay() {
+        let result = bound_tool_result_for_history("x".repeat(MAX_TOOL_RESULT_BYTES + 10));
+        assert!(result.contains("tool output truncated"));
+        assert!(result.len() < MAX_TOOL_RESULT_BYTES + 200);
     }
 }

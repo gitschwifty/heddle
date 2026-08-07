@@ -64,3 +64,29 @@ async fn finds_matching_files() {
     assert!(result.contains("b.txt"), "got: {result}");
     assert!(!result.contains("ignored.md"), "got: {result}");
 }
+
+#[tokio::test]
+async fn skips_generated_trees_during_broad_discovery_but_allows_narrow_requests() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("src.txt"), "x").unwrap();
+    std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+    std::fs::write(dir.path().join("target/debug/generated.txt"), "x").unwrap();
+    let tool = create_glob_tool();
+
+    let broad = tool
+        .execute(
+            json!({ "pattern": "**/*", "path": dir.path().to_string_lossy() }),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(broad.contains("src.txt"), "got: {broad}");
+    assert!(!broad.contains("generated.txt"), "got: {broad}");
+
+    let narrow = tool
+        .execute(
+            json!({ "pattern": "debug/*.txt", "path": dir.path().join("target").to_string_lossy() }),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(narrow.contains("generated.txt"), "got: {narrow}");
+}
