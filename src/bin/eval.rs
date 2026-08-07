@@ -3549,6 +3549,15 @@ mod tests {
             false,
             2,
             1,
+            &RunTiming {
+                started_at: "2026-08-07T00:00:00Z".into(),
+                finished_at: "2026-08-07T00:01:05Z".into(),
+                duration_ms: 65_000,
+                matrix_runs: vec![MatrixRunTiming {
+                    run_index: 1,
+                    duration_ms: 60_000,
+                }],
+            },
             &GitInfo {
                 commit: "heddle-test".into(),
                 dirty: Some(false),
@@ -3589,6 +3598,18 @@ mod tests {
         );
         assert_eq!(meta["comparison"]["static_context_only"], true);
         assert_eq!(meta["suite"]["fingerprint"], "suite-fingerprint");
+        assert_eq!(meta["duration_ms"], 65_000);
+        assert_eq!(meta["matrix_runs"][0]["duration_ms"], 60_000);
+        let summary_md = std::fs::read_to_string(dir.path().join("summary.md")).unwrap();
+        assert!(summary_md.contains("wall_time: `1m05s`"));
+        assert!(summary_md.contains("matrix_run_wall_times: run 1=1m00s"));
+    }
+
+    #[test]
+    fn human_duration_format_is_compact() {
+        assert_eq!(format_duration_ms(999), "0s");
+        assert_eq!(format_duration_ms(65_000), "1m05s");
+        assert_eq!(format_duration_ms(3_661_000), "1h01m01s");
     }
 
     #[test]
@@ -3647,6 +3668,15 @@ mod tests {
                 budget_stopped,
                 if budget_stopped { 2 } else { 1 },
                 1,
+                &RunTiming {
+                    started_at: "2026-08-07T00:00:00Z".into(),
+                    finished_at: "2026-08-07T00:01:05Z".into(),
+                    duration_ms: 65_000,
+                    matrix_runs: vec![MatrixRunTiming {
+                        run_index: 1,
+                        duration_ms: 60_000,
+                    }],
+                },
                 &GitInfo {
                     commit: "heddle-test".into(),
                     dirty: Some(false),
@@ -3915,6 +3945,8 @@ async fn cmd_run(
     cache_ttl_1h: bool,
     static_context_only: bool,
 ) -> Result<()> {
+    let invocation_started_at = Utc::now().to_rfc3339();
+    let invocation_start = Instant::now();
     let manifest = load_manifest(evals)?;
     let model = model_flag
         .map(|s| s.to_string())
@@ -4106,6 +4138,7 @@ async fn cmd_run(
     let mut smoke_failed = false;
     let mut budget_stopped = false;
     let mut cumulative_usd = 0.0f64;
+    let mut matrix_runs = Vec::new();
     let run_options = RunOneOptions {
         max_turns,
         max_tokens_per_task,
@@ -4195,6 +4228,7 @@ async fn cmd_run(
         // Pass 2: matrix, repeated `runs` times to average out variance.
         let matrix_total = matrix_pairs.len();
         for run_n in 1..=runs {
+            let matrix_run_start = Instant::now();
             if runs > 1 {
                 println!();
                 println!("=== run {run_n}/{runs} ===");
@@ -4244,8 +4278,16 @@ async fn cmd_run(
                 }
             }
             if budget_stopped {
+                matrix_runs.push(MatrixRunTiming {
+                    run_index: run_n,
+                    duration_ms: matrix_run_start.elapsed().as_millis(),
+                });
                 break;
             }
+            matrix_runs.push(MatrixRunTiming {
+                run_index: run_n,
+                duration_ms: matrix_run_start.elapsed().as_millis(),
+            });
         }
     }
     let summary = if runs > 1 {
@@ -4256,6 +4298,13 @@ async fn cmd_run(
     let failures = format_failure_details(&results);
     print!("{summary}");
     print!("{failures}");
+    let run_timing = RunTiming {
+        started_at: invocation_started_at,
+        finished_at: Utc::now().to_rfc3339(),
+        duration_ms: invocation_start.elapsed().as_millis(),
+        matrix_runs,
+    };
+    println!("wall time: {}", format_duration_ms(run_timing.duration_ms));
 
     let comparison = comparison_config(
         &chosen_prompts,
@@ -4298,6 +4347,7 @@ async fn cmd_run(
         // Smoke checks are one-time preflight cases; only matrix cases repeat.
         smoke_pairs.len() + matrix_pairs.len() * runs as usize,
         runs,
+        &run_timing,
         &start_heddle_git,
         &start_evals_git,
     )?;
@@ -4309,6 +4359,11 @@ async fn cmd_run(
 #[derive(Debug, Serialize)]
 struct RunMeta {
     timestamp: String,
+    started_at: String,
+    finished_at: String,
+    duration_ms: u128,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matrix_runs: Vec<MatrixRunTiming>,
     heddle_commit: String,
     heddle_dirty: Option<bool>,
     evals_commit: String,
@@ -4338,6 +4393,20 @@ struct RunMeta {
     budget_stopped: bool,
     planned_results_version: u8,
     planned_results: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MatrixRunTiming {
+    run_index: u32,
+    duration_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+struct RunTiming {
+    started_at: String,
+    finished_at: String,
+    duration_ms: u128,
+    matrix_runs: Vec<MatrixRunTiming>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4711,6 +4780,20 @@ fn format_dirty(dirty: Option<bool>) -> &'static str {
     }
 }
 
+fn format_duration_ms(duration_ms: u128) -> String {
+    let total_seconds = duration_ms / 1_000;
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m{seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_run_artifacts(
     results_dir: &Path,
@@ -4733,6 +4816,7 @@ fn write_run_artifacts(
     budget_stopped: bool,
     planned_results: usize,
     runs_per_case: u32,
+    run_timing: &RunTiming,
     start_heddle_git: &GitInfo,
     start_evals_git: &GitInfo,
 ) -> Result<()> {
@@ -4771,6 +4855,10 @@ fn write_run_artifacts(
     let totals = run_totals_from_refs(reported.iter().copied());
     let meta = RunMeta {
         timestamp: Utc::now().to_rfc3339(),
+        started_at: run_timing.started_at.clone(),
+        finished_at: run_timing.finished_at.clone(),
+        duration_ms: run_timing.duration_ms,
+        matrix_runs: run_timing.matrix_runs.clone(),
         heddle_commit: start_heddle_git.commit.clone(),
         heddle_dirty: start_heddle_git.dirty,
         evals_commit: start_evals_git.commit.clone(),
@@ -4820,6 +4908,26 @@ fn write_run_artifacts(
     // summary.md: meta header + table + failures, paste-ready.
     let mut md = String::new();
     md.push_str(&format!("# Eval run — {}\n\n", meta.timestamp));
+    md.push_str(&format!(
+        "- wall_time: `{}` (started `{}`, finished `{}`)\n",
+        format_duration_ms(meta.duration_ms),
+        meta.started_at,
+        meta.finished_at
+    ));
+    if !meta.matrix_runs.is_empty() {
+        md.push_str(&format!(
+            "- matrix_run_wall_times: {}\n",
+            meta.matrix_runs
+                .iter()
+                .map(|run| format!(
+                    "run {}={}",
+                    run.run_index,
+                    format_duration_ms(run.duration_ms)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     md.push_str(&format!("- model: `{}`\n", meta.model));
     md.push_str(&format!(
         "- openrouter_routing: `{}`\n",
