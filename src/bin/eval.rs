@@ -807,7 +807,7 @@ fn load_prompts(evals: &Path) -> Result<Vec<Prompt>> {
         let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            out.push(load_prompt(&path)?);
+            out.push(load_prompt(path)?);
         }
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
