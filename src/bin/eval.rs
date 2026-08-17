@@ -7,7 +7,7 @@
 //!
 //! See `evals/README.md` for the prompt/task format.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -151,6 +151,15 @@ enum Cmd {
         /// Override the generated aggregate output directory.
         #[arg(long)]
         output_dir: Option<PathBuf>,
+    },
+    /// Compare a baseline and variant run with identical controls.
+    Compare {
+        /// Completed baseline run directory.
+        #[arg(long)]
+        baseline: PathBuf,
+        /// Completed variant run directory.
+        #[arg(long)]
+        variant: PathBuf,
     },
 }
 
@@ -2836,6 +2845,7 @@ async fn main() -> Result<()> {
             &aggregate_root,
             output_dir.as_deref(),
         ),
+        Cmd::Compare { baseline, variant } => cmd_compare(&baseline, &variant),
         Cmd::Run {
             evals,
             prompts,
@@ -2881,6 +2891,183 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredComparisonMeta {
+    model: String,
+    comparison: ComparisonConfig,
+    suite: SuiteIdentity,
+    #[serde(default)]
+    condition: Option<ResolvedEvalCondition>,
+}
+
+struct ComparisonRun {
+    dir: PathBuf,
+    meta: StoredComparisonMeta,
+    results: Vec<TaskResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct ComparisonDelta {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    tool_calls: i64,
+    turns: i64,
+    duration_ms: i128,
+    usd: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct PairedComparisonReport {
+    baseline: String,
+    variant: String,
+    condition: ResolvedEvalCondition,
+    pairs: usize,
+    outcome_transitions: BTreeMap<String, usize>,
+    variant_minus_baseline: ComparisonDelta,
+}
+
+fn load_comparison_run(dir: &Path) -> Result<ComparisonRun> {
+    let meta_path = dir.join("run_meta.json");
+    let results_path = dir.join("summary.json");
+    let meta: StoredComparisonMeta = serde_json::from_str(
+        &fs::read_to_string(&meta_path)
+            .with_context(|| format!("reading {}", meta_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", meta_path.display()))?;
+    let results: Vec<TaskResult> = serde_json::from_str(
+        &fs::read_to_string(&results_path)
+            .with_context(|| format!("reading {}", results_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", results_path.display()))?;
+    Ok(ComparisonRun {
+        dir: dir.to_path_buf(),
+        meta,
+        results,
+    })
+}
+
+fn controls_match(left: &ComparisonConfig, right: &ComparisonConfig) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.condition = None;
+    right.condition = None;
+    left == right
+}
+
+fn status_label(result: &TaskResult) -> &'static str {
+    match result_status(result) {
+        ResultStatus::Pass => "pass",
+        ResultStatus::Fail => "fail",
+        ResultStatus::Limit => "limit",
+        ResultStatus::Error => "error",
+    }
+}
+
+fn build_paired_comparison(
+    baseline: &ComparisonRun,
+    variant: &ComparisonRun,
+) -> Result<PairedComparisonReport> {
+    if baseline.meta.model != variant.meta.model {
+        bail!(
+            "requested model mismatch: baseline {:?}, variant {:?}",
+            baseline.meta.model,
+            variant.meta.model
+        );
+    }
+    if baseline.meta.suite.fingerprint != variant.meta.suite.fingerprint {
+        bail!("suite fingerprint mismatch; compare runs with the same fixtures and prompts");
+    }
+    if !controls_match(&baseline.meta.comparison, &variant.meta.comparison) {
+        bail!("comparison controls differ outside the declared condition");
+    }
+    let condition = variant
+        .meta
+        .condition
+        .clone()
+        .or_else(|| variant.meta.comparison.condition.clone())
+        .ok_or_else(|| anyhow!("variant run has no declared eval condition"))?;
+    if let Some(baseline_condition) = baseline.meta.condition.as_ref().or(baseline
+        .meta
+        .comparison
+        .condition
+        .as_ref())
+    {
+        if baseline_condition.declaration.id != condition.declaration.baseline {
+            bail!(
+                "baseline condition {:?} does not match variant declaration baseline {:?}",
+                baseline_condition.declaration.id,
+                condition.declaration.baseline
+            );
+        }
+    }
+
+    let key = |result: &TaskResult| {
+        (
+            result.task_id.clone(),
+            result.prompt_id.clone(),
+            result.run_index,
+        )
+    };
+    let baseline_by_key: BTreeMap<_, _> = baseline
+        .results
+        .iter()
+        .map(|result| (key(result), result))
+        .collect();
+    let variant_by_key: BTreeMap<_, _> = variant
+        .results
+        .iter()
+        .map(|result| (key(result), result))
+        .collect();
+    let baseline_keys: BTreeSet<_> = baseline_by_key.keys().cloned().collect();
+    let variant_keys: BTreeSet<_> = variant_by_key.keys().cloned().collect();
+    if baseline_keys != variant_keys {
+        bail!("baseline and variant result pairs differ; rerun with the same task, prompt, and repetition selection");
+    }
+
+    let mut transitions = BTreeMap::new();
+    let mut delta = ComparisonDelta {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        tool_calls: 0,
+        turns: 0,
+        duration_ms: 0,
+        usd: 0.0,
+    };
+    for key in baseline_keys {
+        let base = baseline_by_key[&key];
+        let changed = variant_by_key[&key];
+        *transitions
+            .entry(format!("{}->{}", status_label(base), status_label(changed)))
+            .or_default() += 1;
+        delta.prompt_tokens +=
+            changed.scores.cost.tokens_in as i64 - base.scores.cost.tokens_in as i64;
+        delta.completion_tokens +=
+            changed.scores.cost.tokens_out as i64 - base.scores.cost.tokens_out as i64;
+        delta.tool_calls +=
+            changed.scores.efficiency.tool_calls as i64 - base.scores.efficiency.tool_calls as i64;
+        delta.turns += changed.scores.efficiency.turns as i64 - base.scores.efficiency.turns as i64;
+        delta.duration_ms += changed.duration_ms as i128 - base.duration_ms as i128;
+        delta.usd += changed.scores.cost.usd - base.scores.cost.usd;
+    }
+    Ok(PairedComparisonReport {
+        baseline: baseline.dir.display().to_string(),
+        variant: variant.dir.display().to_string(),
+        condition,
+        pairs: baseline_by_key.len(),
+        outcome_transitions: transitions,
+        variant_minus_baseline: delta,
+    })
+}
+
+fn cmd_compare(baseline: &Path, variant: &Path) -> Result<()> {
+    let report = build_paired_comparison(
+        &load_comparison_run(baseline)?,
+        &load_comparison_run(variant)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn cmd_list(evals: &Path) -> Result<()> {
@@ -3289,6 +3476,100 @@ expected_signal = "x"
             trace: None,
             transcript: Vec::new(),
         }
+    }
+
+    fn test_condition() -> ResolvedEvalCondition {
+        ResolvedEvalCondition {
+            declaration: EvalCondition {
+                id: "range-read-v1".into(),
+                hypothesis: "Bounded reads reduce retrieval cost.".into(),
+                baseline: "full-read-v1".into(),
+                variant: "range-read-v1".into(),
+                changed_factor: "read_file_contract".into(),
+                expected_signal: "fewer input tokens".into(),
+            },
+            fingerprint: "condition-fingerprint".into(),
+        }
+    }
+
+    fn test_comparison(condition: Option<ResolvedEvalCondition>) -> ComparisonConfig {
+        ComparisonConfig {
+            prompts: vec!["prompt-1".into()],
+            tasks: vec!["task-1".into()],
+            max_tokens_per_task: 1_000,
+            max_tokens_per_response: 500,
+            max_turns: 4,
+            task_timeout_secs: 60,
+            static_context_only: false,
+            excluded_dynamic_prompts: Vec::new(),
+            cache_prewarm: false,
+            cache_ttl: None,
+            openrouter_routing: "balanced".into(),
+            condition,
+        }
+    }
+
+    #[test]
+    fn paired_comparison_requires_matching_controls_and_reports_deltas() {
+        let baseline = ComparisonRun {
+            dir: PathBuf::from("baseline"),
+            meta: StoredComparisonMeta {
+                model: "model/a".into(),
+                comparison: test_comparison(None),
+                suite: SuiteIdentity {
+                    fingerprint: "suite".into(),
+                    source: "test".into(),
+                },
+                condition: None,
+            },
+            results: vec![result(0, 0, None)],
+        };
+        let mut changed = result(0, 0, None);
+        changed.scores.cost.tokens_in = 80;
+        changed.scores.cost.tokens_out = 15;
+        changed.scores.efficiency.tool_calls = 2;
+        changed.scores.efficiency.turns = 2;
+        changed.duration_ms = 5;
+        changed.scores.cost.usd = 0.02;
+        let variant = ComparisonRun {
+            dir: PathBuf::from("variant"),
+            meta: StoredComparisonMeta {
+                model: "model/a".into(),
+                comparison: test_comparison(Some(test_condition())),
+                suite: SuiteIdentity {
+                    fingerprint: "suite".into(),
+                    source: "test".into(),
+                },
+                condition: Some(test_condition()),
+            },
+            results: vec![changed],
+        };
+
+        let report = build_paired_comparison(&baseline, &variant).unwrap();
+        assert_eq!(report.pairs, 1);
+        assert_eq!(report.outcome_transitions["pass->pass"], 1);
+        assert_eq!(report.variant_minus_baseline.prompt_tokens, -20);
+        assert_eq!(report.variant_minus_baseline.completion_tokens, -5);
+        assert_eq!(report.variant_minus_baseline.tool_calls, 1);
+        assert_eq!(report.variant_minus_baseline.turns, 1);
+        assert_eq!(report.variant_minus_baseline.duration_ms, 4);
+        assert!((report.variant_minus_baseline.usd - 0.01).abs() < f64::EPSILON);
+
+        let mut mismatched = ComparisonRun {
+            dir: variant.dir.clone(),
+            meta: StoredComparisonMeta {
+                model: variant.meta.model.clone(),
+                comparison: variant.meta.comparison.clone(),
+                suite: variant.meta.suite.clone(),
+                condition: variant.meta.condition.clone(),
+            },
+            results: vec![result(0, 0, None)],
+        };
+        mismatched.meta.comparison.max_turns = 5;
+        assert!(build_paired_comparison(&baseline, &mismatched)
+            .unwrap_err()
+            .to_string()
+            .contains("controls differ"));
     }
 
     #[test]
