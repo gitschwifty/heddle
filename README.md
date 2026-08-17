@@ -182,6 +182,21 @@ The agent has access to 9 built-in tools:
 
 Tools can be filtered via the `tools` config field or `HEDDLE_TOOLS` env var.
 
+### Search backend
+
+The `grep` tool prefers [ripgrep (`rg`)](https://github.com/BurntSushi/ripgrep)
+when it is installed, and otherwise falls back to the system `grep -rEn`.
+Ripgrep is recommended for faster, more reliable large-repository search, but
+is not a Heddle dependency and is never installed automatically.
+
+Both backends support normal literals, character classes, grouping,
+repetition, and alternation such as `one|two`. Advanced regex behavior can
+differ—especially look-around, backreferences, Unicode handling, and escapes;
+see [ripgrep's regex syntax](https://docs.rs/regex/latest/regex/#syntax) and
+the [GNU grep regular-expression reference](https://www.gnu.org/software/grep/manual/html_node/Regular-Expressions.html).
+Heddle currently passes those patterns through to the selected backend; a
+portable search-regex subset is tracked as future work.
+
 ### Fuzzy Edit Matching
 
 The `edit_file` tool tries 4 match levels when an exact match fails:

@@ -1,4 +1,4 @@
-//! grep tool — shells out to `grep -rn` like the TS port.
+//! Search tool — prefers ripgrep, with an extended-regex grep fallback.
 
 use std::sync::Arc;
 
@@ -10,6 +10,66 @@ use super::types::{ExecOptions, HeddleTool};
 
 pub struct GrepTool;
 
+#[derive(Clone, Copy)]
+enum SearchBackend {
+    Ripgrep,
+    Grep,
+}
+
+impl SearchBackend {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ripgrep => "rg",
+            Self::Grep => "grep",
+        }
+    }
+}
+
+fn search_command(
+    backend: SearchBackend,
+    pattern: &str,
+    path: &str,
+    glob_filter: Option<&str>,
+) -> Command {
+    let mut command = Command::new(backend.name());
+    command.args(search_args(backend, pattern, path, glob_filter));
+    command
+}
+
+fn search_args(
+    backend: SearchBackend,
+    pattern: &str,
+    path: &str,
+    glob_filter: Option<&str>,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    match backend {
+        SearchBackend::Ripgrep => {
+            args.extend(
+                [
+                    "--line-number",
+                    "--no-heading",
+                    "--color=never",
+                    "--hidden",
+                    "--no-ignore",
+                ]
+                .map(String::from),
+            );
+            if let Some(glob) = glob_filter {
+                args.extend(["--glob".to_string(), glob.to_string()]);
+            }
+        }
+        SearchBackend::Grep => {
+            args.extend(["-rEn".to_string(), "--color=never".to_string()]);
+            if let Some(glob) = glob_filter {
+                args.push(format!("--include={glob}"));
+            }
+        }
+    }
+    args.extend(["-e".to_string(), pattern.to_string(), path.to_string()]);
+    args
+}
+
 pub fn create_grep_tool() -> Arc<dyn HeddleTool> {
     Arc::new(GrepTool)
 }
@@ -20,7 +80,7 @@ impl HeddleTool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search for a regex pattern in files. Uses ripgrep-style output with file paths and line numbers."
+        "Search for a regex pattern in files with paths and line numbers. Uses ripgrep when available, otherwise extended-regex grep."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -46,26 +106,52 @@ impl HeddleTool for GrepTool {
             .unwrap_or_else(|| ".".to_string());
         let glob_filter = params.get("glob").and_then(Value::as_str).map(String::from);
 
-        let mut cmd = Command::new("grep");
-        cmd.args(["-rn", "--color=never"]);
-        if let Some(g) = &glob_filter {
-            cmd.arg(format!("--include={g}"));
-        }
-        cmd.arg(&pattern).arg(&path);
-
-        let output = match cmd.output().await {
-            Ok(o) => o,
-            Err(e) => return format!("Error: {e}"),
+        let (output, backend) = match search_command(
+            SearchBackend::Ripgrep,
+            &pattern,
+            &path,
+            glob_filter.as_deref(),
+        )
+        .output()
+        .await
+        {
+            Ok(output) => (output, SearchBackend::Ripgrep),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match search_command(SearchBackend::Grep, &pattern, &path, glob_filter.as_deref())
+                    .output()
+                    .await
+                {
+                    Ok(output) => (output, SearchBackend::Grep),
+                    Err(error) => return format!("Error: {error}"),
+                }
+            }
+            Err(error) => return format!("Error: {error}"),
         };
         let exit = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         if exit > 1 {
-            return format!("Error: grep exited with code {exit}: {stderr}");
+            return format!(
+                "Error: {} exited with code {exit}: {stderr}",
+                backend.name()
+            );
         }
         if exit == 1 || stdout.trim().is_empty() {
             return "No matches found.".to_string();
         }
         stdout.trim().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grep_fallback_uses_extended_regex_and_the_same_pattern_argument() {
+        let args = search_args(SearchBackend::Grep, "one|two", "src", Some("*.rs"));
+        assert!(args.contains(&"-rEn".to_string()));
+        assert!(args.contains(&"--include=*.rs".to_string()));
+        assert_eq!(args[args.len() - 3..], ["-e", "one|two", "src"]);
     }
 }

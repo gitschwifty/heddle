@@ -27,6 +27,20 @@ async fn returns_matching_lines_with_file_paths() {
 }
 
 #[tokio::test]
+async fn supports_regex_alternation() {
+    let dir = setup_dir();
+    let tool = create_grep_tool();
+    let result = tool
+        .execute(
+            json!({ "pattern": "hello|baz", "path": dir.path().to_string_lossy() }),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(result.contains("hello world"), "got: {result}");
+    assert!(result.contains("baz"), "got: {result}");
+}
+
+#[tokio::test]
 async fn respects_glob_filter() {
     let dir = setup_dir();
     let tool = create_grep_tool();
