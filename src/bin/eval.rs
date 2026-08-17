@@ -385,6 +385,11 @@ struct TaskResult {
     duration_ms: u128,
     scores: Scores,
     rendered_system_prompt_chars: usize,
+    /// Fingerprints of the exact system-prompt messages and selected tool
+    /// schemas supplied for this case. These are safe to retain in normal
+    /// artifacts without copying prompt or schema bodies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_contract: Option<EvalInputContract>,
     /// Provider-reported model for each assistant response. This preserves
     /// switches behind routed aliases such as `openrouter/free`. Pinned runs
     /// omit this when every observed model equals the requested model.
@@ -433,6 +438,13 @@ struct TaskResult {
     /// transcript artifact, not duplicated in the result JSON.
     #[serde(skip, default)]
     transcript: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct EvalInputContract {
+    rendered_system_prompt_sha256: String,
+    tool_schema_sha256: String,
+    tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1071,6 +1083,32 @@ fn build_registry(names: &[String]) -> Result<ToolRegistry> {
     Ok(r)
 }
 
+fn sha256_json<T: Serialize>(value: &T) -> Result<String> {
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+fn eval_input_contract(messages: &[Message], registry: &ToolRegistry) -> Result<EvalInputContract> {
+    let system_messages: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::System(system) => Some(system.content.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut definitions = registry.definitions();
+    definitions.sort_by(|left, right| left.function.name.cmp(&right.function.name));
+    let mut tools: Vec<String> = definitions
+        .iter()
+        .map(|definition| definition.function.name.clone())
+        .collect();
+    tools.sort();
+    Ok(EvalInputContract {
+        rendered_system_prompt_sha256: sha256_json(&system_messages)?,
+        tool_schema_sha256: sha256_json(&definitions)?,
+        tools,
+    })
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────────
 
 const FREE_FALLBACK: &[&str] = &[
@@ -1338,6 +1376,10 @@ async fn run_one(
     });
     let registry = match build_registry(&tool_names) {
         Ok(r) => r,
+        Err(e) => return error_result(task, prompt, model, e.to_string(), start),
+    };
+    let input_contract = match eval_input_contract(&messages, &registry) {
+        Ok(contract) => contract,
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };
 
@@ -1669,6 +1711,7 @@ async fn run_one(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars,
+        input_contract: Some(input_contract),
         routed_models,
         upstream_providers,
         generation_ids,
@@ -1726,6 +1769,7 @@ fn error_result(
         timestamp: Utc::now().to_rfc3339(),
         duration_ms: start.elapsed().as_millis(),
         rendered_system_prompt_chars: 0,
+        input_contract: None,
         routed_models: Vec::new(),
         upstream_providers: Vec::new(),
         generation_ids: Vec::new(),
@@ -3087,6 +3131,35 @@ expected_signal = "x"
     }
 
     #[test]
+    fn input_contract_fingerprints_prompt_and_tool_schema_deterministically() {
+        let messages = vec![Message::System(SystemMessage {
+            content: "Inspect only the requested files.".into(),
+        })];
+        let forward = build_registry(&["read_file".into(), "grep".into()]).unwrap();
+        let reverse = build_registry(&["grep".into(), "read_file".into()]).unwrap();
+        let first = eval_input_contract(&messages, &forward).unwrap();
+        let reordered = eval_input_contract(&messages, &reverse).unwrap();
+
+        assert_eq!(first, reordered);
+        assert_eq!(first.tools, vec!["grep", "read_file"]);
+        assert_eq!(first.rendered_system_prompt_sha256.len(), 64);
+        assert_eq!(first.tool_schema_sha256.len(), 64);
+
+        let changed_messages = vec![Message::System(SystemMessage {
+            content: "Inspect files and run the focused test.".into(),
+        })];
+        let changed_prompt = eval_input_contract(&changed_messages, &forward).unwrap();
+        let changed_tools =
+            eval_input_contract(&messages, &build_registry(&["read_file".into()]).unwrap())
+                .unwrap();
+        assert_ne!(
+            first.rendered_system_prompt_sha256,
+            changed_prompt.rendered_system_prompt_sha256
+        );
+        assert_ne!(first.tool_schema_sha256, changed_tools.tool_schema_sha256);
+    }
+
+    #[test]
     fn generated_result_name_includes_optional_tag() {
         assert_eq!(
             default_result_dir_name("20260728T010203", "z-ai/glm-4.7-flash", Some("cache trial"),),
@@ -3207,6 +3280,7 @@ expected_signal = "x"
                 error: None,
             },
             rendered_system_prompt_chars: 10,
+            input_contract: None,
             run_index: 0,
             retry_attempts: Vec::new(),
             tool_sequence: Vec::new(),
@@ -3258,6 +3332,7 @@ expected_signal = "x"
         assert_eq!(parsed.scores.efficiency.max_tool_calls, None);
         assert_eq!(parsed.scores.efficiency.exceeded_max_tool_calls, None);
         assert_eq!(parsed.scores.failure_cause, None);
+        assert_eq!(parsed.input_contract, None);
     }
 
     #[test]
