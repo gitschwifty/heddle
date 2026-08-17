@@ -730,16 +730,19 @@ fn load_prompt(path: &Path) -> Result<Prompt> {
 fn load_prompts(evals: &Path) -> Result<Vec<Prompt>> {
     let dir = evals.join("prompts");
     let mut out = Vec::new();
-    for entry in fs::read_dir(&dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-        .flatten()
-    {
+    for entry in WalkDir::new(&dir).min_depth(1).into_iter() {
+        let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("md") {
             out.push(load_prompt(&path)?);
         }
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
+    for pair in out.windows(2) {
+        if pair[0].id == pair[1].id {
+            bail!("duplicate prompt id {:?} in {}", pair[0].id, dir.display());
+        }
+    }
     Ok(out)
 }
 
@@ -2955,6 +2958,38 @@ fn apply_static_context_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_prompts_discovers_nested_conditions_and_rejects_duplicate_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts = dir.path().join("prompts");
+        fs::create_dir_all(prompts.join("conditions")).unwrap();
+        fs::write(prompts.join("baseline.md"), "---\nid: baseline\n---\nBase").unwrap();
+        fs::write(
+            prompts.join("conditions/verification.md"),
+            "---\nid: verification\n---\nVerify",
+        )
+        .unwrap();
+
+        let loaded = load_prompts(dir.path()).unwrap();
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|prompt| prompt.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["baseline", "verification"]
+        );
+
+        fs::write(
+            prompts.join("conditions/duplicate.md"),
+            "---\nid: baseline\n---\nDuplicate",
+        )
+        .unwrap();
+        assert!(load_prompts(dir.path())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate prompt id"));
+    }
 
     #[test]
     fn generated_result_name_includes_optional_tag() {
