@@ -123,6 +123,11 @@ enum Cmd {
         /// Explicitly selected dynamic prompts fail instead of being skipped.
         #[arg(long, default_value_t = false)]
         static_context_only: bool,
+        /// TOML declaration of the single harness-change hypothesis being
+        /// evaluated. Its resolved identity is retained in run metadata and
+        /// aggregate comparison profiles.
+        #[arg(long)]
+        condition: Option<PathBuf>,
     },
     /// Rebuild cross-run reports from completed eval artifacts.
     Aggregate {
@@ -176,6 +181,53 @@ struct ManifestDefaults {
     #[allow(dead_code)]
     max_tokens_per_task: Option<u64>,
     budget_stop_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct EvalCondition {
+    id: String,
+    hypothesis: String,
+    baseline: String,
+    variant: String,
+    changed_factor: String,
+    expected_signal: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ResolvedEvalCondition {
+    #[serde(flatten)]
+    declaration: EvalCondition,
+    fingerprint: String,
+}
+
+fn load_eval_condition(path: &Path) -> Result<ResolvedEvalCondition> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let declaration: EvalCondition =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    for (name, value) in [
+        ("id", &declaration.id),
+        ("hypothesis", &declaration.hypothesis),
+        ("baseline", &declaration.baseline),
+        ("variant", &declaration.variant),
+        ("changed_factor", &declaration.changed_factor),
+        ("expected_signal", &declaration.expected_signal),
+    ] {
+        if value.trim().is_empty() {
+            bail!("condition {} must not be empty in {}", name, path.display());
+        }
+    }
+    if declaration.baseline == declaration.variant {
+        bail!(
+            "condition baseline and variant must differ in {}",
+            path.display()
+        );
+    }
+    let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&declaration)?));
+    Ok(ResolvedEvalCondition {
+        declaration,
+        fingerprint,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2759,6 +2811,7 @@ async fn main() -> Result<()> {
             cache_prewarm,
             cache_ttl_1h,
             static_context_only,
+            condition,
         } => {
             cmd_run(
                 &evals,
@@ -2779,6 +2832,7 @@ async fn main() -> Result<()> {
                 cache_prewarm,
                 cache_ttl_1h,
                 static_context_only,
+                condition.as_deref(),
             )
             .await
         }
@@ -2989,6 +3043,47 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("duplicate prompt id"));
+    }
+
+    #[test]
+    fn eval_condition_is_validated_and_fingerprinted() {
+        let dir = tempfile::tempdir().unwrap();
+        let condition_path = dir.path().join("range-read.toml");
+        fs::write(
+            &condition_path,
+            r#"
+id = "range-read-v1"
+hypothesis = "Bounded reads reduce retrieval cost."
+baseline = "full-read-v1"
+variant = "range-read-v1"
+changed_factor = "read_file_contract"
+expected_signal = "fewer input tokens"
+"#,
+        )
+        .unwrap();
+
+        let first = load_eval_condition(&condition_path).unwrap();
+        let second = load_eval_condition(&condition_path).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.declaration.id, "range-read-v1");
+        assert_eq!(first.fingerprint.len(), 64);
+
+        fs::write(
+            &condition_path,
+            r#"
+id = "invalid"
+hypothesis = "x"
+baseline = "same"
+variant = "same"
+changed_factor = "x"
+expected_signal = "x"
+"#,
+        )
+        .unwrap();
+        assert!(load_eval_condition(&condition_path)
+            .unwrap_err()
+            .to_string()
+            .contains("baseline and variant must differ"));
     }
 
     #[test]
@@ -3576,6 +3671,17 @@ mod tests {
                 cache_prewarm: true,
                 cache_ttl: Some("provider_default".into()),
                 openrouter_routing: "balanced".into(),
+                condition: Some(ResolvedEvalCondition {
+                    declaration: EvalCondition {
+                        id: "range-read-v1".into(),
+                        hypothesis: "Bounded reads reduce retrieval cost.".into(),
+                        baseline: "full-read-v1".into(),
+                        variant: "range-read-v1".into(),
+                        changed_factor: "read_file_contract".into(),
+                        expected_signal: "fewer input tokens".into(),
+                    },
+                    fingerprint: "condition-fingerprint".into(),
+                }),
             },
             SuiteIdentity {
                 fingerprint: "suite-fingerprint".into(),
@@ -3632,6 +3738,12 @@ mod tests {
             json!(["cwd", "file_tree"])
         );
         assert_eq!(meta["comparison"]["static_context_only"], true);
+        assert_eq!(meta["condition"]["id"], "range-read-v1");
+        assert_eq!(meta["condition"]["fingerprint"], "condition-fingerprint");
+        assert_eq!(
+            meta["comparison"]["condition"]["fingerprint"],
+            "condition-fingerprint"
+        );
         assert_eq!(meta["suite"]["fingerprint"], "suite-fingerprint");
         assert_eq!(meta["duration_ms"], 65_000);
         assert_eq!(meta["matrix_runs"][0]["duration_ms"], 60_000);
@@ -3663,6 +3775,7 @@ mod tests {
             cache_prewarm: false,
             cache_ttl: None,
             openrouter_routing: "balanced".into(),
+            condition: None,
         };
         let suite = SuiteIdentity {
             fingerprint: "suite-fingerprint-for-test".into(),
@@ -3979,10 +4092,12 @@ async fn cmd_run(
     cache_prewarm: bool,
     cache_ttl_1h: bool,
     static_context_only: bool,
+    condition_path: Option<&Path>,
 ) -> Result<()> {
     let invocation_started_at = Utc::now().to_rfc3339();
     let invocation_start = Instant::now();
     let manifest = load_manifest(evals)?;
+    let condition = condition_path.map(load_eval_condition).transpose()?;
     let model = model_flag
         .map(|s| s.to_string())
         .or_else(|| manifest.default_model.clone())
@@ -4352,6 +4467,7 @@ async fn cmd_run(
             static_context_selection: &static_context,
             cache_prewarm: cache_prewarm_run.as_ref(),
             openrouter_routing: "balanced",
+            condition: condition.as_ref(),
         },
     );
     write_run_artifacts(
@@ -4424,6 +4540,8 @@ struct RunMeta {
     cache_prewarm: Option<CachePrewarmRun>,
     static_context_selection: StaticContextSelection,
     comparison: ComparisonConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    condition: Option<ResolvedEvalCondition>,
     suite: SuiteIdentity,
     budget_stopped: bool,
     planned_results_version: u8,
@@ -4457,6 +4575,8 @@ struct ComparisonConfig {
     cache_prewarm: bool,
     cache_ttl: Option<String>,
     openrouter_routing: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    condition: Option<ResolvedEvalCondition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4750,6 +4870,7 @@ struct ComparisonSettings<'a> {
     static_context_selection: &'a StaticContextSelection,
     cache_prewarm: Option<&'a CachePrewarmRun>,
     openrouter_routing: &'a str,
+    condition: Option<&'a ResolvedEvalCondition>,
 }
 
 fn comparison_config(
@@ -4780,6 +4901,7 @@ fn comparison_config(
         cache_prewarm: settings.cache_prewarm.is_some(),
         cache_ttl: settings.cache_prewarm.map(|cache| cache.ttl.clone()),
         openrouter_routing: settings.openrouter_routing.to_string(),
+        condition: settings.condition.cloned(),
     }
 }
 
@@ -4924,6 +5046,7 @@ fn write_run_artifacts(
         cache_tokens,
         cache_prewarm: cache_prewarm.cloned(),
         static_context_selection: static_context_selection.clone(),
+        condition: comparison.condition.clone(),
         comparison,
         suite,
         budget_stopped,

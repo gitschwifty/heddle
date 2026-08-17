@@ -162,6 +162,7 @@ fn legacy_comparison(meta: &StoredRunMeta) -> ComparisonConfig {
         cache_prewarm: false,
         cache_ttl: None,
         openrouter_routing: "balanced".into(),
+        condition: None,
     }
 }
 
