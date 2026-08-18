@@ -160,6 +160,15 @@ enum Cmd {
         /// Completed variant run directory.
         #[arg(long)]
         variant: PathBuf,
+        /// Optional comparison name; defaults to the variant condition ID.
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional suffix for another comparison with the same name.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Print the complete machine-readable report instead of the review summary.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2845,7 +2854,13 @@ async fn main() -> Result<()> {
             &aggregate_root,
             output_dir.as_deref(),
         ),
-        Cmd::Compare { baseline, variant } => cmd_compare(&baseline, &variant),
+        Cmd::Compare {
+            baseline,
+            variant,
+            name,
+            tag,
+            json,
+        } => cmd_compare(&baseline, &variant, name.as_deref(), tag.as_deref(), json),
         Cmd::Run {
             evals,
             prompts,
@@ -2918,13 +2933,45 @@ struct ComparisonDelta {
     usd: f64,
 }
 
+#[derive(Debug, Default, Serialize)]
+struct OutcomeCounts {
+    pass: usize,
+    fail: usize,
+    limit: usize,
+    error: usize,
+    total: usize,
+}
+
+impl OutcomeCounts {
+    fn record(&mut self, result: &TaskResult) {
+        self.total += 1;
+        match result_status(result) {
+            ResultStatus::Pass => self.pass += 1,
+            ResultStatus::Fail => self.fail += 1,
+            ResultStatus::Limit => self.limit += 1,
+            ResultStatus::Error => self.error += 1,
+        }
+    }
+
+    fn pass_rate(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.pass as f64 / self.total as f64
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct PairedComparisonReport {
     baseline: String,
     variant: String,
     condition: ResolvedEvalCondition,
     pairs: usize,
+    baseline_outcomes: OutcomeCounts,
+    variant_outcomes: OutcomeCounts,
     outcome_transitions: BTreeMap<String, usize>,
+    task_outcome_transitions: BTreeMap<String, BTreeMap<String, usize>>,
     variant_minus_baseline: ComparisonDelta,
 }
 
@@ -3026,7 +3073,10 @@ fn build_paired_comparison(
         bail!("baseline and variant result pairs differ; rerun with the same task, prompt, and repetition selection");
     }
 
+    let mut baseline_outcomes = OutcomeCounts::default();
+    let mut variant_outcomes = OutcomeCounts::default();
     let mut transitions = BTreeMap::new();
+    let mut task_transitions: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut delta = ComparisonDelta {
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -3038,8 +3088,14 @@ fn build_paired_comparison(
     for key in baseline_keys {
         let base = baseline_by_key[&key];
         let changed = variant_by_key[&key];
-        *transitions
-            .entry(format!("{}->{}", status_label(base), status_label(changed)))
+        baseline_outcomes.record(base);
+        variant_outcomes.record(changed);
+        let transition = format!("{}->{}", status_label(base), status_label(changed));
+        *transitions.entry(transition.clone()).or_default() += 1;
+        *task_transitions
+            .entry(base.task_id.clone())
+            .or_default()
+            .entry(transition)
             .or_default() += 1;
         delta.prompt_tokens +=
             changed.scores.cost.tokens_in as i64 - base.scores.cost.tokens_in as i64;
@@ -3056,17 +3112,134 @@ fn build_paired_comparison(
         variant: variant.dir.display().to_string(),
         condition,
         pairs: baseline_by_key.len(),
+        baseline_outcomes,
+        variant_outcomes,
         outcome_transitions: transitions,
+        task_outcome_transitions: task_transitions,
         variant_minus_baseline: delta,
     })
 }
 
-fn cmd_compare(baseline: &Path, variant: &Path) -> Result<()> {
+fn comparison_output_path(
+    report: &PairedComparisonReport,
+    name: Option<&str>,
+    tag: Option<&str>,
+) -> PathBuf {
+    let mut stem = result_name_component(
+        name.unwrap_or(&report.condition.declaration.id),
+        "comparison",
+    );
+    if let Some(tag) = tag {
+        stem.push_str("__");
+        stem.push_str(&result_name_component(tag, "tag"));
+    }
+    PathBuf::from("evals")
+        .join("comparisons")
+        .join(format!("{stem}.json"))
+}
+
+fn write_comparison_report(output: &Path, serialized: &str) -> Result<()> {
+    if output.exists() {
+        bail!(
+            "comparison report {} already exists; use --tag to retain another comparison",
+            output.display()
+        );
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating comparison output directory {}", parent.display())
+        })?;
+    }
+    fs::write(output, serialized)
+        .with_context(|| format!("writing comparison report {}", output.display()))
+}
+
+fn existing_report_matches(output: &Path, report: &PairedComparisonReport) -> Result<bool> {
+    let existing: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(output)
+            .with_context(|| format!("reading existing comparison report {}", output.display()))?,
+    )
+    .with_context(|| format!("parsing existing comparison report {}", output.display()))?;
+    Ok(existing.get("baseline") == Some(&json!(report.baseline))
+        && existing.get("variant") == Some(&json!(report.variant)))
+}
+
+fn format_comparison_summary(report: &PairedComparisonReport, output: &Path) -> String {
+    let mut lines = vec![
+        format!("Comparison: {}", report.condition.declaration.id),
+        format!("Hypothesis: {}", report.condition.declaration.hypothesis),
+        format!(
+            "Changed factor: {}",
+            report.condition.declaration.changed_factor
+        ),
+        format!("Pairs: {}", report.pairs),
+        format!(
+            "Outcomes: baseline {}/{} pass ({:.0}%) -> variant {}/{} pass ({:.0}%)",
+            report.baseline_outcomes.pass,
+            report.baseline_outcomes.total,
+            report.baseline_outcomes.pass_rate() * 100.0,
+            report.variant_outcomes.pass,
+            report.variant_outcomes.total,
+            report.variant_outcomes.pass_rate() * 100.0,
+        ),
+        "Transitions:".into(),
+    ];
+    for (transition, count) in &report.outcome_transitions {
+        lines.push(format!("  {transition}: {count}"));
+    }
+    lines.push("Per task:".into());
+    for (task, transitions) in &report.task_outcome_transitions {
+        let details = transitions
+            .iter()
+            .map(|(transition, count)| format!("{transition}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("  {task}: {details}"));
+    }
+    let delta = &report.variant_minus_baseline;
+    lines.push("Variant minus baseline:".into());
+    lines.push(format!(
+        "  prompt tokens: {:+}; completion tokens: {:+}; tool calls: {:+}; turns: {:+}",
+        delta.prompt_tokens, delta.completion_tokens, delta.tool_calls, delta.turns
+    ));
+    lines.push(format!(
+        "  duration: {:+}ms; cost: {:+.6} USD",
+        delta.duration_ms, delta.usd
+    ));
+    lines.push(format!("Baseline: {}", report.baseline));
+    lines.push(format!("Variant: {}", report.variant));
+    lines.push(format!("JSON report: {}", output.display()));
+    lines.join("\n")
+}
+
+fn cmd_compare(
+    baseline: &Path,
+    variant: &Path,
+    name: Option<&str>,
+    tag: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
     let report = build_paired_comparison(
         &load_comparison_run(baseline)?,
         &load_comparison_run(variant)?,
     )?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let serialized = serde_json::to_string_pretty(&report)?;
+    let output = comparison_output_path(&report, name, tag);
+    if output.exists() {
+        if !existing_report_matches(&output, &report)? {
+            bail!(
+                "comparison report {} already exists for different inputs; use --tag to retain another comparison",
+                output.display()
+            );
+        }
+    } else {
+        write_comparison_report(&output, &serialized)?;
+    }
+    if json_output {
+        println!("{serialized}");
+    } else {
+        println!("{}", format_comparison_summary(&report, &output));
+    }
     Ok(())
 }
 
@@ -3547,13 +3720,40 @@ expected_signal = "x"
 
         let report = build_paired_comparison(&baseline, &variant).unwrap();
         assert_eq!(report.pairs, 1);
+        assert_eq!(report.baseline_outcomes.pass, 1);
+        assert_eq!(report.variant_outcomes.pass, 1);
         assert_eq!(report.outcome_transitions["pass->pass"], 1);
+        assert_eq!(report.task_outcome_transitions["task-1"]["pass->pass"], 1);
         assert_eq!(report.variant_minus_baseline.prompt_tokens, -20);
         assert_eq!(report.variant_minus_baseline.completion_tokens, -5);
         assert_eq!(report.variant_minus_baseline.tool_calls, 1);
         assert_eq!(report.variant_minus_baseline.turns, 1);
         assert_eq!(report.variant_minus_baseline.duration_ms, 4);
         assert!((report.variant_minus_baseline.usd - 0.01).abs() < f64::EPSILON);
+        let output = comparison_output_path(&report, None, Some("rerun-2"));
+        assert_eq!(
+            output,
+            PathBuf::from("evals/comparisons/range-read-v1__rerun-2.json")
+        );
+        let summary = format_comparison_summary(&report, &output);
+        assert!(summary.contains("baseline 1/1 pass (100%) -> variant 1/1 pass (100%)"));
+        assert!(summary.contains("task-1: pass->pass=1"));
+        assert!(summary.contains("JSON report: evals/comparisons/range-read-v1__rerun-2.json"));
+
+        let report_dir = tempfile::tempdir().unwrap();
+        let report_path = report_dir.path().join("comparison.json");
+        write_comparison_report(&report_path, "{}").unwrap();
+        assert!(write_comparison_report(&report_path, "{}")
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+        let matching_path = report_dir.path().join("matching.json");
+        std::fs::write(
+            &matching_path,
+            json!({ "baseline": report.baseline, "variant": report.variant }).to_string(),
+        )
+        .unwrap();
+        assert!(existing_report_matches(&matching_path, &report).unwrap());
 
         let mut mismatched = ComparisonRun {
             dir: variant.dir.clone(),
