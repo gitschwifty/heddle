@@ -1,6 +1,8 @@
 use futures::StreamExt;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::{AppAttribution, Provider, ProviderConfig, RetryConfig};
+use heddle::provider::types::{
+    AppAttribution, Provider, ProviderConfig, ProviderFailure, RetryConfig,
+};
 use heddle::types::{
     Message, StreamChunk, ToolCallKind, ToolDefinition, ToolFunction, UserMessage,
 };
@@ -600,7 +602,14 @@ async fn stream_error_includes_context_for_malformed_sse_chunk() {
         .expect_err("expected malformed chunk error");
     let message = err.to_string();
     assert!(message.contains("error decoding streaming response chunk"));
-    assert!(message.contains("data={not-json}"));
+    assert!(!message.contains("{not-json}"));
+    let failure = err
+        .downcast_ref::<ProviderFailure>()
+        .expect("malformed stream chunk should retain typed failure details");
+    assert!(failure
+        .debug_detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("preview={not-json}")));
 }
 
 #[tokio::test]
