@@ -152,7 +152,8 @@ enum Cmd {
         #[arg(long)]
         output_dir: Option<PathBuf>,
     },
-    /// Compare a baseline and variant run with identical controls.
+    /// Compare a harness change or single-prompt condition with identical
+    /// non-prompt controls.
     Compare {
         /// Completed baseline run directory.
         #[arg(long)]
@@ -160,7 +161,8 @@ enum Cmd {
         /// Completed variant run directory.
         #[arg(long)]
         variant: PathBuf,
-        /// Optional comparison name; defaults to the variant condition ID.
+        /// Optional comparison name; defaults to the variant condition or
+        /// prompt-pair ID.
         #[arg(long)]
         name: Option<String>,
         /// Optional suffix for another comparison with the same name.
@@ -251,9 +253,14 @@ fn load_eval_condition(path: &Path) -> Result<ResolvedEvalCondition> {
 #[derive(Debug, Clone, Deserialize, Default)]
 struct PromptFrontMatter {
     id: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     description: Option<String>,
+    /// Stable comparison role retained with run and aggregate provenance.
+    #[serde(default)]
+    role: Option<String>,
+    /// Falsifiable behavior claim for this independently selectable prompt.
+    #[serde(default)]
+    hypothesis: Option<String>,
     #[serde(default)]
     context: ContextConfig,
     /// When true, skip this prompt when running `--prompts all`. The prompt
@@ -2911,10 +2918,18 @@ async fn main() -> Result<()> {
 #[derive(Debug, Deserialize)]
 struct StoredComparisonMeta {
     model: String,
+    #[serde(default = "default_runs_per_case")]
+    runs_per_case: u32,
     comparison: ComparisonConfig,
+    #[serde(default)]
+    comparison_identity: Option<ComparisonIdentity>,
     suite: SuiteIdentity,
     #[serde(default)]
     condition: Option<ResolvedEvalCondition>,
+}
+
+fn default_runs_per_case() -> u32 {
+    1
 }
 
 struct ComparisonRun {
@@ -3003,6 +3018,31 @@ fn controls_match(left: &ComparisonConfig, right: &ComparisonConfig) -> bool {
     left == right
 }
 
+fn controls_match_except_prompt(left: &ComparisonConfig, right: &ComparisonConfig) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.condition = None;
+    right.condition = None;
+    left.prompts.clear();
+    right.prompts.clear();
+    left.prompt_conditions.clear();
+    right.prompt_conditions.clear();
+    left == right
+}
+
+fn single_prompt_condition(meta: &StoredComparisonMeta, side: &str) -> Result<PromptCondition> {
+    if meta.comparison.prompts.len() != 1 || meta.comparison.prompt_conditions.len() != 1 {
+        bail!(
+            "{side} prompt comparison requires exactly one selected prompt with retained role metadata; rerun each side with one prompt using the current eval runner"
+        );
+    }
+    let prompt = meta.comparison.prompt_conditions[0].clone();
+    if meta.comparison.prompts[0] != prompt.id {
+        bail!("{side} prompt comparison metadata does not match its selected prompt");
+    }
+    Ok(prompt)
+}
+
 fn status_label(result: &TaskResult) -> &'static str {
     match result_status(result) {
         ResultStatus::Pass => "pass",
@@ -3023,37 +3063,84 @@ fn build_paired_comparison(
             variant.meta.model
         );
     }
-    if baseline.meta.suite.fingerprint != variant.meta.suite.fingerprint {
-        bail!("suite fingerprint mismatch; compare runs with the same fixtures and prompts");
+    if baseline.meta.runs_per_case != variant.meta.runs_per_case {
+        bail!(
+            "runs-per-case mismatch: baseline {}, variant {}",
+            baseline.meta.runs_per_case,
+            variant.meta.runs_per_case
+        );
     }
-    if !controls_match(&baseline.meta.comparison, &variant.meta.comparison) {
-        bail!("comparison controls differ outside the declared condition");
-    }
-    let condition = variant
-        .meta
-        .condition
-        .clone()
-        .or_else(|| variant.meta.comparison.condition.clone())
-        .ok_or_else(|| anyhow!("variant run has no declared eval condition"))?;
-    if let Some(baseline_condition) = baseline.meta.condition.as_ref().or(baseline
-        .meta
-        .comparison
-        .condition
-        .as_ref())
+    let (condition, prompt_condition_mode) = if baseline.meta.suite.fingerprint
+        == variant.meta.suite.fingerprint
     {
-        if baseline_condition.declaration.id != condition.declaration.baseline {
+        if !controls_match(&baseline.meta.comparison, &variant.meta.comparison) {
+            bail!("comparison controls differ outside the declared condition");
+        }
+        let condition = variant
+            .meta
+            .condition
+            .clone()
+            .or_else(|| variant.meta.comparison.condition.clone())
+            .ok_or_else(|| anyhow!("variant run has no declared eval condition"))?;
+        if let Some(baseline_condition) = baseline.meta.condition.as_ref().or(baseline
+            .meta
+            .comparison
+            .condition
+            .as_ref())
+        {
+            if baseline_condition.declaration.id != condition.declaration.baseline {
+                bail!(
+                    "baseline condition {:?} does not match variant declaration baseline {:?}",
+                    baseline_condition.declaration.id,
+                    condition.declaration.baseline
+                );
+            }
+        }
+        (condition, false)
+    } else {
+        if !controls_match_except_prompt(&baseline.meta.comparison, &variant.meta.comparison) {
+            bail!("prompt-condition comparison controls differ outside the selected prompt");
+        }
+        let baseline_identity = baseline.meta.comparison_identity.as_ref().ok_or_else(|| {
+            anyhow!("baseline lacks a comparison fingerprint; rerun with the current eval runner")
+        })?;
+        let variant_identity = variant.meta.comparison_identity.as_ref().ok_or_else(|| {
+            anyhow!("variant lacks a comparison fingerprint; rerun with the current eval runner")
+        })?;
+        if baseline_identity.fingerprint != variant_identity.fingerprint {
+            bail!("prompt-condition comparison fingerprint mismatch; task inputs or non-prompt controls changed");
+        }
+        let baseline_prompt = single_prompt_condition(&baseline.meta, "baseline")?;
+        let variant_prompt = single_prompt_condition(&variant.meta, "variant")?;
+        let condition = variant
+            .meta
+            .condition
+            .clone()
+            .or_else(|| variant.meta.comparison.condition.clone())
+            .ok_or_else(|| anyhow!("variant prompt comparison requires --condition <toml>"))?;
+        if baseline.meta.condition.is_some() || baseline.meta.comparison.condition.is_some() {
+            bail!("prompt-condition comparison baseline must not declare a harness condition");
+        }
+        if condition.declaration.baseline != baseline_prompt.id
+            || condition.declaration.variant != variant_prompt.id
+        {
             bail!(
-                "baseline condition {:?} does not match variant declaration baseline {:?}",
-                baseline_condition.declaration.id,
-                condition.declaration.baseline
+                "prompt comparison condition expects {} -> {}, but runs select {} -> {}",
+                condition.declaration.baseline,
+                condition.declaration.variant,
+                baseline_prompt.id,
+                variant_prompt.id
             );
         }
-    }
+        (condition, true)
+    };
 
     let key = |result: &TaskResult| {
         (
             result.task_id.clone(),
-            result.prompt_id.clone(),
+            prompt_condition_mode
+                .then_some("<prompt-condition>".to_string())
+                .unwrap_or_else(|| result.prompt_id.clone()),
             result.run_index,
         )
     };
@@ -3070,7 +3157,7 @@ fn build_paired_comparison(
     let baseline_keys: BTreeSet<_> = baseline_by_key.keys().cloned().collect();
     let variant_keys: BTreeSet<_> = variant_by_key.keys().cloned().collect();
     if baseline_keys != variant_keys {
-        bail!("baseline and variant result pairs differ; rerun with the same task, prompt, and repetition selection");
+        bail!("baseline and variant result pairs differ; rerun with the same task and repetition selection");
     }
 
     let mut baseline_outcomes = OutcomeCounts::default();
@@ -3256,9 +3343,15 @@ fn cmd_list(evals: &Path) -> Result<()> {
         let date = p.front.context.date;
         let git = p.front.context.git.is_some();
         let tree = p.front.context.file_tree.is_some();
+        let matrix = if p.front.matrix_exclude {
+            "excluded"
+        } else {
+            "active"
+        };
+        let role = p.front.role.as_deref().unwrap_or("unclassified");
         println!(
-            "  {:<28} body={:>5}c  cwd={} date={} git={} tree={}",
-            p.id, chars, cwd, date, git, tree
+            "  {:<28} matrix={:<8} role={:<28} body={:>5}c  cwd={} date={} git={} tree={}",
+            p.id, matrix, role, chars, cwd, date, git, tree
         );
     }
     println!();
@@ -3425,7 +3518,7 @@ mod tests {
         fs::write(prompts.join("baseline.md"), "---\nid: baseline\n---\nBase").unwrap();
         fs::write(
             prompts.join("conditions/verification.md"),
-            "---\nid: verification\n---\nVerify",
+            "---\nid: verification\nrole: post-edit-verification\nhypothesis: Focused checks improve correctness.\n---\nVerify",
         )
         .unwrap();
 
@@ -3436,6 +3529,14 @@ mod tests {
                 .map(|prompt| prompt.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["baseline", "verification"]
+        );
+        assert_eq!(
+            loaded[1].front.role.as_deref(),
+            Some("post-edit-verification")
+        );
+        assert_eq!(
+            loaded[1].front.hypothesis.as_deref(),
+            Some("Focused checks improve correctness.")
         );
 
         fs::write(
@@ -3668,6 +3769,7 @@ expected_signal = "x"
     fn test_comparison(condition: Option<ResolvedEvalCondition>) -> ComparisonConfig {
         ComparisonConfig {
             prompts: vec!["prompt-1".into()],
+            prompt_conditions: Vec::new(),
             tasks: vec!["task-1".into()],
             max_tokens_per_task: 1_000,
             max_tokens_per_response: 500,
@@ -3682,13 +3784,47 @@ expected_signal = "x"
         }
     }
 
+    fn test_prompt_comparison(id: &str, role: &str, hypothesis: &str) -> ComparisonConfig {
+        let mut comparison = test_comparison(None);
+        comparison.prompts = vec![id.into()];
+        comparison.prompt_conditions = vec![PromptCondition {
+            id: id.into(),
+            role: role.into(),
+            hypothesis: hypothesis.into(),
+        }];
+        comparison
+    }
+
+    fn test_prompt_condition() -> ResolvedEvalCondition {
+        ResolvedEvalCondition {
+            declaration: EvalCondition {
+                id: "verify-after-edit-vs-default-v1".into(),
+                hypothesis: "Focused checks improve correctness.".into(),
+                baseline: "default".into(),
+                variant: "verify-after-edit".into(),
+                changed_factor: "system_prompt_condition".into(),
+                expected_signal: "Fewer multi-file failures.".into(),
+            },
+            fingerprint: "prompt-condition-fingerprint".into(),
+        }
+    }
+
+    fn test_comparison_identity(fingerprint: &str) -> ComparisonIdentity {
+        ComparisonIdentity {
+            fingerprint: fingerprint.into(),
+            source: "test".into(),
+        }
+    }
+
     #[test]
     fn paired_comparison_requires_matching_controls_and_reports_deltas() {
         let baseline = ComparisonRun {
             dir: PathBuf::from("baseline"),
             meta: StoredComparisonMeta {
                 model: "model/a".into(),
+                runs_per_case: 1,
                 comparison: test_comparison(None),
+                comparison_identity: None,
                 suite: SuiteIdentity {
                     fingerprint: "suite".into(),
                     source: "test".into(),
@@ -3708,7 +3844,9 @@ expected_signal = "x"
             dir: PathBuf::from("variant"),
             meta: StoredComparisonMeta {
                 model: "model/a".into(),
+                runs_per_case: 1,
                 comparison: test_comparison(Some(test_condition())),
+                comparison_identity: None,
                 suite: SuiteIdentity {
                     fingerprint: "suite".into(),
                     source: "test".into(),
@@ -3759,7 +3897,9 @@ expected_signal = "x"
             dir: variant.dir.clone(),
             meta: StoredComparisonMeta {
                 model: variant.meta.model.clone(),
+                runs_per_case: variant.meta.runs_per_case,
                 comparison: variant.meta.comparison.clone(),
+                comparison_identity: variant.meta.comparison_identity.clone(),
                 suite: variant.meta.suite.clone(),
                 condition: variant.meta.condition.clone(),
             },
@@ -3770,6 +3910,111 @@ expected_signal = "x"
             .unwrap_err()
             .to_string()
             .contains("controls differ"));
+    }
+
+    #[test]
+    fn paired_comparison_allows_one_prompt_condition_with_matching_task_inputs() {
+        let mut baseline_result = result(0, 0, None);
+        baseline_result.prompt_id = "default".into();
+        let mut variant_result = result(0, 0, None);
+        variant_result.prompt_id = "verify-after-edit".into();
+        variant_result.scores.efficiency.tool_calls = 2;
+
+        let baseline = ComparisonRun {
+            dir: PathBuf::from("baseline"),
+            meta: StoredComparisonMeta {
+                model: "model/a".into(),
+                runs_per_case: 3,
+                comparison: test_prompt_comparison(
+                    "default",
+                    "production-baseline",
+                    "Production reference.",
+                ),
+                comparison_identity: Some(test_comparison_identity("same-controls")),
+                suite: SuiteIdentity {
+                    fingerprint: "default-suite".into(),
+                    source: "test".into(),
+                },
+                condition: None,
+            },
+            results: vec![baseline_result],
+        };
+        let variant = ComparisonRun {
+            dir: PathBuf::from("variant"),
+            meta: StoredComparisonMeta {
+                model: "model/a".into(),
+                runs_per_case: 3,
+                comparison: test_prompt_comparison(
+                    "verify-after-edit",
+                    "post-edit-verification",
+                    "Focused checks improve correctness.",
+                ),
+                comparison_identity: Some(test_comparison_identity("same-controls")),
+                suite: SuiteIdentity {
+                    fingerprint: "verification-suite".into(),
+                    source: "test".into(),
+                },
+                condition: Some(test_prompt_condition()),
+            },
+            results: vec![variant_result],
+        };
+
+        let report = build_paired_comparison(&baseline, &variant).unwrap();
+        assert_eq!(
+            report.condition.declaration.id,
+            "verify-after-edit-vs-default-v1"
+        );
+        assert_eq!(
+            report.condition.declaration.changed_factor,
+            "system_prompt_condition"
+        );
+        assert_eq!(report.pairs, 1);
+        assert_eq!(report.variant_minus_baseline.tool_calls, 1);
+    }
+
+    #[test]
+    fn prompt_comparison_rejects_changed_controls() {
+        let baseline = ComparisonRun {
+            dir: PathBuf::from("baseline"),
+            meta: StoredComparisonMeta {
+                model: "model/a".into(),
+                runs_per_case: 3,
+                comparison: test_prompt_comparison("default", "production-baseline", "Reference."),
+                comparison_identity: Some(test_comparison_identity("same-controls")),
+                suite: SuiteIdentity {
+                    fingerprint: "default-suite".into(),
+                    source: "test".into(),
+                },
+                condition: None,
+            },
+            results: vec![result(0, 0, None)],
+        };
+        let mut variant_comparison = test_prompt_comparison(
+            "verify-after-edit",
+            "post-edit-verification",
+            "Focused checks improve correctness.",
+        );
+        variant_comparison.max_turns = 5;
+        let variant = ComparisonRun {
+            dir: PathBuf::from("variant"),
+            meta: StoredComparisonMeta {
+                model: "model/a".into(),
+                runs_per_case: 3,
+                comparison: variant_comparison,
+                comparison_identity: Some(test_comparison_identity("different-controls")),
+                suite: SuiteIdentity {
+                    fingerprint: "verification-suite".into(),
+                    source: "test".into(),
+                },
+                condition: None,
+            },
+            results: vec![result(0, 0, None)],
+        };
+
+        assert!(build_paired_comparison(&baseline, &variant)
+            .unwrap_err()
+            .to_string()
+            .contains("controls differ outside the selected prompt"));
     }
 
     #[test]
@@ -4217,6 +4462,11 @@ expected_signal = "x"
             },
             ComparisonConfig {
                 prompts: vec!["prompt-1".into()],
+                prompt_conditions: vec![PromptCondition {
+                    id: "prompt-1".into(),
+                    role: "verification".into(),
+                    hypothesis: "Checks changed behavior.".into(),
+                }],
                 tasks: vec!["task-1".into()],
                 max_tokens_per_task: 1_000,
                 max_tokens_per_response: 500,
@@ -4239,6 +4489,7 @@ expected_signal = "x"
                     fingerprint: "condition-fingerprint".into(),
                 }),
             },
+            test_comparison_identity("comparison-controls-test"),
             SuiteIdentity {
                 fingerprint: "suite-fingerprint".into(),
                 source: "test".into(),
@@ -4295,6 +4546,11 @@ expected_signal = "x"
         );
         assert_eq!(meta["comparison"]["static_context_only"], true);
         assert_eq!(meta["condition"]["id"], "range-read-v1");
+        assert_eq!(meta["prompt_conditions"][0]["role"], "verification");
+        assert_eq!(
+            meta["comparison_identity"]["fingerprint"],
+            "comparison-controls-test"
+        );
         assert_eq!(meta["condition"]["fingerprint"], "condition-fingerprint");
         assert_eq!(
             meta["comparison"]["condition"]["fingerprint"],
@@ -4321,6 +4577,7 @@ expected_signal = "x"
         let results_root = dir.path().join("results");
         let comparison = ComparisonConfig {
             prompts: vec!["prompt-1".into()],
+            prompt_conditions: Vec::new(),
             tasks: vec!["task-1".into()],
             max_tokens_per_task: 1_000,
             max_tokens_per_response: 500,
@@ -4368,6 +4625,7 @@ expected_signal = "x"
                     excluded_prompts: Vec::new(),
                 },
                 comparison.clone(),
+                test_comparison_identity("comparison-controls-test"),
                 suite.clone(),
                 budget_stopped,
                 if budget_stopped { 2 } else { 1 },
@@ -5026,6 +5284,7 @@ async fn cmd_run(
             condition: condition.as_ref(),
         },
     );
+    let comparison_identity = comparison_identity(&model, &chosen_tasks, &comparison, runs)?;
     write_run_artifacts(
         &results_dir,
         evals,
@@ -5049,6 +5308,7 @@ async fn cmd_run(
         cache_prewarm_run.as_ref(),
         &static_context,
         comparison,
+        comparison_identity,
         suite,
         budget_stopped,
         // Smoke checks are one-time preflight cases; only matrix cases repeat.
@@ -5080,6 +5340,8 @@ struct RunMeta {
     openrouter_routing: String,
     runs_per_case: u32,
     prompts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_conditions: Vec<PromptCondition>,
     tasks: Vec<String>,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
@@ -5096,6 +5358,7 @@ struct RunMeta {
     cache_prewarm: Option<CachePrewarmRun>,
     static_context_selection: StaticContextSelection,
     comparison: ComparisonConfig,
+    comparison_identity: ComparisonIdentity,
     #[serde(skip_serializing_if = "Option::is_none")]
     condition: Option<ResolvedEvalCondition>,
     suite: SuiteIdentity,
@@ -5121,6 +5384,8 @@ struct RunTiming {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ComparisonConfig {
     prompts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_conditions: Vec<PromptCondition>,
     tasks: Vec<String>,
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
@@ -5136,7 +5401,20 @@ struct ComparisonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PromptCondition {
+    id: String,
+    role: String,
+    hypothesis: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct SuiteIdentity {
+    fingerprint: String,
+    source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ComparisonIdentity {
     fingerprint: String,
     source: String,
 }
@@ -5418,6 +5696,65 @@ fn suite_identity(prompts: &[&Prompt], tasks: &[&Task]) -> Result<SuiteIdentity>
     })
 }
 
+fn task_input_fingerprint(tasks: &[&Task]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let mut sorted_tasks: Vec<&Task> = tasks.to_vec();
+    sorted_tasks.sort_by(|a, b| a.spec.id.cmp(&b.spec.id));
+    for task in sorted_tasks {
+        let config = SuiteTask {
+            id: &task.spec.id,
+            prompt: &task.spec.prompt,
+            tools: &task.spec.tools,
+            max_turns: task.spec.max_turns,
+            task_timeout_secs: task.spec.task_timeout_secs,
+            budget_tokens: task.spec.budget_tokens,
+            smoke: task.spec.smoke,
+            score: &task.spec.score,
+        };
+        hash_value(&mut hasher, &format!("task/{}", task.spec.id), &config)?;
+        hash_fixture_tree(
+            &mut hasher,
+            &format!("task/{}/before", task.spec.id),
+            &task.dir.join("before"),
+        )?;
+        hash_fixture_tree(
+            &mut hasher,
+            &format!("task/{}/expected", task.spec.id),
+            &task.dir.join(&task.spec.score.outcome.expected_dir),
+        )?;
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn comparison_identity(
+    model: &str,
+    tasks: &[&Task],
+    comparison: &ComparisonConfig,
+    runs_per_case: u32,
+) -> Result<ComparisonIdentity> {
+    let mut controls = comparison.clone();
+    controls.condition = None;
+    controls.prompts.clear();
+    controls.prompt_conditions.clear();
+    #[derive(Serialize)]
+    struct Inputs<'a> {
+        model: &'a str,
+        runs_per_case: u32,
+        controls: &'a ComparisonConfig,
+        task_input_fingerprint: String,
+    }
+    let inputs = Inputs {
+        model,
+        runs_per_case,
+        controls: &controls,
+        task_input_fingerprint: task_input_fingerprint(tasks)?,
+    };
+    Ok(ComparisonIdentity {
+        fingerprint: hex::encode(Sha256::digest(serde_json::to_vec(&inputs)?)),
+        source: "eval_comparison_controls_v1".into(),
+    })
+}
+
 struct ComparisonSettings<'a> {
     max_tokens_per_task: u64,
     max_tokens_per_response: u32,
@@ -5435,6 +5772,23 @@ fn comparison_config(
     settings: ComparisonSettings<'_>,
 ) -> ComparisonConfig {
     let mut prompt_ids: Vec<String> = prompts.iter().map(|prompt| prompt.id.clone()).collect();
+    let mut prompt_conditions: Vec<PromptCondition> = prompts
+        .iter()
+        .map(|prompt| PromptCondition {
+            id: prompt.id.clone(),
+            role: prompt
+                .front
+                .role
+                .clone()
+                .unwrap_or_else(|| "unclassified".into()),
+            hypothesis: prompt
+                .front
+                .hypothesis
+                .clone()
+                .or_else(|| prompt.front.description.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
     let mut task_ids: Vec<String> = tasks.iter().map(|task| task.spec.id.clone()).collect();
     let mut excluded_dynamic_prompts: Vec<String> = settings
         .static_context_selection
@@ -5443,10 +5797,12 @@ fn comparison_config(
         .map(|excluded| excluded.prompt_id.clone())
         .collect();
     prompt_ids.sort();
+    prompt_conditions.sort_by(|a, b| a.id.cmp(&b.id));
     task_ids.sort();
     excluded_dynamic_prompts.sort();
     ComparisonConfig {
         prompts: prompt_ids,
+        prompt_conditions,
         tasks: task_ids,
         max_tokens_per_task: settings.max_tokens_per_task,
         max_tokens_per_response: settings.max_tokens_per_response,
@@ -5525,6 +5881,7 @@ fn write_run_artifacts(
     cache_prewarm: Option<&CachePrewarmRun>,
     static_context_selection: &StaticContextSelection,
     comparison: ComparisonConfig,
+    comparison_identity: ComparisonIdentity,
     suite: SuiteIdentity,
     budget_stopped: bool,
     planned_results: usize,
@@ -5581,6 +5938,7 @@ fn write_run_artifacts(
         openrouter_routing: "balanced".into(),
         runs_per_case,
         prompts: prompts.to_vec(),
+        prompt_conditions: comparison.prompt_conditions.clone(),
         tasks: tasks.to_vec(),
         max_tokens_per_task,
         max_tokens_per_response,
@@ -5603,6 +5961,7 @@ fn write_run_artifacts(
         cache_prewarm: cache_prewarm.cloned(),
         static_context_selection: static_context_selection.clone(),
         condition: comparison.condition.clone(),
+        comparison_identity,
         comparison,
         suite,
         budget_stopped,

@@ -152,6 +152,7 @@ fn legacy_comparison(meta: &StoredRunMeta) -> ComparisonConfig {
     tasks.sort();
     ComparisonConfig {
         prompts,
+        prompt_conditions: Vec::new(),
         tasks,
         max_tokens_per_task: meta.max_tokens_per_task,
         max_tokens_per_response: meta.max_tokens_per_response,
