@@ -182,6 +182,15 @@ The agent has access to 9 built-in tools:
 
 Tools can be filtered via the `tools` config field or `HEDDLE_TOOLS` env var.
 
+### Large-file reads
+
+`read_file` accepts optional 1-based, inclusive `start_line` and `end_line`
+arguments. A range returns its exact requested and returned spans, the file's
+total line and byte counts, and—when capped—a `next_start_line` continuation
+hint. An unbounded read of a file over 200 lines receives the same bounded
+result. Use `full_file: true` only when the entire file is genuinely needed;
+it cannot be combined with a line range.
+
 ### Search backend
 
 The `grep` tool prefers [ripgrep (`rg`)](https://github.com/BurntSushi/ripgrep)
