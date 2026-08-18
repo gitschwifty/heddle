@@ -83,7 +83,7 @@ enum Cmd {
         /// budget only fires *after* a response arrives.
         #[arg(long, default_value_t = 1500)]
         max_tokens_per_response: u32,
-        /// Hard cap on turns per task (default 8).
+        /// Fallback cap for tasks that do not declare max_turns (default 8).
         #[arg(long, default_value_t = 8)]
         max_turns: u32,
         /// Wall-clock timeout per task, in seconds (default 150).
@@ -1414,11 +1414,7 @@ async fn run_one(
         options.max_tokens_per_response,
         options.cache.as_ref(),
     );
-    let effective_max_turns = task
-        .spec
-        .max_turns
-        .unwrap_or(options.max_turns)
-        .min(options.max_turns);
+    let effective_max_turns = task_max_turns(task.spec.max_turns, options.max_turns);
     // task.toml budget wins when set; else CLI default.
     let effective_max_tokens = task
         .spec
@@ -1775,6 +1771,10 @@ async fn run_one(
             error,
         },
     }
+}
+
+fn task_max_turns(task_limit: Option<u32>, fallback: u32) -> u32 {
+    task_limit.unwrap_or(fallback)
 }
 
 fn error_result(
@@ -4835,6 +4835,12 @@ expected_signal = "x"
         let selected = select_task_tags(vec![&rename, &bugfix], "rename,bugfix").unwrap();
         assert_eq!(selected.len(), 2);
         assert!(select_task_tags(vec![&rename], "missing").is_err());
+    }
+
+    #[test]
+    fn task_turn_limit_overrides_the_cli_fallback() {
+        assert_eq!(task_max_turns(Some(12), 8), 12);
+        assert_eq!(task_max_turns(None, 8), 8);
     }
 
     #[test]
