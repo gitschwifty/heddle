@@ -18,7 +18,17 @@ fn init_returns_init_ok_with_session_id_and_protocol_version() {
     assert_eq!(msg["type"], "init_ok");
     assert_eq!(msg["id"], "1");
     assert!(msg["session_id"].is_string());
-    assert_eq!(msg["protocol_version"], "0.4.0");
+    assert_eq!(msg["protocol_version"], "0.5.0");
+    assert_eq!(
+        msg["capabilities"]["enabled_tools"],
+        serde_json::json!(["glob", "grep", "read_file"])
+    );
+    assert_eq!(msg["capabilities"]["explicit_tool_allowlist"], true);
+    assert_eq!(msg["capabilities"]["turn_state_events"], true);
+    assert!(msg["profile"]["fingerprint"]
+        .as_str()
+        .is_some_and(|fingerprint| fingerprint.starts_with("sha256:")));
+    assert_eq!(msg["profile"]["model"], "openrouter/auto");
 }
 
 #[test]
@@ -92,7 +102,7 @@ fn protocol_version_included_in_init_ok() {
     h.send_line(&init_msg());
     let lines = h.wait_for_lines(1, T);
     let msg = parse_line(&lines[0]);
-    assert_eq!(msg["protocol_version"], "0.4.0");
+    assert_eq!(msg["protocol_version"], "0.5.0");
 }
 
 #[test]
@@ -269,9 +279,12 @@ fn routing_metadata_is_reported_through_init_and_status() {
     let init = parse_line(&lines[0]);
     assert_eq!(init["routing"]["gateway"], "openrouter");
     assert_eq!(init["routing"]["upstream_provider"], "anthropic");
+    assert_eq!(init["requested_routing"]["gateway"], "openrouter");
+    assert!(init.get("effective_routing").is_none());
 
     h.send_line(&serde_json::json!({"type":"status","id":"s1"}).to_string());
     let lines = h.wait_for_lines(2, T);
     let status = parse_line(&lines[1]);
     assert_eq!(status["routing"]["grouping_id"], "bench-42");
+    assert_eq!(status["requested_routing"]["grouping_id"], "bench-42");
 }

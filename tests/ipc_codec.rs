@@ -163,6 +163,8 @@ fn status_ok_can_include_last_routed_model() {
         active: false,
         runtime: None,
         routing: None,
+        requested_routing: None,
+        effective_routing: None,
     };
     let v: Value = serde_json::to_value(&res).unwrap();
 
@@ -179,6 +181,7 @@ fn build_result_ok() {
             status: "ok".into(),
             response: Some("Hello!".into()),
             tool_calls_made: vec![ToolCallSummary {
+                id: None,
                 name: "glob".into(),
                 args: json!({"pattern":"*"}),
             }],
@@ -308,6 +311,13 @@ fn build_result_includes_structured_failure_details() {
                 iterations: 3,
                 tool_calls_made: 3,
                 last_tool_name: Some("read_file".into()),
+                last_tool: None,
+                loop_count: Some(3),
+                loop_threshold: Some(3),
+                provider: None,
+                permission: None,
+                malformed_tool_call: None,
+                cancellation_source: None,
             }),
             ..Default::default()
         },

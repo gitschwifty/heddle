@@ -197,6 +197,11 @@ fn worker_event_heartbeat() {
 }
 
 #[test]
+fn worker_event_turn_state() {
+    check_event_ok(json!({ "event": "turn_state", "state": "running" }));
+}
+
+#[test]
 fn worker_event_context_prune_rejects_partial() {
     check_event_err(json!({
         "event": "context_prune",
@@ -218,6 +223,28 @@ fn ipc_response_init_ok() {
         "id": "1",
         "session_id": "sess-1",
         "protocol_version": "0.4.0",
+    }));
+}
+
+#[test]
+fn ipc_response_init_ok_with_capabilities() {
+    check_response_ok(json!({
+        "type": "init_ok",
+        "id": "1",
+        "session_id": "sess-1",
+        "protocol_version": "0.5.0",
+        "capabilities": {
+            "enabled_tools": ["read_file"],
+            "explicit_tool_allowlist": true,
+            "runtime_modes": ["default", "isolated"],
+            "transcript_placement": true,
+            "failure_details_version": "v2",
+            "routing_request_metadata": true,
+            "effective_routing_metadata": true,
+            "cache_usage_metrics": true,
+            "cancellation": true,
+            "turn_state_events": true
+        }
     }));
 }
 
@@ -252,6 +279,30 @@ fn ipc_response_result_with_error_envelope() {
         "tool_calls_made": [],
         "iterations": 0,
         "error": { "code": "provider_error", "message": "Model error", "retryable": true },
+    }));
+}
+
+#[test]
+fn ipc_response_result_with_enriched_loop_failure() {
+    check_response_ok(json!({
+        "type": "result",
+        "id": "2",
+        "status": "error",
+        "tool_calls_made": [],
+        "iterations": 3,
+        "failure": {
+            "code": "loop_detected",
+            "termination_reason": "Doom loop detected: 3 iterations",
+            "iterations": 3,
+            "tool_calls_made": 3,
+            "loop_count": 3,
+            "loop_threshold": 3,
+            "malformed_tool_call": {
+                "id": "call-1",
+                "name": "read_file",
+                "args": null
+            }
+        }
     }));
 }
 

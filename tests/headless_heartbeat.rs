@@ -241,4 +241,5 @@ async fn cancel_interrupts_bash_tool_and_resolves_quickly() {
     let result = msgs.iter().find(|m| m["type"] == "result").unwrap();
     assert_eq!(result["status"], "error");
     assert_eq!(result["error"]["code"], "cancelled");
+    assert_eq!(result["failure"]["cancellation_source"], "user");
 }

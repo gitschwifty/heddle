@@ -17,7 +17,7 @@ Communication is newline-delimited JSON (JSONL) on stdin/stdout. Each line is a 
 - Every request has an `id` field for correlation
 - Streaming events during a `send` are emitted as `event` responses
 
-**Protocol version:** `0.4.0` (stored in `PROTOCOL_VERSION` file).
+**Protocol version:** `0.5.0` (stored in `PROTOCOL_VERSION` file).
 
 ## Lifecycle
 
@@ -55,7 +55,7 @@ Initialize a session. Must be sent before any other request.
 {
   "type": "init",
   "id": "1",
-  "protocol_version": "0.4.0",
+  "protocol_version": "0.5.0",
   "config": {
     "model": "anthropic/claude-sonnet-4",
     "system_prompt": "You are a coding assistant.",
@@ -199,7 +199,19 @@ Returned after successful initialization.
   "type": "init_ok",
   "id": "1",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "protocol_version": "0.4.0",
+  "protocol_version": "0.5.0",
+  "capabilities": {
+    "enabled_tools": ["read_file", "glob", "grep"],
+    "explicit_tool_allowlist": true,
+    "runtime_modes": ["default", "isolated"],
+    "transcript_placement": true,
+    "failure_details_version": "v2",
+    "routing_request_metadata": true,
+    "effective_routing_metadata": true,
+    "cache_usage_metrics": true,
+    "cancellation": true,
+    "turn_state_events": true
+  },
   "runtime": {
     "mode": "isolated",
     "state_root": "/tmp/orboros/run-42/state",
@@ -213,6 +225,22 @@ Returned after successful initialization.
 }
 ```
 
+`capabilities` is an additive feature inventory for this initialized session.
+`enabled_tools` is the final, sorted allowlist after session setup; it is not a
+catalogue of every tool compiled into heddle. Clients must treat every other
+capability flag as optional for forward compatibility.
+
+`profile` is a non-secret reproducibility identity. Its SHA-256 fingerprint
+uses only the model, enabled tools, requested runtime mode, max iterations,
+and whether permission or hook configuration is present. It never contains
+prompt text, credentials, permission patterns, hook commands, or paths.
+
+`routing` is the legacy combined view. New clients should use
+`requested_routing` for the caller-supplied routing request and
+`effective_routing` for values actually observed from a provider response. The
+latter is omitted until heddle has an observed value, and never echoes request
+metadata such as `request_id` or `grouping_id`.
+
 If protocol versions are incompatible:
 
 ```json
@@ -220,10 +248,10 @@ If protocol versions are incompatible:
   "type": "init_ok",
   "id": "1",
   "session_id": "",
-  "protocol_version": "0.4.0",
+  "protocol_version": "0.5.0",
   "error": {
     "code": "protocol_version_mismatch",
-    "message": "Client requested 0.1.0, server is 0.4.0",
+    "message": "Client requested 0.1.0, server is 0.5.0",
     "retryable": false
   }
 }
@@ -249,6 +277,17 @@ A text token from the LLM response.
 
 ```json
 { "event": "content_delta", "text": "Here's what" }
+```
+
+#### turn_state
+
+Additive lifecycle observation for a send. A normal send emits `queued`, then
+`running`, and always ends with `completed` before its final `result`.
+Cancellation additionally emits `cancelling` when observed. Event ordering is
+defined by `event_seq`; `result` remains the canonical terminal record.
+
+```json
+{ "event": "turn_state", "state": "running" }
 ```
 
 #### tool_start
@@ -417,6 +456,14 @@ Returned when a send completes (success, error, or cancellation).
   "routing": {
     "gateway": "openrouter",
     "upstream_provider": "anthropic"
+  },
+  "requested_routing": {
+    "gateway": "openrouter",
+    "upstream_provider": "anthropic"
+  },
+  "effective_routing": {
+    "routed_model": "anthropic/claude-sonnet-4",
+    "upstream_provider": "anthropic"
   }
 }
 ```
@@ -437,11 +484,21 @@ Returned when a send completes (success, error, or cancellation).
 | `task_id` | string? | Echoed from init |
 | `worker_id` | string? | Echoed from init |
 | `runtime` | object? | Effective mode and actual state/transcript paths |
-| `routing` | object? | Caller routing metadata plus routed model when observed |
+| `routing` | object? | Legacy combined routing metadata |
+| `requested_routing` | object? | Exact routing request supplied at init |
+| `effective_routing` | object? | Provider/runtime facts observed during the turn |
 | `failure` | object? | Structured termination details when `status` is `"error"` |
 
 `failure` includes a stable code, termination reason, final iteration count,
-tool-call count, and last tool name when applicable. Codes include
+tool-call count, and final tool ID/name/parsed arguments when applicable. For
+loop detection it also carries the observed count and configured threshold.
+Provider failures may include provider name, HTTP status/category,
+`retry_after_ms`, provider error type, and provider code. Permission denials
+carry the denied tool and call ID; malformed tool-call evidence carries the
+call ID/name with `args: null`; user-requested cancellation carries
+`cancellation_source: "user"`. A field is omitted when its source data is not
+available—particularly retry count, which the current provider interface does
+not expose. Codes include
 `loop_detected`, `max_iterations`, `provider_error`, `tool_error`, and
 `cancelled`; clients should use the code rather than parsing the message.
 
@@ -486,8 +543,10 @@ tool-call count, and last tool name when applicable. Codes include
 configured alias and the concrete model from the last response.
 
 When runtime placement or routing metadata was supplied at init, `status_ok`
-also reports its effective `runtime` and `routing` metadata. `routing.routed_model`
-is populated after a provider reports one.
+also reports runtime metadata, the legacy `routing` view, and
+`requested_routing`. `effective_routing` is populated only after a provider
+reports a routed model or upstream provider; it is never inferred from the
+request.
 
 ### shutdown_ok
 

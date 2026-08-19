@@ -87,8 +87,25 @@ fn cost_usd_to_micros(cost: f64) -> u64 {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeToolCall {
+    pub id: Option<String>,
     pub name: String,
     pub args: Value,
+    pub arguments_valid: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimePermissionDenied {
+    pub name: String,
+    pub call_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeFailureEvidence {
+    pub loop_count: Option<u32>,
+    pub loop_threshold: Option<u32>,
+    pub permission_denied: Option<RuntimePermissionDenied>,
+    pub malformed_tool_call: Option<RuntimeToolCall>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +135,7 @@ pub struct TurnOutcome {
     pub model_latency_ms: u64,
     pub tool_latency_ms: u64,
     pub total_latency_ms: u64,
+    pub failure_evidence: RuntimeFailureEvidence,
 }
 
 #[derive(Clone)]
@@ -310,6 +328,7 @@ impl HeddleRuntime {
         let mut tool_start: Option<Instant> = None;
         let mut pending_routed_model: Option<String> = None;
         let mut routed_models_by_assistant: Vec<Option<String>> = Vec::new();
+        let mut failure_evidence = RuntimeFailureEvidence::default();
 
         let loop_opts = AgentLoopOptions {
             permission_checker: self.session.permission_checker.clone(),
@@ -335,7 +354,13 @@ impl HeddleRuntime {
                 });
                 drop(stream);
                 self.session.messages = messages;
-                return self.cancelled_outcome(start, tool_calls_made, iterations, tool_latency_ms);
+                return self.cancelled_outcome(
+                    start,
+                    tool_calls_made,
+                    iterations,
+                    tool_latency_ms,
+                    failure_evidence,
+                );
             }
 
             if let Some(runtime_event) = map_agent_event(&event) {
@@ -345,10 +370,29 @@ impl HeddleRuntime {
             match event {
                 AgentEvent::ContentDelta { .. } => saw_content_delta = true,
                 AgentEvent::ToolStart { name, call } => {
-                    let args =
-                        serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
-                    tool_calls_made.push(RuntimeToolCall { name, args });
+                    let (args, arguments_valid) =
+                        match serde_json::from_str(&call.function.arguments) {
+                            Ok(args) => (args, true),
+                            Err(_) => (Value::Null, false),
+                        };
+                    let runtime_call = RuntimeToolCall {
+                        id: Some(call.id.clone()),
+                        name,
+                        args,
+                        arguments_valid,
+                    };
+                    if !runtime_call.arguments_valid {
+                        failure_evidence.malformed_tool_call = Some(runtime_call.clone());
+                    }
+                    tool_calls_made.push(runtime_call);
                     tool_start = Some(Instant::now());
+                }
+                AgentEvent::PermissionDenied { name, call, reason } => {
+                    failure_evidence.permission_denied = Some(RuntimePermissionDenied {
+                        name,
+                        call_id: Some(call.id),
+                        reason,
+                    });
                 }
                 AgentEvent::ToolEnd { .. } => {
                     if let Some(t) = tool_start.take() {
@@ -390,6 +434,8 @@ impl HeddleRuntime {
                     self.last_upstream_provider = Some(provider);
                 }
                 AgentEvent::LoopDetected { count } => {
+                    failure_evidence.loop_count = Some(count);
+                    failure_evidence.loop_threshold = Some(count);
                     error = Some(RuntimeError {
                         code: "loop_detected".into(),
                         message: format!("Doom loop detected: {count} iterations"),
@@ -438,7 +484,13 @@ impl HeddleRuntime {
                 turn_id: options.id.clone(),
                 state: TurnState::Cancelling,
             });
-            return self.cancelled_outcome(start, tool_calls_made, iterations, tool_latency_ms);
+            return self.cancelled_outcome(
+                start,
+                tool_calls_made,
+                iterations,
+                tool_latency_ms,
+                failure_evidence,
+            );
         }
 
         let mut routed_models = routed_models_by_assistant.into_iter();
@@ -487,6 +539,7 @@ impl HeddleRuntime {
             model_latency_ms: total_latency_ms.saturating_sub(tool_latency_ms),
             tool_latency_ms,
             total_latency_ms,
+            failure_evidence,
         }
     }
 
@@ -496,6 +549,7 @@ impl HeddleRuntime {
         tool_calls_made: Vec<RuntimeToolCall>,
         iterations: u32,
         tool_latency_ms: u64,
+        failure_evidence: RuntimeFailureEvidence,
     ) -> TurnOutcome {
         let total_latency_ms = start.elapsed().as_millis() as u64;
         TurnOutcome {
@@ -514,6 +568,7 @@ impl HeddleRuntime {
             model_latency_ms: total_latency_ms.saturating_sub(tool_latency_ms),
             tool_latency_ms,
             total_latency_ms,
+            failure_evidence,
         }
     }
 }
@@ -642,11 +697,20 @@ fn provider_error_details(
 ) -> Value {
     // Keep the headless error-details contract stable. Eval artifacts retain
     // the richer telemetry; headless continues to expose its legacy envelope.
+    let status_category = telemetry.status.map(|status| format!("{}xx", status / 100));
     serde_json::json!({
         "error": {
             "message": telemetry.detail.as_deref().unwrap_or(message),
             "type": "error",
             "code": telemetry.status,
+        },
+        "provider": {
+            "name": telemetry.provider,
+            "status": telemetry.status,
+            "status_category": status_category,
+            "retry_after_ms": telemetry.retry_after_ms,
+            "error_type": telemetry.error_type,
+            "provider_code": telemetry.provider_code,
         },
     })
 }

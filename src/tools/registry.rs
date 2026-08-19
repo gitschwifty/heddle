@@ -37,6 +37,12 @@ impl ToolRegistry {
         self.tools.values().cloned().collect()
     }
 
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// OpenAI-format tool definitions for the API.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.all()

@@ -11,6 +11,7 @@ use std::time::Instant;
 use anyhow::Result;
 use parking_lot::Mutex;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
@@ -28,12 +29,14 @@ use crate::ipc::codec::{
 use crate::ipc::errors::ErrorEnvelope;
 use crate::ipc::protocol::{check_compatibility, PROTOCOL_VERSION};
 use crate::ipc::types::{
-    EffectiveRuntimeMetadata, FailureDetails, InitConfig, IpcRequest, IpcResponse, RoutingMetadata,
-    RuntimeMode, ToolCallSummary, UsageSummary, WorkerEvent,
+    CancellationSource, EffectiveRoutingMetadata, EffectiveRuntimeMetadata, FailureDetails,
+    InitConfig, IpcCapabilities, IpcRequest, IpcResponse, PermissionFailureDetails,
+    ProfileIdentity, ProviderFailureDetails, RoutingMetadata, RuntimeMode, ToolCallSummary,
+    TurnStateEvent, UsageSummary, WorkerEvent,
 };
 use crate::runtime::{
     HeddleRuntime, RuntimeError, RuntimeEvent, RuntimeToolCall, RuntimeUsage, TurnOptions,
-    TurnOutcome, TurnStatus,
+    TurnOutcome, TurnState, TurnStatus,
 };
 use crate::session::setup::{
     create_session, PermissionOverrides, RuntimePlacement, SessionContext, SessionOptions,
@@ -186,6 +189,8 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
     };
 
     let session = wire_ipc_overrides(session, &config);
+    let capabilities = ipc_capabilities(&session.registry);
+    let profile = profile_identity(&config, &capabilities);
 
     let session_id = session.session_id.clone();
     if let Some(metadata) = &mut runtime_metadata {
@@ -211,7 +216,46 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
         error: None,
         runtime: runtime_metadata,
         routing: config.routing.clone(),
+        requested_routing: config.routing.clone(),
+        effective_routing: None,
+        capabilities: Some(capabilities),
+        profile: Some(profile),
     });
+}
+
+fn profile_identity(config: &InitConfig, capabilities: &IpcCapabilities) -> ProfileIdentity {
+    // This intentionally hashes only settings already exposed through the IPC
+    // contract or safe booleans. It never includes prompts, credentials,
+    // permission patterns, hook commands, or filesystem paths.
+    let safe_profile = serde_json::json!({
+        "model": config.model,
+        "enabled_tools": capabilities.enabled_tools,
+        "runtime_mode": config.runtime.as_ref().and_then(|runtime| runtime.mode.clone()),
+        "max_iterations": config.max_iterations,
+        "permissions_configured": config.permissions.is_some(),
+        "hooks_configured": config.hooks.is_some(),
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&safe_profile).expect("safe profile is serializable"));
+    ProfileIdentity {
+        fingerprint: format!("sha256:{:x}", hasher.finalize()),
+        model: config.model.clone(),
+    }
+}
+
+fn ipc_capabilities(registry: &ToolRegistry) -> IpcCapabilities {
+    IpcCapabilities {
+        enabled_tools: registry.names(),
+        explicit_tool_allowlist: true,
+        runtime_modes: vec![RuntimeMode::Default, RuntimeMode::Isolated],
+        transcript_placement: true,
+        failure_details_version: "v2".into(),
+        routing_request_metadata: true,
+        effective_routing_metadata: true,
+        cache_usage_metrics: true,
+        cancellation: true,
+        turn_state_events: true,
+    }
 }
 
 fn build_session_options(
@@ -355,6 +399,18 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
     let cancel = state.lock().active_cancel.clone().unwrap_or_default();
 
     let event_seq = Arc::new(Mutex::new(0_u64));
+    {
+        let mut seq = event_seq.lock();
+        write_line(&wrap_event(
+            WorkerEvent::TurnState {
+                state: TurnStateEvent::Queued,
+            },
+            &id,
+            *seq,
+            Some(&correlation),
+        ));
+        *seq += 1;
+    }
     let heartbeat_ms: u64 = std::env::var("HEDDLE_HEARTBEAT_INTERVAL")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -416,19 +472,45 @@ async fn handle_send(state: &Arc<Mutex<State>>, request: IpcRequest) {
     heartbeat_token.cancel();
     let _ = heartbeat_handle.await;
 
-    let (runtime_metadata, mut routing) = {
+    {
+        let mut seq = event_seq.lock();
+        write_line(&wrap_event(
+            WorkerEvent::TurnState {
+                state: TurnStateEvent::Completed,
+            },
+            &id,
+            *seq,
+            Some(&correlation),
+        ));
+        *seq += 1;
+    }
+
+    let (runtime_metadata, requested_routing) = {
         let s = state.lock();
         (s.runtime_metadata.clone(), s.routing.clone())
     };
+    let mut routing = requested_routing.clone();
+    let status = runtime.status(false);
     if let Some(metadata) = &mut routing {
-        let status = runtime.status(false);
-        metadata.routed_model = status.last_routed_model;
-        metadata.effective_upstream_provider = status.last_upstream_provider;
-        metadata.upstream_provider_history = status.upstream_provider_history;
+        metadata.routed_model = status.last_routed_model.clone();
+        metadata.effective_upstream_provider = status.last_upstream_provider.clone();
+        metadata.upstream_provider_history = status.upstream_provider_history.clone();
     }
+    let effective_routing = effective_routing(&status);
+    let cancellation_source = (outcome.status == TurnStatus::Cancelled
+        && state.lock().cancel_target_id.as_deref() == Some(id.as_str()))
+    .then_some(CancellationSource::User);
     write_line(&build_result(
         &id,
-        build_result_args(outcome, correlation, runtime_metadata, routing),
+        build_result_args(
+            outcome,
+            correlation,
+            runtime_metadata,
+            routing,
+            requested_routing,
+            effective_routing,
+            cancellation_source,
+        ),
     ));
     return_runtime(state, runtime);
 }
@@ -453,6 +535,7 @@ fn handle_status(state: &Arc<Mutex<State>>, id: String) {
         }
     };
     let status = runtime.status(s.active_id.is_some());
+    let effective_routing = effective_routing(&status);
     write_line(&IpcResponse::StatusOk {
         id,
         model: status.model,
@@ -467,6 +550,8 @@ fn handle_status(state: &Arc<Mutex<State>>, id: String) {
             metadata.upstream_provider_history = status.upstream_provider_history.clone();
             metadata
         }),
+        requested_routing: s.routing.clone(),
+        effective_routing,
     });
 }
 
@@ -475,6 +560,9 @@ fn build_result_args(
     correlation: CorrelationContext,
     runtime: Option<EffectiveRuntimeMetadata>,
     routing: Option<RoutingMetadata>,
+    requested_routing: Option<RoutingMetadata>,
+    effective_routing: Option<EffectiveRoutingMetadata>,
+    cancellation_source: Option<CancellationSource>,
 ) -> BuildResultArgs {
     let failure = outcome.error.as_ref().map(|error| FailureDetails {
         code: error.code.clone(),
@@ -482,6 +570,29 @@ fn build_result_args(
         iterations: outcome.iterations,
         tool_calls_made: outcome.tool_calls_made.len() as u32,
         last_tool_name: outcome.tool_calls_made.last().map(|call| call.name.clone()),
+        last_tool: outcome
+            .tool_calls_made
+            .last()
+            .cloned()
+            .map(tool_call_summary),
+        loop_count: outcome.failure_evidence.loop_count,
+        loop_threshold: outcome.failure_evidence.loop_threshold,
+        provider: provider_failure_details(error),
+        permission: outcome
+            .failure_evidence
+            .permission_denied
+            .as_ref()
+            .map(|permission| PermissionFailureDetails {
+                name: permission.name.clone(),
+                call_id: permission.call_id.clone(),
+                reason: permission.reason.clone(),
+            }),
+        malformed_tool_call: outcome
+            .failure_evidence
+            .malformed_tool_call
+            .clone()
+            .map(tool_call_summary),
+        cancellation_source,
     });
     BuildResultArgs {
         status: match outcome.status {
@@ -503,12 +614,55 @@ fn build_result_args(
         model_latency_ms: Some(outcome.model_latency_ms),
         runtime,
         routing,
+        requested_routing,
+        effective_routing,
         failure,
     }
 }
 
+fn provider_failure_details(error: &RuntimeError) -> Option<ProviderFailureDetails> {
+    let provider = error.details.as_ref()?.get("provider")?;
+    Some(ProviderFailureDetails {
+        name: provider
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| error.provider.clone()),
+        status: provider
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok()),
+        status_category: provider
+            .get("status_category")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        retry_after_ms: provider.get("retry_after_ms").and_then(Value::as_u64),
+        error_type: provider
+            .get("error_type")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        provider_code: provider
+            .get("provider_code")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn effective_routing(status: &crate::runtime::RuntimeStatus) -> Option<EffectiveRoutingMetadata> {
+    let metadata = EffectiveRoutingMetadata {
+        routed_model: status.last_routed_model.clone(),
+        upstream_provider: status.last_upstream_provider.clone(),
+        upstream_provider_history: status.upstream_provider_history.clone(),
+    };
+    (metadata.routed_model.is_some()
+        || metadata.upstream_provider.is_some()
+        || !metadata.upstream_provider_history.is_empty())
+    .then_some(metadata)
+}
+
 fn tool_call_summary(call: RuntimeToolCall) -> ToolCallSummary {
     ToolCallSummary {
+        id: call.id,
         name: call.name,
         args: call.args,
     }
@@ -597,9 +751,21 @@ fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
         }),
         RuntimeEvent::ContextCompacted => Some(WorkerEvent::ContextCompact),
         RuntimeEvent::ContextHandoff => Some(WorkerEvent::ContextHandoff),
-        RuntimeEvent::PermissionRequested { .. }
-        | RuntimeEvent::AssistantMessage { .. }
-        | RuntimeEvent::TurnStateChanged { .. } => None,
+        RuntimeEvent::TurnStateChanged { state, .. } => match state {
+            TurnState::Queued => Some(WorkerEvent::TurnState {
+                state: TurnStateEvent::Queued,
+            }),
+            TurnState::Running => Some(WorkerEvent::TurnState {
+                state: TurnStateEvent::Running,
+            }),
+            TurnState::Cancelling => Some(WorkerEvent::TurnState {
+                state: TurnStateEvent::Cancelling,
+            }),
+            // The adapter emits this once immediately before the final result,
+            // including for cancellation paths where runtime returns early.
+            TurnState::Completed => None,
+        },
+        RuntimeEvent::PermissionRequested { .. } | RuntimeEvent::AssistantMessage { .. } => None,
     }
 }
 
