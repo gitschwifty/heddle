@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::{RuntimeError, RuntimeStatus, RuntimeUsage};
+use crate::runtime::{RuntimeError, RuntimeFailureEvidence, RuntimeStatus, RuntimeUsage};
 use crate::types::{FunctionCall, ToolCall, ToolCallKind};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -132,6 +132,7 @@ fn ok_outcome() -> TurnOutcome {
         model_latency_ms: 0,
         tool_latency_ms: 0,
         total_latency_ms: 0,
+        failure_evidence: RuntimeFailureEvidence::default(),
     }
 }
 
@@ -152,6 +153,7 @@ fn error_outcome(message: &str) -> TurnOutcome {
         model_latency_ms: 0,
         tool_latency_ms: 0,
         total_latency_ms: 0,
+        failure_evidence: RuntimeFailureEvidence::default(),
     }
 }
 
@@ -794,6 +796,7 @@ fn turn_outcome_appends_worked_footer_and_divider() {
         model_latency_ms: 0,
         tool_latency_ms: 0,
         total_latency_ms: 3000,
+        failure_evidence: RuntimeFailureEvidence::default(),
     });
 
     assert_eq!(app.transcript.len(), 1);

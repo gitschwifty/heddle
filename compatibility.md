@@ -36,6 +36,28 @@
 
 ## Changelog
 
+### 0.5.0
+
+- `init_ok` gains optional `capabilities`, advertising enabled session tools,
+  explicit allowlist mode, runtime/transcript support, failure-detail version,
+  routing/cache observability, cancellation, and turn-state events.
+- `turn_state` WorkerEvent adds optional lifecycle observations: `queued`,
+  `running`, `cancelling`, and `completed`. `send` and final `result` remain
+  the canonical turn boundaries.
+- Result `failure` gains optional `last_tool` with the final tool name and
+  parsed arguments already retained by the runtime.
+- Result `failure` may additionally report typed loop policy, provider,
+  permission, malformed-call, and user-cancellation evidence when the runtime
+  has that source data.
+- `init_ok`, `result`, and `status_ok` gain `requested_routing` (the exact
+  caller request) and `effective_routing` (only route facts observed from the
+  runtime/provider). The existing `routing` field remains a legacy combined
+  view.
+- `init_ok` gains optional non-secret `profile` reproducibility identity.
+
+**Compatibility:** Additive only. Existing 0.x clients may ignore the new
+field and event type.
+
 ### 0.4.0
 
 - Added optional headless init/runtime placement metadata and effective runtime

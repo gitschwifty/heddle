@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use super::errors::ErrorEnvelope;
 use super::types::{
-    EffectiveRuntimeMetadata, FailureDetails, IpcRequest, IpcResponse, RoutingMetadata,
-    ToolCallSummary, UsageSummary, WorkerEvent,
+    EffectiveRoutingMetadata, EffectiveRuntimeMetadata, FailureDetails, IpcRequest, IpcResponse,
+    RoutingMetadata, ToolCallSummary, UsageSummary, WorkerEvent,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -74,6 +74,8 @@ pub struct BuildResultArgs {
     pub total_latency_ms: Option<u64>,
     pub runtime: Option<EffectiveRuntimeMetadata>,
     pub routing: Option<RoutingMetadata>,
+    pub requested_routing: Option<RoutingMetadata>,
+    pub effective_routing: Option<EffectiveRoutingMetadata>,
     pub failure: Option<FailureDetails>,
 }
 
@@ -94,6 +96,8 @@ pub fn build_result(id: &str, args: BuildResultArgs) -> IpcResponse {
         total_latency_ms: args.total_latency_ms,
         runtime: args.runtime,
         routing: args.routing,
+        requested_routing: args.requested_routing,
+        effective_routing: args.effective_routing,
         failure: args.failure,
     }
 }
@@ -119,6 +123,8 @@ pub fn build_error(
         total_latency_ms: None,
         runtime: None,
         routing: None,
+        requested_routing: None,
+        effective_routing: None,
         failure: None,
     }
 }

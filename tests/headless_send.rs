@@ -65,6 +65,31 @@ async fn mount_error_500(server: &MockServer) {
         .await;
 }
 
+async fn mount_repeating_tool_sse(server: &MockServer) {
+    let body = sse_body(&[json!({
+        "id": "chatcmpl-test",
+        "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call-repeat",
+                "type": "function",
+                "function": {"name": "glob", "arguments": "{\"pattern\":\"Cargo.toml\"}"}
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    })]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body.into_bytes(), "text/event-stream"),
+        )
+        .mount(server)
+        .await;
+}
+
 fn env(server: &MockServer) -> HashMap<String, String> {
     let mut m = HashMap::new();
     m.insert("HEDDLE_BASE_URL".into(), server.uri());
@@ -155,7 +180,7 @@ async fn provider_error_emits_error_event_and_structured_error_result() {
             || ee["event"]["details"].is_string()
             || !ee["event"]["details"].is_null()
     );
-    assert_eq!(ee["event_seq"], 0);
+    assert_eq!(ee["event_seq"], 2); // queued, running, then provider error
     assert_eq!(ee["send_id"], "2");
 
     let result = msgs.iter().find(|m| m["type"] == "result").unwrap();
@@ -166,6 +191,37 @@ async fn provider_error_emits_error_event_and_structured_error_result() {
     assert_eq!(result["failure"]["code"], "provider_error");
     assert_eq!(result["failure"]["termination_reason"], "Model error");
     assert!(result["failure"]["iterations"].is_number());
+    assert_eq!(result["failure"]["provider"]["name"], "openrouter");
+    assert_eq!(result["failure"]["provider"]["status"], 500);
+    assert_eq!(result["failure"]["provider"]["status_category"], "5xx");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn loop_failure_includes_observed_policy_and_final_tool() {
+    let server = MockServer::start().await;
+    mount_repeating_tool_sse(&server).await;
+
+    let mut h = Headless::spawn(env(&server));
+    h.send_line(&init_msg());
+    h.wait_for_lines(1, T);
+
+    h.send_line(&json!({"type":"send","id":"2","message":"Do the thing."}).to_string());
+    let lines = h.wait_for(has_result, T);
+    let messages = collect_messages(&lines);
+    let result = messages
+        .iter()
+        .find(|message| message["type"] == "result")
+        .unwrap();
+
+    assert_eq!(result["failure"]["code"], "loop_detected");
+    assert_eq!(result["failure"]["loop_count"], 3);
+    assert_eq!(result["failure"]["loop_threshold"], 3);
+    assert_eq!(result["failure"]["last_tool"]["id"], "call-repeat");
+    assert_eq!(result["failure"]["last_tool"]["name"], "glob");
+    assert_eq!(
+        result["failure"]["last_tool"]["args"]["pattern"],
+        "Cargo.toml"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -193,6 +249,27 @@ async fn streamed_events_have_sequential_event_seq_and_correct_send_id() {
     for (i, s) in seqs.iter().enumerate() {
         assert_eq!(*s, i as u64, "event_seq mismatch at index {i}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn turn_state_events_wrap_a_completed_send() {
+    let server = MockServer::start().await;
+    mount_normal_sse(&server).await;
+
+    let mut h = Headless::spawn(env(&server));
+    h.send_line(&init_msg());
+    h.wait_for_lines(1, T);
+
+    h.send_line(&json!({"type":"send","id":"2","message":"Hi there"}).to_string());
+    let lines = h.wait_for(has_result, T);
+    let messages = collect_messages(&lines);
+    let states: Vec<&str> = messages
+        .iter()
+        .filter(|message| message["type"] == "event" && message["event"]["event"] == "turn_state")
+        .filter_map(|message| message["event"]["state"].as_str())
+        .collect();
+
+    assert_eq!(states, vec!["queued", "running", "completed"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -8,11 +8,41 @@ use crate::config::types::PermissionsConfigSchema;
 use crate::hooks::types::HooksConfig;
 use crate::provider::types::AppAttribution;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
     Default,
     Isolated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpcCapabilities {
+    pub enabled_tools: Vec<String>,
+    pub explicit_tool_allowlist: bool,
+    pub runtime_modes: Vec<RuntimeMode>,
+    pub transcript_placement: bool,
+    pub failure_details_version: String,
+    pub routing_request_metadata: bool,
+    pub effective_routing_metadata: bool,
+    pub cache_usage_metrics: bool,
+    pub cancellation: bool,
+    pub turn_state_events: bool,
+}
+
+/// A reproducibility identifier derived from safe, non-secret session settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileIdentity {
+    pub fingerprint: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStateEvent {
+    Queued,
+    Running,
+    Cancelling,
+    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +79,18 @@ pub struct RoutingMetadata {
     pub upstream_provider_history: Vec<String>,
 }
 
+/// Routing facts observed from the runtime or provider response. Unlike
+/// [`RoutingMetadata`], these are never copied from caller-provided input.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EffectiveRoutingMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_provider_history: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveRuntimeMetadata {
     pub mode: RuntimeMode,
@@ -65,6 +107,50 @@ pub struct FailureDetails {
     pub tool_calls_made: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<ToolCallSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_threshold: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderFailureDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<PermissionFailureDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub malformed_tool_call: Option<ToolCallSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation_source: Option<CancellationSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderFailureDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionFailureDetails {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationSource {
+    User,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +216,9 @@ impl IpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WorkerEvent {
+    TurnState {
+        state: TurnStateEvent,
+    },
     ContentDelta {
         text: String,
     },
@@ -218,6 +307,8 @@ pub struct UsageSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub args: Value,
 }
@@ -236,6 +327,14 @@ pub enum IpcResponse {
         runtime: Option<EffectiveRuntimeMetadata>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         routing: Option<RoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_routing: Option<RoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective_routing: Option<EffectiveRoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<IpcCapabilities>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<ProfileIdentity>,
     },
     Event {
         event: WorkerEvent,
@@ -276,6 +375,10 @@ pub enum IpcResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         routing: Option<RoutingMetadata>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_routing: Option<RoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective_routing: Option<EffectiveRoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<FailureDetails>,
     },
     StatusOk {
@@ -290,6 +393,10 @@ pub enum IpcResponse {
         runtime: Option<EffectiveRuntimeMetadata>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         routing: Option<RoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_routing: Option<RoutingMetadata>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective_routing: Option<EffectiveRoutingMetadata>,
     },
     ShutdownOk {
         id: String,

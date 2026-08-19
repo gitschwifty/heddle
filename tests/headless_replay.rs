@@ -30,6 +30,14 @@ const IGNORE_PATHS: &[&str] = &[
     "model_latency_ms",
     "tool_latency_ms",
     "total_latency_ms",
+    // 0.5.0 additions are deliberately omitted from 0.4 fixture baselines.
+    "protocol_version",
+    "capabilities",
+    "profile",
+    "error.details.provider",
+    "failure.provider",
+    "failure.cancellation_source",
+    "event_seq",
 ];
 
 fn fixtures_dir() -> PathBuf {
@@ -64,7 +72,21 @@ fn strip_ignored(v: &Value) -> Value {
     for p in IGNORE_PATHS {
         delete_path(&mut clone, p);
     }
+    if let Some(tool_calls) = clone
+        .get_mut("tool_calls_made")
+        .and_then(Value::as_array_mut)
+    {
+        for call in tool_calls {
+            if let Some(call) = call.as_object_mut() {
+                call.remove("id");
+            }
+        }
+    }
     clone
+}
+
+fn is_additive_lifecycle_event(v: &Value) -> bool {
+    v["type"] == "event" && v["event"]["event"] == "turn_state"
 }
 
 // ─── SSE mock helpers ────────────────────────────────────────────────────
@@ -304,11 +326,19 @@ async fn run_fixture(name: &str, mode: Mode) {
 }
 
 fn compare_strict(actual: &[String], expected: &[String], name: &str) {
+    let actual: Vec<&String> = actual
+        .iter()
+        .filter(|line| !is_additive_lifecycle_event(&parse_line(line)))
+        .collect();
     assert_eq!(
         actual.len(),
         expected.len(),
         "fixture {name}: line count mismatch.\nactual:\n{}\nexpected:\n{}",
-        actual.join("\n"),
+        actual
+            .iter()
+            .map(|line| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
         expected.join("\n")
     );
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
@@ -329,7 +359,10 @@ fn compare_heartbeat(actual: &[String], expected: &[String]) {
     let is_hb = |v: &Value| v["type"] == "event" && v["event"]["event"] == "heartbeat";
 
     let actual_hb: Vec<&Value> = actual_parsed.iter().filter(|v| is_hb(v)).collect();
-    let actual_non_hb: Vec<&Value> = actual_parsed.iter().filter(|v| !is_hb(v)).collect();
+    let actual_non_hb: Vec<&Value> = actual_parsed
+        .iter()
+        .filter(|v| !is_hb(v) && !is_additive_lifecycle_event(v))
+        .collect();
     let expected_non_hb: Vec<&Value> = expected_parsed.iter().filter(|v| !is_hb(v)).collect();
 
     assert!(
