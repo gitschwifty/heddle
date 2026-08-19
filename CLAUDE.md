@@ -40,7 +40,8 @@ For tests that touch global env vars, cwd, `HEDDLE_HOME`, or shared filesystem s
 ## Code Style
 
 - Run `cargo fmt` before finishing.
-- Run `cargo clippy --all-targets` for lint-sensitive changes.
+- Before reporting a Rust code change complete, run `cargo clippy --all-targets`
+  and resolve warnings. If it cannot run or warnings remain, state that clearly.
 - Prefer `Result` and explicit error strings over panics outside tests.
 - Tool `execute()` methods should return error strings for recoverable tool failures.
 - Use `async fn` / streams consistently with the existing provider and agent loop code.

@@ -3138,9 +3138,11 @@ fn build_paired_comparison(
     let key = |result: &TaskResult| {
         (
             result.task_id.clone(),
-            prompt_condition_mode
-                .then_some("<prompt-condition>".to_string())
-                .unwrap_or_else(|| result.prompt_id.clone()),
+            if prompt_condition_mode {
+                "<prompt-condition>".to_string()
+            } else {
+                result.prompt_id.clone()
+            },
             result.run_index,
         )
     };
