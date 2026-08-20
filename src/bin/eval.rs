@@ -364,16 +364,46 @@ struct TaskSpec {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct TaskScoreSpec {
     outcome: OutcomeSpec,
+    /// Optional deterministic acceptance check for behavior/API fixtures.
+    /// It is only considered after a completed run does not exact-match the
+    /// expected tree (or when no expected tree is configured).
+    #[serde(default)]
+    semantic_verification: Option<SemanticVerificationSpec>,
     #[serde(default)]
     efficiency: Option<EfficiencySpec>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct OutcomeSpec {
-    expected_dir: String,
+    /// Exact source-tree oracle. Omit for an intentionally open-ended
+    /// API/behavior fixture that is scored entirely by semantic verification.
     #[serde(default)]
-    #[allow(dead_code)]
+    expected_dir: Option<String>,
+    #[serde(default)]
     ignore_globs: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SemanticVerificationSpec {
+    /// Executable followed by arguments. Shell parsing is intentionally not
+    /// supported so fixture commands remain inspectable and deterministic.
+    command: Vec<String>,
+    #[serde(default = "default_verification_timeout_secs")]
+    timeout_secs: u64,
+    #[serde(default = "default_verification_max_output_bytes")]
+    max_output_bytes: usize,
+    /// Agent-owned paths which must remain byte-for-byte unchanged before the
+    /// hidden verifier is staged into the workspace.
+    #[serde(default)]
+    protected_globs: Vec<String>,
+}
+
+fn default_verification_timeout_secs() -> u64 {
+    30
+}
+
+fn default_verification_max_output_bytes() -> usize {
+    4_096
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -658,6 +688,8 @@ enum FailureCause {
     MissingExpectedChange,
     UnexpectedExtraFile,
     WrongDiff,
+    ProtectedFileChanged,
+    SemanticVerificationFailed,
     MaxTurns,
     TokenBudget,
     DoomLoop,
@@ -677,6 +709,8 @@ impl FailureCause {
             Self::MissingExpectedChange => "missing_expected_change",
             Self::UnexpectedExtraFile => "unexpected_extra_file",
             Self::WrongDiff => "wrong_diff",
+            Self::ProtectedFileChanged => "protected_file_changed",
+            Self::SemanticVerificationFailed => "semantic_verification_failed",
             Self::MaxTurns => "max_turns",
             Self::TokenBudget => "token_budget",
             Self::DoomLoop => "doom_loop",
@@ -729,7 +763,27 @@ enum ResultStatus {
 #[derive(Debug, Serialize, Deserialize)]
 struct OutcomeScore {
     passed: bool,
+    /// Whether the expected source tree matched before semantic verification.
+    #[serde(default)]
+    exact_passed: bool,
     diff_files: Vec<DirDiffEntry>,
+    /// Protected source paths changed before a semantic verifier could run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    protected_diffs: Vec<DirDiffEntry>,
+    /// Present only for fixtures configured with semantic verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    semantic_verification: Option<SemanticVerificationResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SemanticVerificationResult {
+    command: Vec<String>,
+    passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    timed_out: bool,
+    output: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -841,6 +895,34 @@ fn load_task(dir: &Path) -> Result<Task> {
         .with_context(|| format!("reading {}", toml_path.display()))?;
     let spec: TaskSpec =
         toml::from_str(&text).with_context(|| format!("parsing {}", toml_path.display()))?;
+    if spec.score.outcome.expected_dir.is_none() && spec.score.semantic_verification.is_none() {
+        bail!(
+            "{} must configure score.outcome.expected_dir or score.semantic_verification",
+            toml_path.display()
+        );
+    }
+    if let Some(verification) = &spec.score.semantic_verification {
+        if verification.command.is_empty() {
+            bail!(
+                "{} semantic verification command must not be empty",
+                toml_path.display()
+            );
+        }
+        if !dir.join("verify").is_dir() {
+            bail!(
+                "{} configures semantic verification but has no verify/ directory",
+                toml_path.display()
+            );
+        }
+        for pattern in &verification.protected_globs {
+            globset::Glob::new(pattern).with_context(|| {
+                format!(
+                    "invalid protected_glob {pattern:?} in {}",
+                    toml_path.display()
+                )
+            })?;
+        }
+    }
     Ok(Task {
         dir: dir.to_path_buf(),
         spec,
@@ -1082,6 +1164,98 @@ fn diff_dirs(actual: &Path, expected: &Path) -> Vec<DirDiffEntry> {
         }
     }
     entries
+}
+
+fn protected_path_diffs(
+    before: &Path,
+    workspace: &Path,
+    patterns: &[String],
+) -> Result<Vec<DirDiffEntry>> {
+    if patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            globset::Glob::new(pattern)
+                .with_context(|| format!("invalid protected_glob {pattern:?}"))?,
+        );
+    }
+    let matcher = builder.build()?;
+    Ok(diff_dirs(workspace, before)
+        .into_iter()
+        .filter(|entry| matcher.is_match(Path::new(&entry.path)))
+        .collect())
+}
+
+fn truncate_verification_output(bytes: &[u8], max_bytes: usize) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    if text.len() <= max_bytes {
+        return text.into_owned();
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
+async fn run_semantic_verification(
+    task: &Task,
+    workspace: &Path,
+    spec: &SemanticVerificationSpec,
+) -> Result<SemanticVerificationResult> {
+    let fixture_verifier = task.dir.join("verify");
+    if !fixture_verifier.is_dir() {
+        bail!(
+            "semantic verification for {} requires a verify/ directory",
+            task.spec.id
+        );
+    }
+    let staged_verifier = workspace.join(".heddle-verification");
+    copy_dir_recursive(&fixture_verifier, &staged_verifier)
+        .with_context(|| format!("staging semantic verification for {}", task.spec.id))?;
+    let (program, args) = spec
+        .command
+        .split_first()
+        .ok_or_else(|| anyhow!("semantic verification command must not be empty"))?;
+    let output = match timeout(
+        Duration::from_secs(spec.timeout_secs.max(1)),
+        tokio::process::Command::new(program)
+            .args(args)
+            .current_dir(workspace)
+            .output(),
+    )
+    .await
+    {
+        Ok(output) => output.with_context(|| {
+            format!(
+                "running semantic verification command {:?} for {}",
+                spec.command, task.spec.id
+            )
+        })?,
+        Err(_) => {
+            return Ok(SemanticVerificationResult {
+                command: spec.command.clone(),
+                passed: false,
+                exit_code: None,
+                timed_out: true,
+                output: format!("verification timed out after {}s", spec.timeout_secs.max(1)),
+            });
+        }
+    };
+    let mut combined = output.stdout;
+    if !combined.is_empty() && !output.stderr.is_empty() {
+        combined.push(b'\n');
+    }
+    combined.extend_from_slice(&output.stderr);
+    Ok(SemanticVerificationResult {
+        command: spec.command.clone(),
+        passed: output.status.success(),
+        exit_code: output.status.code(),
+        timed_out: false,
+        output: truncate_verification_output(&combined, spec.max_output_bytes),
+    })
 }
 
 // ─── Tool selection ──────────────────────────────────────────────────────
@@ -1678,17 +1852,51 @@ async fn run_one(
         None => std::env::remove_var("CARGO_TARGET_DIR"),
     }
 
-    let diff = diff_dirs(
-        workspace,
-        &task.dir.join(task.spec.score.outcome.expected_dir.as_str()),
-    );
-    let passed = diff.is_empty() && error.is_none();
+    let diff = task
+        .spec
+        .score
+        .outcome
+        .expected_dir
+        .as_deref()
+        .map(|expected_dir| diff_dirs(workspace, &task.dir.join(expected_dir)))
+        .unwrap_or_default();
+    let exact_passed = task.spec.score.outcome.expected_dir.is_some() && diff.is_empty();
+    let mut semantic_verification = None;
+    let mut protected_diffs = Vec::new();
+    if error.is_none() && limit.is_none() && !exact_passed {
+        if let Some(spec) = &task.spec.score.semantic_verification {
+            match protected_path_diffs(&task.dir.join("before"), workspace, &spec.protected_globs) {
+                Ok(diffs) => protected_diffs = diffs,
+                Err(verification_error) => {
+                    error = Some(verification_error.to_string());
+                    error_cause = Some(FailureCause::HarnessInternal);
+                }
+            }
+            if error.is_none() && protected_diffs.is_empty() {
+                match run_semantic_verification(task, workspace, spec).await {
+                    Ok(result) => semantic_verification = Some(result),
+                    Err(verification_error) => {
+                        error = Some(verification_error.to_string());
+                        error_cause = Some(FailureCause::HarnessInternal);
+                    }
+                }
+            }
+        }
+    }
+    let semantic_passed = semantic_verification
+        .as_ref()
+        .is_some_and(|result| result.passed);
+    let passed = error.is_none() && (exact_passed || semantic_passed);
     let failure_cause = if passed {
         None
     } else if let Some(limit) = limit {
         Some(limit.into())
     } else if let Some(cause) = error_cause {
         Some(cause)
+    } else if !protected_diffs.is_empty() {
+        Some(FailureCause::ProtectedFileChanged)
+    } else if semantic_verification.is_some() {
+        Some(FailureCause::SemanticVerificationFailed)
     } else {
         Some(classify_workspace_failure(
             &diff_dirs(workspace, &task.dir.join("before")),
@@ -1749,7 +1957,10 @@ async fn run_one(
         scores: Scores {
             outcome: OutcomeScore {
                 passed,
+                exact_passed,
                 diff_files: diff,
+                protected_diffs,
+                semantic_verification,
             },
             efficiency: EfficiencyScore {
                 tool_calls,
@@ -1821,7 +2032,10 @@ fn error_result(
         scores: Scores {
             outcome: OutcomeScore {
                 passed: false,
+                exact_passed: false,
                 diff_files: Vec::new(),
+                protected_diffs: Vec::new(),
+                semantic_verification: None,
             },
             efficiency: EfficiencyScore {
                 tool_calls: 0,
@@ -2082,6 +2296,7 @@ fn failure_cause_summary<'a>(results: impl IntoIterator<Item = &'a TaskResult>) 
 
 fn outcome_label(result: &TaskResult) -> String {
     let outcome = match result_status(result) {
+        ResultStatus::Pass if !result.scores.outcome.exact_passed => "SEMANTIC PASS",
         ResultStatus::Pass if result.scores.efficiency.tokens_in_budget => "PASS",
         ResultStatus::Pass => "PASS*",
         ResultStatus::Fail => "FAIL",
@@ -3721,7 +3936,10 @@ expected_signal = "x"
             scores: Scores {
                 outcome: OutcomeScore {
                     passed: true,
+                    exact_passed: true,
                     diff_files: Vec::new(),
+                    protected_diffs: Vec::new(),
+                    semantic_verification: None,
                 },
                 efficiency: EfficiencyScore {
                     tool_calls: 1,
@@ -4142,6 +4360,10 @@ expected_signal = "x"
             FailureCause::DoomLoop
         );
         assert_eq!(FailureCause::Timeout.label(), "timeout");
+        assert_eq!(
+            FailureCause::SemanticVerificationFailed.label(),
+            "semantic_verification_failed"
+        );
     }
 
     #[test]
@@ -4824,9 +5046,10 @@ expected_signal = "x"
                 smoke: false,
                 score: TaskScoreSpec {
                     outcome: OutcomeSpec {
-                        expected_dir: "after".into(),
+                        expected_dir: Some("after".into()),
                         ignore_globs: None,
                     },
+                    semantic_verification: None,
                     efficiency: None,
                 },
             },
@@ -4843,6 +5066,132 @@ expected_signal = "x"
     fn task_turn_limit_overrides_the_cli_fallback() {
         assert_eq!(task_max_turns(Some(12), 8), 12);
         assert_eq!(task_max_turns(None, 8), 8);
+    }
+
+    #[test]
+    fn protected_path_diffs_only_reports_configured_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = dir.path().join("before");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&before).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(before.join("Cargo.toml"), "original").unwrap();
+        fs::write(before.join("src.rs"), "original").unwrap();
+        fs::write(workspace.join("Cargo.toml"), "changed").unwrap();
+        fs::write(workspace.join("src.rs"), "allowed").unwrap();
+
+        let diffs = protected_path_diffs(
+            &before,
+            &workspace,
+            &["Cargo.toml".into(), "config/**".into()],
+        )
+        .unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "Cargo.toml");
+    }
+
+    #[tokio::test]
+    async fn semantic_verifier_is_staged_after_the_agent_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let task_dir = dir.path().join("task");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(task_dir.join("verify")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("api.txt"), "implemented").unwrap();
+        fs::write(
+            task_dir.join("verify/check.py"),
+            "from pathlib import Path\nassert Path('api.txt').read_text() == 'implemented'\n",
+        )
+        .unwrap();
+        let task = Task {
+            dir: task_dir,
+            spec: TaskSpec {
+                id: "semantic".into(),
+                prompt: "implement".into(),
+                tags: vec!["semantic-verification".into()],
+                tools: None,
+                max_turns: None,
+                task_timeout_secs: None,
+                budget_tokens: None,
+                smoke: false,
+                score: TaskScoreSpec {
+                    outcome: OutcomeSpec {
+                        expected_dir: None,
+                        ignore_globs: None,
+                    },
+                    semantic_verification: Some(SemanticVerificationSpec {
+                        command: vec!["python3".into(), ".heddle-verification/check.py".into()],
+                        timeout_secs: 5,
+                        max_output_bytes: 128,
+                        protected_globs: Vec::new(),
+                    }),
+                    efficiency: None,
+                },
+            },
+        };
+
+        let result = run_semantic_verification(
+            &task,
+            &workspace,
+            task.spec.score.semantic_verification.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(result.passed);
+        assert!(workspace.join(".heddle-verification/check.py").exists());
+    }
+
+    #[tokio::test]
+    async fn semantic_verifier_records_a_bounded_failure_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        let task_dir = dir.path().join("task");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(task_dir.join("verify")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            task_dir.join("verify/check.py"),
+            "raise AssertionError('expected public API behavior was missing')\n",
+        )
+        .unwrap();
+        let task = Task {
+            dir: task_dir,
+            spec: TaskSpec {
+                id: "semantic-failure".into(),
+                prompt: "implement".into(),
+                tags: Vec::new(),
+                tools: None,
+                max_turns: None,
+                task_timeout_secs: None,
+                budget_tokens: None,
+                smoke: false,
+                score: TaskScoreSpec {
+                    outcome: OutcomeSpec {
+                        expected_dir: None,
+                        ignore_globs: None,
+                    },
+                    semantic_verification: Some(SemanticVerificationSpec {
+                        command: vec!["python3".into(), ".heddle-verification/check.py".into()],
+                        timeout_secs: 5,
+                        max_output_bytes: 32,
+                        protected_globs: Vec::new(),
+                    }),
+                    efficiency: None,
+                },
+            },
+        };
+
+        let result = run_semantic_verification(
+            &task,
+            &workspace,
+            task.spec.score.semantic_verification.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.exit_code, Some(1));
+        assert!(result.output.contains("Traceback"));
+        assert!(result.output.len() <= 35);
+        assert!(result.output.ends_with('…'));
     }
 
     #[test]
@@ -4871,9 +5220,10 @@ expected_signal = "x"
                 smoke: false,
                 score: TaskScoreSpec {
                     outcome: OutcomeSpec {
-                        expected_dir: "after".into(),
+                        expected_dir: Some("after".into()),
                         ignore_globs: None,
                     },
+                    semantic_verification: None,
                     efficiency: None,
                 },
             },
@@ -5691,11 +6041,20 @@ fn suite_identity(prompts: &[&Prompt], tasks: &[&Task]) -> Result<SuiteIdentity>
             &format!("task/{}/before", task.spec.id),
             &task.dir.join("before"),
         )?;
-        hash_fixture_tree(
-            &mut hasher,
-            &format!("task/{}/expected", task.spec.id),
-            &task.dir.join(&task.spec.score.outcome.expected_dir),
-        )?;
+        if let Some(expected_dir) = &task.spec.score.outcome.expected_dir {
+            hash_fixture_tree(
+                &mut hasher,
+                &format!("task/{}/expected", task.spec.id),
+                &task.dir.join(expected_dir),
+            )?;
+        }
+        if task.spec.score.semantic_verification.is_some() {
+            hash_fixture_tree(
+                &mut hasher,
+                &format!("task/{}/verify", task.spec.id),
+                &task.dir.join("verify"),
+            )?;
+        }
     }
 
     Ok(SuiteIdentity {
@@ -5725,11 +6084,20 @@ fn task_input_fingerprint(tasks: &[&Task]) -> Result<String> {
             &format!("task/{}/before", task.spec.id),
             &task.dir.join("before"),
         )?;
-        hash_fixture_tree(
-            &mut hasher,
-            &format!("task/{}/expected", task.spec.id),
-            &task.dir.join(&task.spec.score.outcome.expected_dir),
-        )?;
+        if let Some(expected_dir) = &task.spec.score.outcome.expected_dir {
+            hash_fixture_tree(
+                &mut hasher,
+                &format!("task/{}/expected", task.spec.id),
+                &task.dir.join(expected_dir),
+            )?;
+        }
+        if task.spec.score.semantic_verification.is_some() {
+            hash_fixture_tree(
+                &mut hasher,
+                &format!("task/{}/verify", task.spec.id),
+                &task.dir.join("verify"),
+            )?;
+        }
     }
     Ok(hex::encode(hasher.finalize()))
 }
