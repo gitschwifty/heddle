@@ -7,12 +7,17 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::types::{ExecOptions, HeddleTool};
+use super::workspace::WorkspaceBoundary;
 use crate::file_history::backup::backup_file;
 
 pub struct WriteTool;
+pub struct WorkspaceWriteTool(WorkspaceBoundary);
 
 pub fn create_write_tool() -> Arc<dyn HeddleTool> {
     Arc::new(WriteTool)
+}
+pub fn create_workspace_write_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+    Arc::new(WorkspaceWriteTool(boundary))
 }
 
 #[async_trait]
@@ -63,5 +68,38 @@ impl HeddleTool for WriteTool {
             Ok(_) => format!("Wrote {len} bytes to {file_path}"),
             Err(e) => format!("Error: Could not write file: {e}"),
         }
+    }
+}
+
+#[async_trait]
+impl HeddleTool for WorkspaceWriteTool {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+    fn description(&self) -> &str {
+        WriteTool.description()
+    }
+    fn parameters(&self) -> Value {
+        WriteTool.parameters()
+    }
+    async fn execute(&self, mut params: Value, options: ExecOptions) -> String {
+        let raw = match params
+            .get("file_path")
+            .or_else(|| params.get("path"))
+            .and_then(Value::as_str)
+        {
+            Some(path) => path,
+            None => return "Error: missing file_path".into(),
+        };
+        let path = match self.0.resolve(raw) {
+            Ok(path) => path,
+            Err(error) => return error.to_string(),
+        };
+        if params.get("file_path").is_some() {
+            params["file_path"] = json!(path);
+        } else {
+            params["path"] = json!(path);
+        }
+        WriteTool.execute(params, options).await
     }
 }

@@ -6,13 +6,20 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::types::{ExecOptions, HeddleTool};
+use super::workspace::WorkspaceBoundary;
 
 const DEFAULT_MAX_RETURNED_LINES: usize = 200;
 
 pub struct ReadTool;
 
+pub struct WorkspaceReadTool(WorkspaceBoundary);
+
 pub fn create_read_tool() -> Arc<dyn HeddleTool> {
     Arc::new(ReadTool)
+}
+
+pub fn create_workspace_read_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+    Arc::new(WorkspaceReadTool(boundary))
 }
 
 fn line_param(params: &Value, name: &str) -> Result<Option<usize>, String> {
@@ -142,5 +149,38 @@ impl HeddleTool for ReadTool {
         let start_line = start_line.unwrap_or(1);
         let end_line = end_line.unwrap_or(lines.len());
         format_range_result(&content, start_line, end_line).unwrap_or_else(|error| error)
+    }
+}
+
+#[async_trait]
+impl HeddleTool for WorkspaceReadTool {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+    fn description(&self) -> &str {
+        ReadTool.description()
+    }
+    fn parameters(&self) -> Value {
+        ReadTool.parameters()
+    }
+    async fn execute(&self, mut params: Value, options: ExecOptions) -> String {
+        let raw = match params
+            .get("file_path")
+            .or_else(|| params.get("path"))
+            .and_then(Value::as_str)
+        {
+            Some(path) if !path.is_empty() => path,
+            _ => return "Error: missing file_path".into(),
+        };
+        let path = match self.0.resolve(raw) {
+            Ok(path) => path,
+            Err(error) => return error.to_string(),
+        };
+        if params.get("file_path").is_some() {
+            params["file_path"] = json!(path);
+        } else {
+            params["path"] = json!(path);
+        }
+        ReadTool.execute(params, options).await
     }
 }

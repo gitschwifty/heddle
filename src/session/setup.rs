@@ -39,12 +39,13 @@ use crate::session::list::find_session;
 use crate::tasks::storage::{format_tasks_summary, load_tasks};
 use crate::tools::registry::ToolRegistry;
 use crate::tools::types::HeddleTool;
-use crate::tools::{
-    create_bash_tool, create_edit_tool, create_glob_tool, create_grep_tool, create_read_tool,
-    create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
-    create_web_fetch_tool_with_options, create_write_tool, SubagentOptions, WebFetchOptions,
-};
 use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_update_task_tool};
+use crate::tools::{
+    create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
+    create_web_fetch_tool_with_options, create_workspace_bash_tool, create_workspace_edit_tool,
+    create_workspace_glob_tool, create_workspace_grep_tool, create_workspace_read_tool,
+    create_workspace_write_tool, SubagentOptions, WebFetchOptions, WorkspaceBoundary,
+};
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
 
@@ -128,14 +129,14 @@ pub struct SessionOptions {
     pub runtime_placement: Option<RuntimePlacement>,
 }
 
-fn default_tools(config: &HeddleConfig) -> Vec<Arc<dyn HeddleTool>> {
+fn default_tools(config: &HeddleConfig, boundary: WorkspaceBoundary) -> Vec<Arc<dyn HeddleTool>> {
     vec![
-        create_read_tool(),
-        create_write_tool(),
-        create_edit_tool(),
-        create_glob_tool(),
-        create_grep_tool(),
-        create_bash_tool(),
+        create_workspace_read_tool(boundary.clone()),
+        create_workspace_write_tool(boundary.clone()),
+        create_workspace_edit_tool(boundary.clone()),
+        create_workspace_glob_tool(boundary.clone()),
+        create_workspace_grep_tool(boundary.clone()),
+        create_workspace_bash_tool(boundary),
         create_web_fetch_tool_with_options(WebFetchOptions {
             allow_private_addresses: config.web_fetch_allow_private_addresses,
         }),
@@ -224,6 +225,9 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         std::env::set_current_dir(cwd)?;
     }
 
+    let workspace = WorkspaceBoundary::new(std::env::current_dir()?)
+        .map_err(|error| anyhow!(error.to_string()))?;
+
     let mut config = if placement
         .as_ref()
         .map(|p| p.suppress_ambient_context)
@@ -298,7 +302,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     // Tool registry
     let mut registry = ToolRegistry::new();
-    let all_tools = default_tools(&config);
+    let all_tools = default_tools(&config, workspace);
     let filter: Option<Vec<String>> = options.tools.clone().or_else(|| config.tools.clone());
     let to_register: Vec<Arc<dyn HeddleTool>> = match &filter {
         Some(names) => all_tools

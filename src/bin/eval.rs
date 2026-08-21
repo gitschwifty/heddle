@@ -21,15 +21,21 @@ use heddle::agent::loop_::{run_agent_loop, AgentLoopOptions};
 use heddle::agent::types::AgentEvent;
 use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::{Provider, ProviderConfig, ProviderTelemetry, RetryConfig};
-use heddle::tools::bash::create_bash_tool;
-use heddle::tools::edit::create_edit_tool;
-use heddle::tools::glob::create_glob_tool;
-use heddle::tools::grep::create_grep_tool;
-use heddle::tools::read::create_read_tool;
+use heddle::tools::bash::create_workspace_bash_tool;
+use heddle::tools::edit::create_workspace_edit_tool;
+use heddle::tools::glob::create_workspace_glob_tool;
+use heddle::tools::grep::create_workspace_grep_tool;
+use heddle::tools::read::create_workspace_read_tool;
 use heddle::tools::registry::ToolRegistry;
 use heddle::tools::types::HeddleTool;
 use heddle::tools::web_fetch::create_web_fetch_tool;
-use heddle::tools::write::create_write_tool;
+use heddle::tools::workspace::WorkspaceBoundary;
+use heddle::tools::write::create_workspace_write_tool;
+#[cfg(test)]
+use heddle::tools::{
+    create_bash_tool, create_edit_tool, create_glob_tool, create_grep_tool, create_read_tool,
+    create_write_tool,
+};
 use heddle::types::{Message, SystemMessage, UserMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1260,6 +1266,7 @@ async fn run_semantic_verification(
 
 // ─── Tool selection ──────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn tool_by_name(name: &str) -> Option<Arc<dyn HeddleTool>> {
     match name {
         "read_file" => Some(create_read_tool()),
@@ -1273,6 +1280,7 @@ fn tool_by_name(name: &str) -> Option<Arc<dyn HeddleTool>> {
     }
 }
 
+#[cfg(test)]
 fn build_registry(names: &[String]) -> Result<ToolRegistry> {
     let mut r = ToolRegistry::new();
     for n in names {
@@ -1280,6 +1288,25 @@ fn build_registry(names: &[String]) -> Result<ToolRegistry> {
         r.register(tool)?;
     }
     Ok(r)
+}
+
+fn build_workspace_registry(names: &[String], root: &Path) -> Result<ToolRegistry> {
+    let boundary = WorkspaceBoundary::new(root).map_err(|error| anyhow!(error.to_string()))?;
+    let mut registry = ToolRegistry::new();
+    for name in names {
+        let tool: Arc<dyn HeddleTool> = match name.as_str() {
+            "read_file" => create_workspace_read_tool(boundary.clone()),
+            "write_file" => create_workspace_write_tool(boundary.clone()),
+            "edit_file" => create_workspace_edit_tool(boundary.clone()),
+            "glob" => create_workspace_glob_tool(boundary.clone()),
+            "grep" => create_workspace_grep_tool(boundary.clone()),
+            "bash" => create_workspace_bash_tool(boundary.clone()),
+            "web_fetch" => create_web_fetch_tool(),
+            _ => return Err(anyhow!("unknown tool: {name}")),
+        };
+        registry.register(tool)?;
+    }
+    Ok(registry)
 }
 
 fn sha256_json<T: Serialize>(value: &T) -> Result<String> {
@@ -1573,7 +1600,7 @@ async fn run_one(
             "grep".into(),
         ]
     });
-    let registry = match build_registry(&tool_names) {
+    let registry = match build_workspace_registry(&tool_names, workspace) {
         Ok(r) => r,
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };

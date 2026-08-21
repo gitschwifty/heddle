@@ -8,12 +8,17 @@ use serde_json::{json, Value};
 
 use super::fuzzy_match::{cascading_match, find_closest_match};
 use super::types::{ExecOptions, HeddleTool};
+use super::workspace::WorkspaceBoundary;
 use crate::file_history::backup::backup_file;
 
 pub struct EditTool;
+pub struct WorkspaceEditTool(WorkspaceBoundary);
 
 pub fn create_edit_tool() -> Arc<dyn HeddleTool> {
     Arc::new(EditTool)
+}
+pub fn create_workspace_edit_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+    Arc::new(WorkspaceEditTool(boundary))
 }
 
 #[async_trait]
@@ -127,5 +132,38 @@ impl HeddleTool for EditTool {
             );
         }
         format!("Error: old_string not found in {file_path}")
+    }
+}
+
+#[async_trait]
+impl HeddleTool for WorkspaceEditTool {
+    fn name(&self) -> &str {
+        "edit_file"
+    }
+    fn description(&self) -> &str {
+        EditTool.description()
+    }
+    fn parameters(&self) -> Value {
+        EditTool.parameters()
+    }
+    async fn execute(&self, mut params: Value, options: ExecOptions) -> String {
+        let raw = match params
+            .get("file_path")
+            .or_else(|| params.get("path"))
+            .and_then(Value::as_str)
+        {
+            Some(path) => path,
+            None => return "Error: missing file_path".into(),
+        };
+        let path = match self.0.resolve(raw) {
+            Ok(path) => path,
+            Err(error) => return error.to_string(),
+        };
+        if params.get("file_path").is_some() {
+            params["file_path"] = json!(path);
+        } else {
+            params["path"] = json!(path);
+        }
+        EditTool.execute(params, options).await
     }
 }

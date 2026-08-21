@@ -7,8 +7,10 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use super::types::{ExecOptions, HeddleTool};
+use super::workspace::WorkspaceBoundary;
 
 pub struct GrepTool;
+pub struct WorkspaceGrepTool(WorkspaceBoundary);
 
 #[derive(Clone, Copy)]
 enum SearchBackend {
@@ -72,6 +74,9 @@ fn search_args(
 
 pub fn create_grep_tool() -> Arc<dyn HeddleTool> {
     Arc::new(GrepTool)
+}
+pub fn create_workspace_grep_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+    Arc::new(WorkspaceGrepTool(boundary))
 }
 
 #[async_trait]
@@ -140,6 +145,28 @@ impl HeddleTool for GrepTool {
             return "No matches found.".to_string();
         }
         stdout.trim().to_string()
+    }
+}
+
+#[async_trait]
+impl HeddleTool for WorkspaceGrepTool {
+    fn name(&self) -> &str {
+        "grep"
+    }
+    fn description(&self) -> &str {
+        GrepTool.description()
+    }
+    fn parameters(&self) -> Value {
+        GrepTool.parameters()
+    }
+    async fn execute(&self, mut params: Value, options: ExecOptions) -> String {
+        let raw = params.get("path").and_then(Value::as_str).unwrap_or(".");
+        let path = match self.0.resolve(raw) {
+            Ok(path) => path,
+            Err(error) => return error.to_string(),
+        };
+        params["path"] = json!(path);
+        GrepTool.execute(params, options).await
     }
 }
 

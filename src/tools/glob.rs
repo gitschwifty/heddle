@@ -9,8 +9,10 @@ use serde_json::{json, Value};
 use walkdir::WalkDir;
 
 use super::types::{ExecOptions, HeddleTool};
+use super::workspace::WorkspaceBoundary;
 
 pub struct GlobTool;
+pub struct WorkspaceGlobTool(WorkspaceBoundary);
 
 const EXCLUDED_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", "build"];
 
@@ -26,6 +28,9 @@ fn explicitly_targets_excluded(pattern: &str, path: &str) -> bool {
 
 pub fn create_glob_tool() -> Arc<dyn HeddleTool> {
     Arc::new(GlobTool)
+}
+pub fn create_workspace_glob_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+    Arc::new(WorkspaceGlobTool(boundary))
 }
 
 #[async_trait]
@@ -108,5 +113,27 @@ impl HeddleTool for GlobTool {
         } else {
             results.join("\n")
         }
+    }
+}
+
+#[async_trait]
+impl HeddleTool for WorkspaceGlobTool {
+    fn name(&self) -> &str {
+        "glob"
+    }
+    fn description(&self) -> &str {
+        GlobTool.description()
+    }
+    fn parameters(&self) -> Value {
+        GlobTool.parameters()
+    }
+    async fn execute(&self, mut params: Value, options: ExecOptions) -> String {
+        let raw = params.get("path").and_then(Value::as_str).unwrap_or(".");
+        let path = match self.0.resolve(raw) {
+            Ok(path) => path,
+            Err(error) => return error.to_string(),
+        };
+        params["path"] = json!(path);
+        GlobTool.execute(params, options).await
     }
 }
