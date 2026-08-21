@@ -38,8 +38,8 @@ test-multi-turn-live:
 test-live:
 	HEDDLE_INTEGRATION_TESTS=1 HEDDLE_SLOW_TESTS=1 cargo test --test provider_openrouter_integration --test multi_turn_integration -- --nocapture
 
-eval model="openrouter/free" evals="evals" prompts="all" tasks="all" tag="": build-eval
-	./target/release/eval run --evals {{evals}} --prompts {{prompts}} --tasks {{tasks}} --model {{model}}{{ if tag != "" { " --tag " + tag } else { "" } }}
+eval model="openrouter/free" evals="evals" prompts="all" tasks="all" tag="" suite_label="": build-eval
+	./target/release/eval run --evals {{evals}} --prompts {{prompts}} --tasks {{tasks}} --model {{model}}{{ if tag != "" { " --tag " + tag } else { "" } }}{{ if suite_label != "" { " --suite-label " + suite_label } else { "" } }}
 
 # Fast live health check: the default prompt against the two smoke-tagged
 # fixtures (create-file and targeted edit). This validates the provider,
