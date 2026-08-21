@@ -110,6 +110,9 @@ impl CtxState {
             discovery: None,
             agent_definitions: &self.agent_definitions,
             paste_cache: None,
+            workspace_boundary: std::sync::Arc::new(parking_lot::RwLock::new(
+                heddle::tools::WorkspaceBoundary::new(std::env::current_dir().unwrap()).unwrap(),
+            )),
         }
     }
 }

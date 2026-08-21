@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use super::types::{ExecOptions, HeddleTool};
-use super::workspace::WorkspaceBoundary;
+use super::workspace::SharedWorkspaceBoundary;
 
 pub struct BashTool;
-pub struct WorkspaceBashTool(WorkspaceBoundary);
+pub struct WorkspaceBashTool(SharedWorkspaceBoundary);
 
 pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
     Arc::new(BashTool)
@@ -19,7 +19,7 @@ pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
 
 /// Creates a Bash tool that is confined by the OS, rather than by parsing shell
 /// text. Platforms without the supported confinement backend deny execution.
-pub fn create_workspace_bash_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+pub fn create_workspace_bash_tool(boundary: SharedWorkspaceBoundary) -> Arc<dyn HeddleTool> {
     Arc::new(WorkspaceBashTool(boundary))
 }
 
@@ -128,7 +128,13 @@ impl HeddleTool for WorkspaceBashTool {
         {
             return "Error: Aborted".to_string();
         }
-        let mut cmd = match confined_bash_command(self.0.root(), command) {
+        let roots: Vec<_> = self
+            .0
+            .read()
+            .roots()
+            .map(std::path::Path::to_path_buf)
+            .collect();
+        let mut cmd = match confined_bash_command(&roots, command) {
             Ok(command) => command,
             Err(error) => return error,
         };
@@ -180,12 +186,21 @@ fn format_output(output: std::process::Output) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn confined_bash_command(root: &std::path::Path, command: &str) -> Result<Command, String> {
+fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<Command, String> {
     // `sandbox-exec` is a process/filesystem boundary: expansion, redirects,
     // children, and inherited cwd are all subject to this profile.
+    let root = roots
+        .first()
+        .ok_or_else(|| "Error: workspace boundary denied empty workspace".to_string())?;
     let root = sandbox_string(root)?;
+    let additional = roots
+        .iter()
+        .skip(1)
+        .map(|root| sandbox_string(root))
+        .collect::<Result<Vec<_>, _>>()?;
+    let additional_rules = additional.iter().map(|root| format!("(allow file-read* (subpath \\\"{root}\\\"))\\n(allow file-write* (subpath \\\"{root}\\\"))")).collect::<String>();
     let profile = format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target self))\n(allow file-read* (subpath \\\"{root}\\\"))\n(allow file-write* (subpath \\\"{root}\\\"))\n(allow file-read* (subpath \\\"/bin\\\"))\n(allow file-read* (subpath \\\"/usr/bin\\\"))\n(allow file-read* (subpath \\\"/usr/lib\\\"))\n(allow file-read* (subpath \\\"/System/Library\\\"))\n(allow file-read* (literal \\\"/dev/null\\\"))"
+        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target self))\n(allow file-read* (subpath \\\"{root}\\\"))\n(allow file-write* (subpath \\\"{root}\\\"))\n{additional_rules}(allow file-read* (subpath \\\"/bin\\\"))\n(allow file-read* (subpath \\\"/usr/bin\\\"))\n(allow file-read* (subpath \\\"/usr/lib\\\"))\n(allow file-read* (subpath \\\"/System/Library\\\"))\n(allow file-read* (literal \\\"/dev/null\\\"))"
     );
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile, "/bin/bash", "-c", command])
@@ -206,7 +221,7 @@ fn sandbox_string(path: &std::path::Path) -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn confined_bash_command(_root: &std::path::Path, _command: &str) -> Result<Command, String> {
+fn confined_bash_command(_roots: &[std::path::PathBuf], _command: &str) -> Result<Command, String> {
     Err(
         "Error: workspace boundary denied bash: no supported filesystem sandbox on this platform"
             .to_string(),

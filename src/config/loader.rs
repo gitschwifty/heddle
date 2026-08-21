@@ -106,6 +106,8 @@ pub struct HeddleConfig {
 
     pub permissions_layers: Option<Vec<PermissionsLayer>>,
     pub hooks: Option<ResolvedHooksConfig>,
+    /// Project-local workspace expansions. Global configuration is deliberately ignored.
+    pub workspace_additional_roots: Option<Vec<String>>,
 }
 
 impl Default for HeddleConfig {
@@ -134,6 +136,7 @@ impl Default for HeddleConfig {
             features: None,
             permissions_layers: None,
             hooks: None,
+            workspace_additional_roots: None,
         }
     }
 }
@@ -355,6 +358,26 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     if !hooks.is_empty() {
         merged.hooks = Some(hooks);
     }
+    merged.workspace_additional_roots = local_raw
+        .as_table()
+        .and_then(|table| table.get("workspace"))
+        .and_then(|workspace| workspace.as_table())
+        .and_then(|workspace| workspace.get("additional_roots"))
+        .and_then(as_string_array)
+        .map(|roots| {
+            let project_root = local_root.parent().unwrap_or(&local_root);
+            roots
+                .into_iter()
+                .map(|root| {
+                    let path = Path::new(&root);
+                    if path.is_absolute() {
+                        root
+                    } else {
+                        project_root.join(path).to_string_lossy().into_owned()
+                    }
+                })
+                .collect()
+        });
 
     if let Ok(v) = std::env::var("HEDDLE_MODEL") {
         merged.model = v;

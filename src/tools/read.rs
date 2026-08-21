@@ -6,19 +6,19 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::types::{ExecOptions, HeddleTool};
-use super::workspace::WorkspaceBoundary;
+use super::workspace::SharedWorkspaceBoundary;
 
 const DEFAULT_MAX_RETURNED_LINES: usize = 200;
 
 pub struct ReadTool;
 
-pub struct WorkspaceReadTool(WorkspaceBoundary);
+pub struct WorkspaceReadTool(SharedWorkspaceBoundary);
 
 pub fn create_read_tool() -> Arc<dyn HeddleTool> {
     Arc::new(ReadTool)
 }
 
-pub fn create_workspace_read_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+pub fn create_workspace_read_tool(boundary: SharedWorkspaceBoundary) -> Arc<dyn HeddleTool> {
     Arc::new(WorkspaceReadTool(boundary))
 }
 
@@ -172,7 +172,7 @@ impl HeddleTool for WorkspaceReadTool {
             Some(path) if !path.is_empty() => path,
             _ => return "Error: missing file_path".into(),
         };
-        let path = match self.0.resolve(raw) {
+        let path = match self.0.read().resolve(raw) {
             Ok(path) => path,
             Err(error) => return error.to_string(),
         };

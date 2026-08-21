@@ -8,16 +8,16 @@ use serde_json::{json, Value};
 
 use super::fuzzy_match::{cascading_match, find_closest_match};
 use super::types::{ExecOptions, HeddleTool};
-use super::workspace::WorkspaceBoundary;
+use super::workspace::SharedWorkspaceBoundary;
 use crate::file_history::backup::backup_file;
 
 pub struct EditTool;
-pub struct WorkspaceEditTool(WorkspaceBoundary);
+pub struct WorkspaceEditTool(SharedWorkspaceBoundary);
 
 pub fn create_edit_tool() -> Arc<dyn HeddleTool> {
     Arc::new(EditTool)
 }
-pub fn create_workspace_edit_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+pub fn create_workspace_edit_tool(boundary: SharedWorkspaceBoundary) -> Arc<dyn HeddleTool> {
     Arc::new(WorkspaceEditTool(boundary))
 }
 
@@ -155,7 +155,7 @@ impl HeddleTool for WorkspaceEditTool {
             Some(path) => path,
             None => return "Error: missing file_path".into(),
         };
-        let path = match self.0.resolve(raw) {
+        let path = match self.0.read().resolve(raw) {
             Ok(path) => path,
             Err(error) => return error.to_string(),
         };

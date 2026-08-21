@@ -16,6 +16,7 @@ use crate::cost::pricing::ModelPricing;
 use crate::cost::tracker::CostTracker;
 use crate::provider::types::Provider;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::SharedWorkspaceBoundary;
 use crate::types::Message;
 
 pub struct CommandContext<'a> {
@@ -32,6 +33,7 @@ pub struct CommandContext<'a> {
     pub discovery: Option<&'a DiscoveryResult>,
     pub agent_definitions: &'a std::collections::HashMap<String, AgentDefinition>,
     pub paste_cache: Option<Arc<Mutex<PasteCache>>>,
+    pub workspace_boundary: SharedWorkspaceBoundary,
 }
 
 pub type CommandFn = Arc<

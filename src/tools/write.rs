@@ -7,16 +7,16 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::types::{ExecOptions, HeddleTool};
-use super::workspace::WorkspaceBoundary;
+use super::workspace::SharedWorkspaceBoundary;
 use crate::file_history::backup::backup_file;
 
 pub struct WriteTool;
-pub struct WorkspaceWriteTool(WorkspaceBoundary);
+pub struct WorkspaceWriteTool(SharedWorkspaceBoundary);
 
 pub fn create_write_tool() -> Arc<dyn HeddleTool> {
     Arc::new(WriteTool)
 }
-pub fn create_workspace_write_tool(boundary: WorkspaceBoundary) -> Arc<dyn HeddleTool> {
+pub fn create_workspace_write_tool(boundary: SharedWorkspaceBoundary) -> Arc<dyn HeddleTool> {
     Arc::new(WorkspaceWriteTool(boundary))
 }
 
@@ -91,7 +91,7 @@ impl HeddleTool for WorkspaceWriteTool {
             Some(path) => path,
             None => return "Error: missing file_path".into(),
         };
-        let path = match self.0.resolve(raw) {
+        let path = match self.0.read().resolve(raw) {
             Ok(path) => path,
             Err(error) => return error.to_string(),
         };

@@ -124,6 +124,9 @@ async fn execute_injects_content_as_user_message() {
         discovery: None,
         agent_definitions: &agent_defs,
         paste_cache: None,
+        workspace_boundary: std::sync::Arc::new(parking_lot::RwLock::new(
+            heddle::tools::WorkspaceBoundary::new(std::env::current_dir().unwrap()).unwrap(),
+        )),
     };
 
     (greet.execute)("", &mut ctx).await;
@@ -162,6 +165,9 @@ async fn execute_appends_args_to_content() {
         discovery: None,
         agent_definitions: &agent_defs,
         paste_cache: None,
+        workspace_boundary: std::sync::Arc::new(parking_lot::RwLock::new(
+            heddle::tools::WorkspaceBoundary::new(std::env::current_dir().unwrap()).unwrap(),
+        )),
     };
 
     (prompt.execute)("extra arguments here", &mut ctx).await;
@@ -207,6 +213,9 @@ async fn local_commands_override_global_commands() {
         discovery: None,
         agent_definitions: &agent_defs,
         paste_cache: None,
+        workspace_boundary: std::sync::Arc::new(parking_lot::RwLock::new(
+            heddle::tools::WorkspaceBoundary::new(std::env::current_dir().unwrap()).unwrap(),
+        )),
     };
 
     (deploy.execute)("", &mut ctx).await;

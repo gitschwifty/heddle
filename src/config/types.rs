@@ -80,6 +80,11 @@ pub struct PermissionsConfigSchema {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceConfigSchema {
+    pub additional_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HeddleConfigSchema {
     pub api_key: Option<String>,
     pub model: Option<String>,
@@ -104,4 +109,5 @@ pub struct HeddleConfigSchema {
     pub features: Option<FeaturesSchema>,
     pub permissions: Option<PermissionsConfigSchema>,
     pub hooks: Option<HooksConfig>,
+    pub workspace: Option<WorkspaceConfigSchema>,
 }

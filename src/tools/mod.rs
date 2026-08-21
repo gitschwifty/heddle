@@ -32,5 +32,5 @@ pub use subagent::{create_subagent_tool, SubagentOptions};
 pub use task_tools::{create_create_task_tool, create_list_tasks_tool, create_update_task_tool};
 pub use types::{ExecOptions, HeddleTool};
 pub use web_fetch::{create_web_fetch_tool, create_web_fetch_tool_with_options, WebFetchOptions};
-pub use workspace::WorkspaceBoundary;
+pub use workspace::{SharedWorkspaceBoundary, WorkspaceBoundary};
 pub use write::{create_workspace_write_tool, create_write_tool};

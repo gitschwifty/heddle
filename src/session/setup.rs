@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::agents::loader::load_agent_definitions;
@@ -44,7 +44,8 @@ use crate::tools::{
     create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
     create_web_fetch_tool_with_options, create_workspace_bash_tool, create_workspace_edit_tool,
     create_workspace_glob_tool, create_workspace_grep_tool, create_workspace_read_tool,
-    create_workspace_write_tool, SubagentOptions, WebFetchOptions, WorkspaceBoundary,
+    create_workspace_write_tool, SharedWorkspaceBoundary, SubagentOptions, WebFetchOptions,
+    WorkspaceBoundary,
 };
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
@@ -97,6 +98,7 @@ pub struct SessionContext {
     pub session_start_time: chrono::DateTime<Utc>,
     pub base_system_prompt: String,
     pub runtime_placement: Option<RuntimePlacement>,
+    pub workspace_boundary: SharedWorkspaceBoundary,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -129,7 +131,10 @@ pub struct SessionOptions {
     pub runtime_placement: Option<RuntimePlacement>,
 }
 
-fn default_tools(config: &HeddleConfig, boundary: WorkspaceBoundary) -> Vec<Arc<dyn HeddleTool>> {
+fn default_tools(
+    config: &HeddleConfig,
+    boundary: SharedWorkspaceBoundary,
+) -> Vec<Arc<dyn HeddleTool>> {
     vec![
         create_workspace_read_tool(boundary.clone()),
         create_workspace_write_tool(boundary.clone()),
@@ -225,7 +230,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         std::env::set_current_dir(cwd)?;
     }
 
-    let workspace = WorkspaceBoundary::new(std::env::current_dir()?)
+    let mut workspace = WorkspaceBoundary::new(std::env::current_dir()?)
         .map_err(|error| anyhow!(error.to_string()))?;
 
     let mut config = if placement
@@ -237,6 +242,12 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     } else {
         load_config(None)
     };
+    for root in config.workspace_additional_roots.iter().flatten() {
+        workspace
+            .add_root(root)
+            .map_err(|error| anyhow!("invalid workspace additional root {root:?}: {error}"))?;
+    }
+    let workspace = Arc::new(RwLock::new(workspace));
     let mode = options.mode.unwrap_or(Mode::Interactive);
     let mut features = get_features(mode, config.features.as_ref());
     if isolated {
@@ -302,7 +313,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     // Tool registry
     let mut registry = ToolRegistry::new();
-    let all_tools = default_tools(&config, workspace);
+    let all_tools = default_tools(&config, workspace.clone());
     let filter: Option<Vec<String>> = options.tools.clone().or_else(|| config.tools.clone());
     let to_register: Vec<Arc<dyn HeddleTool>> = match &filter {
         Some(names) => all_tools
@@ -351,7 +362,15 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
             heddle_version: "0.1.0".into(),
             name: options.session_name.clone(),
             forked_from: None,
-            extra: Default::default(),
+            extra: std::iter::once((
+                "workspace_roots".to_string(),
+                serde_json::json!(workspace
+                    .read()
+                    .roots()
+                    .map(|root| root.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()),
+            ))
+            .collect(),
         };
         write_session_meta(&session_file, &meta)?;
 
@@ -476,6 +495,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         session_start_time: Utc::now(),
         base_system_prompt,
         runtime_placement: placement,
+        workspace_boundary: workspace,
     })
 }
 

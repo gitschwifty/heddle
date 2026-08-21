@@ -1,6 +1,9 @@
 //! Canonical workspace-root enforcement shared by filesystem-facing tools.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use thiserror::Error;
 
@@ -21,7 +24,10 @@ pub enum WorkspaceError {
 #[derive(Debug, Clone)]
 pub struct WorkspaceBoundary {
     root: PathBuf,
+    additional_roots: Vec<PathBuf>,
 }
+
+pub type SharedWorkspaceBoundary = Arc<RwLock<WorkspaceBoundary>>;
 
 impl WorkspaceBoundary {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, WorkspaceError> {
@@ -29,11 +35,49 @@ impl WorkspaceBoundary {
         if !root.is_dir() {
             return Err(WorkspaceError::Unresolvable);
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            additional_roots: Vec::new(),
+        })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn roots(&self) -> impl Iterator<Item = &Path> {
+        std::iter::once(self.root.as_path())
+            .chain(self.additional_roots.iter().map(PathBuf::as_path))
+    }
+
+    pub fn add_root(&mut self, raw: impl AsRef<Path>) -> Result<PathBuf, WorkspaceError> {
+        let raw = raw.as_ref();
+        let candidate = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            self.root.join(raw)
+        };
+        let root = std::fs::canonicalize(candidate).map_err(|_| WorkspaceError::Unresolvable)?;
+        if !root.is_dir() {
+            return Err(WorkspaceError::Unresolvable);
+        }
+        if root != self.root && !self.additional_roots.contains(&root) {
+            self.additional_roots.push(root.clone());
+        }
+        Ok(root)
+    }
+
+    pub fn remove_root(&mut self, raw: impl AsRef<Path>) -> Result<bool, WorkspaceError> {
+        let raw = raw.as_ref();
+        let candidate = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            self.root.join(raw)
+        };
+        let root = std::fs::canonicalize(candidate).map_err(|_| WorkspaceError::Unresolvable)?;
+        let before = self.additional_roots.len();
+        self.additional_roots.retain(|entry| entry != &root);
+        Ok(before != self.additional_roots.len())
     }
 
     /// Resolves a path without permitting lexical `..` components or symlink
@@ -53,7 +97,7 @@ impl WorkspaceBoundary {
             self.root.join(raw)
         };
         let resolved = canonicalize_with_missing_suffix(&candidate)?;
-        if resolved.starts_with(&self.root) {
+        if self.roots().any(|root| resolved.starts_with(root)) {
             Ok(resolved)
         } else {
             Err(WorkspaceError::OutsideRoot)

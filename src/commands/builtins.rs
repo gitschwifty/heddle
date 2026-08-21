@@ -134,6 +134,69 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
     }));
 
     out.push(cmd(
+        "workdirs",
+        "List workspace roots available to this session",
+        |_args, ctx| {
+            Box::pin(async move {
+                let boundary = ctx.workspace_boundary.read();
+                println!("  Workspace roots:");
+                for (index, root) in boundary.roots().enumerate() {
+                    let source = if index == 0 { "primary" } else { "additional" };
+                    println!("  - {} ({source})", root.display());
+                }
+                None
+            })
+        },
+    ));
+    out.push(cmd(
+        "add-workdir",
+        "Add a directory to this session's workspace scope",
+        |args, ctx| {
+            Box::pin(async move {
+                let path = args.trim();
+                if path.is_empty() {
+                    println!("Usage: /add-workdir <path>");
+                    return None;
+                }
+                match ctx.workspace_boundary.write().add_root(path) {
+                    Ok(root) => {
+                        println!("Added workdir for this session: {}", root.display());
+                        let _ = append_context_marker(&ctx.session_file, &json!({
+                            "type": "workspace_root_added", "path": root, "source": "interactive"
+                        }));
+                    }
+                    Err(error) => println!("Error: {error}"),
+                }
+                None
+            })
+        },
+    ));
+    out.push(cmd(
+        "remove-workdir",
+        "Remove a session-added workspace directory",
+        |args, ctx| {
+            Box::pin(async move {
+                let path = args.trim();
+                if path.is_empty() {
+                    println!("Usage: /remove-workdir <path>");
+                    return None;
+                }
+                match ctx.workspace_boundary.write().remove_root(path) {
+                    Ok(true) => {
+                        println!("Removed workdir from this session: {path}");
+                        let _ = append_context_marker(&ctx.session_file, &json!({
+                            "type": "workspace_root_removed", "path": path, "source": "interactive"
+                        }));
+                    }
+                    Ok(false) => println!("Error: workdir is not a session-added root"),
+                    Err(error) => println!("Error: {error}"),
+                }
+                None
+            })
+        },
+    ));
+
+    out.push(cmd(
         "context",
         "Show context size estimate",
         |_args, ctx| {

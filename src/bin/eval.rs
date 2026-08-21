@@ -1291,7 +1291,9 @@ fn build_registry(names: &[String]) -> Result<ToolRegistry> {
 }
 
 fn build_workspace_registry(names: &[String], root: &Path) -> Result<ToolRegistry> {
-    let boundary = WorkspaceBoundary::new(root).map_err(|error| anyhow!(error.to_string()))?;
+    let boundary = Arc::new(parking_lot::RwLock::new(
+        WorkspaceBoundary::new(root).map_err(|error| anyhow!(error.to_string()))?,
+    ));
     let mut registry = ToolRegistry::new();
     for name in names {
         let tool: Arc<dyn HeddleTool> = match name.as_str() {

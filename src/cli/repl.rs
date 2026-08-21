@@ -336,6 +336,7 @@ pub async fn start_cli() -> Result<()> {
                     discovery: ctx.discovery.as_ref(),
                     agent_definitions: &ctx.agent_definitions,
                     paste_cache: ctx.paste_cache.clone(),
+                    workspace_boundary: ctx.workspace_boundary.clone(),
                 };
                 let new_model = (cmd.execute)(args_str, &mut cmd_ctx).await;
                 if let Some(model) = new_model {
