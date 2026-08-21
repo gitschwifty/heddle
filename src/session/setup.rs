@@ -60,7 +60,7 @@ const DEFAULT_PROMPT: &str = r#"You are an interactive software engineering assi
 
 ## Tools
 
-You have file system tools (`read_file`, `write_file`, `edit_file`, `glob`, `grep`), a shell tool (`bash`), and a web fetch tool. Tool calls execute on the user's machine; results come back as tool messages.
+Use the tools available in this session. Tool calls execute on the user's machine; results come back as tool messages.
 
 ## Output style
 
