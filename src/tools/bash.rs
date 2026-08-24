@@ -198,10 +198,7 @@ fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<
         .skip(1)
         .map(|root| sandbox_string(root))
         .collect::<Result<Vec<_>, _>>()?;
-    let additional_rules = additional.iter().map(|root| format!("(allow file-read* (subpath \\\"{root}\\\"))\\n(allow file-write* (subpath \\\"{root}\\\"))")).collect::<String>();
-    let profile = format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target self))\n(allow file-read* (subpath \\\"{root}\\\"))\n(allow file-write* (subpath \\\"{root}\\\"))\n{additional_rules}(allow file-read* (subpath \\\"/bin\\\"))\n(allow file-read* (subpath \\\"/usr/bin\\\"))\n(allow file-read* (subpath \\\"/usr/lib\\\"))\n(allow file-read* (subpath \\\"/System/Library\\\"))\n(allow file-read* (literal \\\"/dev/null\\\"))"
-    );
+    let profile = sandbox_profile(&root, &additional);
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile, "/bin/bash", "-c", command])
         .current_dir(root)
@@ -212,12 +209,40 @@ fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<
 }
 
 #[cfg(target_os = "macos")]
+fn sandbox_profile(root: &str, additional: &[String]) -> String {
+    let additional_rules = additional
+        .iter()
+        .map(|root| {
+            format!(
+                "(allow file-read* (subpath \"{root}\"))\n(allow file-write* (subpath \"{root}\"))\n"
+            )
+        })
+        .collect::<String>();
+    format!(
+        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target self))\n(allow file-read* (subpath \"{root}\"))\n(allow file-write* (subpath \"{root}\"))\n{additional_rules}(allow file-read* (subpath \"/bin\"))\n(allow file-read* (subpath \"/usr/bin\"))\n(allow file-read* (subpath \"/usr/lib\"))\n(allow file-read* (subpath \"/System/Library\"))\n(allow file-read* (literal \"/dev/null\"))"
+    )
+}
+
+#[cfg(target_os = "macos")]
 fn sandbox_string(path: &std::path::Path) -> Result<String, String> {
     let value = path.to_string_lossy();
     if value.contains(['"', '\\']) {
         return Err("Error: workspace boundary denied unsafe workspace path".to_string());
     }
     Ok(value.into_owned())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::sandbox_profile;
+
+    #[test]
+    fn sandbox_profile_uses_sandbox_string_literals_for_workspace_paths() {
+        let profile = sandbox_profile("/private/tmp/workspace", &[]);
+
+        assert!(profile.contains("(subpath \"/private/tmp/workspace\")"));
+        assert!(!profile.contains("\\\\\"/private/tmp/workspace\\\\\""));
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
