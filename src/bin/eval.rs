@@ -1143,10 +1143,30 @@ fn collect_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 fn diff_dirs(actual: &Path, expected: &Path) -> Vec<DirDiffEntry> {
+    diff_dirs_ignoring(actual, expected, &[]).expect("an empty ignore list is valid")
+}
+
+fn diff_dirs_ignoring(
+    actual: &Path,
+    expected: &Path,
+    ignore_globs: &[String],
+) -> Result<Vec<DirDiffEntry>> {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in ignore_globs {
+        builder.add(
+            globset::Glob::new(pattern).with_context(|| {
+                format!("invalid score.outcome.ignore_globs pattern {pattern:?}")
+            })?,
+        );
+    }
+    let matcher = builder.build()?;
     let mut entries = Vec::new();
     let expected_files = collect_files(expected);
     let actual_files = collect_files(actual);
     for (path, want) in &expected_files {
+        if matcher.is_match(Path::new(path)) {
+            continue;
+        }
         match actual_files.get(path) {
             None => entries.push(DirDiffEntry {
                 path: path.clone(),
@@ -1162,6 +1182,9 @@ fn diff_dirs(actual: &Path, expected: &Path) -> Vec<DirDiffEntry> {
         }
     }
     for path in actual_files.keys() {
+        if matcher.is_match(Path::new(path)) {
+            continue;
+        }
         if !expected_files.contains_key(path) {
             entries.push(DirDiffEntry {
                 path: path.clone(),
@@ -1169,7 +1192,7 @@ fn diff_dirs(actual: &Path, expected: &Path) -> Vec<DirDiffEntry> {
             });
         }
     }
-    entries
+    Ok(entries)
 }
 
 fn protected_path_diffs(
@@ -1881,14 +1904,26 @@ async fn run_one(
         None => std::env::remove_var("CARGO_TARGET_DIR"),
     }
 
-    let diff = task
-        .spec
-        .score
-        .outcome
-        .expected_dir
-        .as_deref()
-        .map(|expected_dir| diff_dirs(workspace, &task.dir.join(expected_dir)))
-        .unwrap_or_default();
+    let diff = match task.spec.score.outcome.expected_dir.as_deref() {
+        Some(expected_dir) => match diff_dirs_ignoring(
+            workspace,
+            &task.dir.join(expected_dir),
+            task.spec
+                .score
+                .outcome
+                .ignore_globs
+                .as_deref()
+                .unwrap_or_default(),
+        ) {
+            Ok(diff) => diff,
+            Err(diff_error) => {
+                error = Some(diff_error.to_string());
+                error_cause = Some(FailureCause::HarnessInternal);
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
     let exact_passed = task.spec.score.outcome.expected_dir.is_some() && diff.is_empty();
     let mut semantic_verification = None;
     let mut protected_diffs = Vec::new();
@@ -5117,6 +5152,27 @@ expected_signal = "x"
         .unwrap();
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].path, "Cargo.toml");
+    }
+
+    #[test]
+    fn outcome_ignore_globs_excludes_generated_target_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = dir.path().join("expected");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(expected.join("src")).unwrap();
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        fs::create_dir_all(workspace.join("target/debug/deps")).unwrap();
+        fs::write(expected.join("Cargo.lock"), "lockfile").unwrap();
+        fs::write(workspace.join("Cargo.lock"), "lockfile").unwrap();
+        fs::write(expected.join("src/lib.rs"), "expected").unwrap();
+        fs::write(workspace.join("src/lib.rs"), "changed").unwrap();
+        fs::write(workspace.join("target/debug/deps/libfixture.o"), "artifact").unwrap();
+
+        let diffs = diff_dirs_ignoring(&workspace, &expected, &["target/**".into()]).unwrap();
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "src/lib.rs");
+        assert_eq!(diffs[0].kind, "differs");
     }
 
     #[tokio::test]
