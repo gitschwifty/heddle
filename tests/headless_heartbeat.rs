@@ -86,9 +86,17 @@ impl Respond for ToolSlowResponder {
         } else {
             sse_body(&[text_delta("Done"), finish_with_usage()])
         };
-        ResponseTemplate::new(200)
+        let response = ResponseTemplate::new(200)
             .insert_header("content-type", "text/event-stream")
-            .set_body_raw(body.into_bytes(), "text/event-stream")
+            .set_body_raw(body.into_bytes(), "text/event-stream");
+        // On platforms without the workspace bash sandbox the bash call is
+        // rejected immediately. Keep the follow-up request in flight so the
+        // cancellation behavior remains exercised on every CI platform.
+        if n == 0 {
+            response
+        } else {
+            response.set_delay(Duration::from_secs(30))
+        }
     }
 }
 
