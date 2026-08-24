@@ -181,6 +181,8 @@ The agent has access to 9 built-in tools:
 | `save_memory` | write | Save persistent notes to project memory |
 
 Tools can be filtered via the `tools` config field or `HEDDLE_TOOLS` env var.
+See [Workspace Bash Sandbox](docs/sandbox.md) for the execution boundary and
+the macOS runtime validation command.
 
 ### Large-file reads
 
