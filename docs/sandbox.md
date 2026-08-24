@@ -79,3 +79,6 @@ permanent filesystem allowances, and do not inherit the entire host `PATH`.
 When a command needs additional runtime access, add the smallest allowance
 that makes a named contract test pass, and retain a negative escape test. Do
 not add a permissive fallback for normal sessions or evals.
+
+For comparative Seatbelt/runtime research and the next policy design, see
+[Sandboxed Developer Runtime Research](sandbox-runtime-research.md).
