@@ -199,6 +199,7 @@ fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<
         .map(|root| sandbox_string(root))
         .collect::<Result<Vec<_>, _>>()?;
     let toolchain = rust_toolchain_runtime()?;
+    let macos_sdk = macos_sdk_runtime()?;
     let profile = sandbox_profile(&root, &additional, toolchain.as_ref());
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile, "/bin/bash", "-c", command])
@@ -215,7 +216,53 @@ fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<
         cmd.env("PATH", format!("{}:/usr/bin:/bin", toolchain.cargo_bin));
         cmd.env("CARGO_HOME", toolchain.cargo_home);
     }
+    // The sandbox deliberately redirects HOME into the workspace, so Xcode's
+    // normal per-user discovery can no longer recover the selected developer
+    // directory. Preserve only the selected, non-secret system runtime paths.
+    if let Some(macos_sdk) = macos_sdk {
+        cmd.env("DEVELOPER_DIR", macos_sdk.developer_dir);
+        cmd.env("SDKROOT", macos_sdk.sdk_root);
+    }
     Ok(cmd)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sdk_runtime() -> Result<Option<MacosSdkRuntime>, String> {
+    let Ok(output) = std::process::Command::new("/usr/bin/xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-path"])
+        .output()
+    else {
+        // A shell must remain usable on Macs which have neither Xcode nor the
+        // Command Line Tools installed.
+        return Ok(None);
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let sdk_root = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let developer_roots = [
+        std::path::Path::new("/Applications/Xcode.app/Contents/Developer"),
+        std::path::Path::new("/Library/Developer/CommandLineTools"),
+    ];
+    let Some(developer_dir) = developer_roots
+        .iter()
+        .find(|root| sdk_root.starts_with(root))
+    else {
+        return Ok(None);
+    };
+    if !sdk_root.is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(MacosSdkRuntime {
+        sdk_root: sandbox_string(&sdk_root)?,
+        developer_dir: sandbox_string(developer_dir)?,
+    }))
+}
+
+#[cfg(target_os = "macos")]
+struct MacosSdkRuntime {
+    sdk_root: String,
+    developer_dir: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -276,7 +323,7 @@ fn sandbox_profile(
         .iter()
         .map(|root| {
             format!(
-                "(allow file-read* file-map-executable (subpath \"{root}\"))\n(allow file-write* (subpath \"{root}\"))\n"
+                "(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{root}\"))\n"
             )
         })
         .collect::<String>();
@@ -291,7 +338,7 @@ fn sandbox_profile(
         )
     });
     format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/Applications/Xcode.app\") (subpath \"/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (path-ancestors \"/System/Volumes/Data/private\"))\n(allow file-read* file-map-executable (subpath \"{root}\"))\n(allow file-write* (subpath \"{root}\"))\n{additional_rules}{toolchain_rules}"
+        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n{additional_rules}{toolchain_rules}"
     )
 }
 
@@ -346,7 +393,9 @@ mod tests {
 
         assert!(profile.contains("(literal \"/var/db/xcode_select_link\")"));
         assert!(profile.contains("(literal \"/private/var/db/xcode_select_link\")"));
+        assert!(profile.contains("(subpath \"/private/var/select\")"));
         assert!(profile.contains("(subpath \"/Applications/Xcode.app\")"));
+        assert!(profile.contains("(subpath \"/System/Volumes/Data/Applications/Xcode.app\")"));
         assert!(profile.contains("(subpath \"/Library/Developer/CommandLineTools\")"));
         assert!(!profile.contains("(allow file-write* (subpath \"/Library/Developer"));
     }
