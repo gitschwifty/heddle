@@ -32,16 +32,26 @@ echo sandbox-echo
 printf ' sandbox-printf'
 cargo metadata --no-deps --format-version 1 >/dev/null
 cargo generate-lockfile
+xcrun --sdk macosx --show-sdk-path >/dev/null
+cargo test --no-run
 ```
 
 That contract proves basic shell execution, builtin output, Rust-toolchain
-discovery, dynamic loading, and `Cargo.lock` generation. It is deliberately a
-small starting point; compilation and additional runtimes are added as named
+discovery, dynamic loading, `Cargo.lock` generation, and native Rust
+compilation. The macOS policy admits only the Xcode selector link, the standard
+`/Applications/Xcode.app` bundle, and Command Line Tools runtime needed by
+`xcrun`, `clang`, and the macOS SDK; it does not grant write access to them. It
+is deliberately a small starting point; additional runtimes are added as named
 contracts when Heddle supports them. It is covered by the macOS test suite:
 
 ```sh
 cargo test --test workspace_bash_runtime_live -- --nocapture
 ```
+
+Native compilation still requires a usable host Xcode or Command Line Tools
+installation. In particular, Heddle cannot accept an Xcode license on the
+user's behalf; the live compilation contract reports that host prerequisite as
+a skip rather than a sandbox-policy failure.
 
 The test creates its fixture under this checkout so it can also run when the
 test process already has a workspace-scoped sandbox. If the host explicitly

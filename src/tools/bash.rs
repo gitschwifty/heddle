@@ -291,7 +291,7 @@ fn sandbox_profile(
         )
     });
     format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (path-ancestors \"/System/Volumes/Data/private\"))\n(allow file-read* file-map-executable (subpath \"{root}\"))\n(allow file-write* (subpath \"{root}\"))\n{additional_rules}{toolchain_rules}"
+        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/Applications/Xcode.app\") (subpath \"/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (path-ancestors \"/System/Volumes/Data/private\"))\n(allow file-read* file-map-executable (subpath \"{root}\"))\n(allow file-write* (subpath \"{root}\"))\n{additional_rules}{toolchain_rules}"
     )
 }
 
@@ -338,6 +338,17 @@ mod tests {
         assert!(profile
             .contains("(subpath \"/Users/test/.rustup/toolchains/stable-aarch64-apple-darwin\")"));
         assert!(!profile.contains("(allow file-write* (subpath \"/Users/test/.cargo\"))"));
+    }
+
+    #[test]
+    fn sandbox_profile_allows_the_macos_xcode_runtime_needed_by_cargo() {
+        let profile = sandbox_profile("/private/tmp/workspace", &[], None);
+
+        assert!(profile.contains("(literal \"/var/db/xcode_select_link\")"));
+        assert!(profile.contains("(literal \"/private/var/db/xcode_select_link\")"));
+        assert!(profile.contains("(subpath \"/Applications/Xcode.app\")"));
+        assert!(profile.contains("(subpath \"/Library/Developer/CommandLineTools\")"));
+        assert!(!profile.contains("(allow file-write* (subpath \"/Library/Developer"));
     }
 }
 

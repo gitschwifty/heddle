@@ -75,4 +75,23 @@ mod macos {
         assert!(!result.contains("Exit code:"), "{result}");
         assert!(workspace.path().join("Cargo.lock").exists(), "{result}");
     }
+
+    #[tokio::test]
+    async fn confined_bash_resolves_the_macos_sdk_and_compiles_rust() {
+        let workspace = fixture();
+        let Some(result) = run(
+            workspace.path(),
+            "xcrun --sdk macosx --show-sdk-path >/dev/null && cargo test --no-run",
+        )
+        .await
+        else {
+            return;
+        };
+        if result.contains("have not agreed to the Xcode license agreements") {
+            eprintln!("skipping: host Xcode license has not been accepted");
+            return;
+        }
+
+        assert!(!result.contains("Exit code:"), "{result}");
+    }
 }
