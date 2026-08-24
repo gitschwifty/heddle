@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -20,7 +20,9 @@ use futures::StreamExt;
 use heddle::agent::loop_::{run_agent_loop, AgentLoopOptions};
 use heddle::agent::types::AgentEvent;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::{Provider, ProviderConfig, ProviderTelemetry, RetryConfig};
+use heddle::provider::types::{
+    ChunkStream, Provider, ProviderConfig, ProviderTelemetry, RetryConfig,
+};
 use heddle::tools::bash::create_workspace_bash_tool;
 use heddle::tools::edit::create_workspace_edit_tool;
 use heddle::tools::glob::create_workspace_glob_tool;
@@ -36,7 +38,7 @@ use heddle::tools::{
     create_bash_tool, create_edit_tool, create_glob_tool, create_grep_tool, create_read_tool,
     create_write_tool,
 };
-use heddle::types::{Message, SystemMessage, UserMessage};
+use heddle::types::{ChatCompletionResponse, Message, SystemMessage, ToolDefinition, UserMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -443,7 +445,26 @@ struct TaskResult {
     heddle_commit: String,
     evals_version: String,
     timestamp: String,
+    /// Legacy alias retained for existing aggregate readers. New consumers
+    /// should use `wall_latency_ms`.
     duration_ms: u128,
+    /// Monotonic elapsed time for this attempt, including setup, provider
+    /// retries/backoff, tools, scoring, and cleanup.
+    #[serde(default)]
+    wall_latency_ms: u128,
+    /// Time spent awaiting model-provider calls. This includes retry/backoff
+    /// inside a provider call and a partial call cancelled by task timeout.
+    #[serde(default)]
+    model_latency_ms: u128,
+    /// Time from an agent ToolStart event through its matching ToolEnd event.
+    /// An interrupted tool is counted through cancellation/attempt teardown.
+    #[serde(default)]
+    tool_latency_ms: u128,
+    /// The non-overlapping residual of wall minus model and tool time: task
+    /// setup, event scheduling, scoring, artifact work, and similar harness
+    /// overhead. It is never inferred from wall-clock timestamps.
+    #[serde(default)]
+    harness_latency_ms: u128,
     scores: Scores,
     rendered_system_prompt_chars: usize,
     /// Fingerprints of the exact system-prompt messages and selected tool
@@ -514,6 +535,14 @@ struct RetryAttempt {
     cause: FailureCause,
     error: String,
     duration_ms: u128,
+    #[serde(default)]
+    wall_latency_ms: u128,
+    #[serde(default)]
+    model_latency_ms: u128,
+    #[serde(default)]
+    tool_latency_ms: u128,
+    #[serde(default)]
+    harness_latency_ms: u128,
     cost: CostScore,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     provider_telemetry: Vec<ProviderTelemetry>,
@@ -534,12 +563,124 @@ impl RetryAttempt {
             cause: failure_cause(result)?,
             error: result.scores.error.clone()?,
             duration_ms: result.duration_ms,
+            wall_latency_ms: result.wall_latency_ms,
+            model_latency_ms: result.model_latency_ms,
+            tool_latency_ms: result.tool_latency_ms,
+            harness_latency_ms: result.harness_latency_ms,
             cost: result.scores.cost.clone(),
             provider_telemetry: result.provider_telemetry.clone(),
             debug_errors: result.debug_errors.clone(),
             call_telemetry: result.call_telemetry.clone(),
             retry_reason: None,
             retry_delay_ms: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LatencyBreakdown {
+    wall_latency_ms: u128,
+    model_latency_ms: u128,
+    tool_latency_ms: u128,
+    harness_latency_ms: u128,
+}
+
+impl LatencyBreakdown {
+    fn from_components(
+        wall_latency_ms: u128,
+        model_latency_ms: u128,
+        tool_latency_ms: u128,
+    ) -> Self {
+        Self {
+            wall_latency_ms,
+            model_latency_ms,
+            tool_latency_ms,
+            harness_latency_ms: wall_latency_ms.saturating_sub(model_latency_ms + tool_latency_ms),
+        }
+    }
+}
+
+#[derive(Default)]
+struct AttemptTimingAccumulator {
+    model_latency_ms: u128,
+    tool_latency_ms: u128,
+}
+
+impl AttemptTimingAccumulator {
+    fn breakdown(&self, wall_latency_ms: u128) -> LatencyBreakdown {
+        LatencyBreakdown::from_components(
+            wall_latency_ms,
+            self.model_latency_ms,
+            self.tool_latency_ms,
+        )
+    }
+}
+
+struct ElapsedTimer {
+    started: Instant,
+    target: Arc<StdMutex<AttemptTimingAccumulator>>,
+    kind: TimedWork,
+}
+
+#[derive(Clone, Copy)]
+enum TimedWork {
+    Model,
+    Tool,
+}
+
+impl ElapsedTimer {
+    fn new(target: Arc<StdMutex<AttemptTimingAccumulator>>, kind: TimedWork) -> Self {
+        Self {
+            started: Instant::now(),
+            target,
+            kind,
+        }
+    }
+}
+
+impl Drop for ElapsedTimer {
+    fn drop(&mut self) {
+        let elapsed_ms = self.started.elapsed().as_millis();
+        let mut accumulator = self.target.lock().expect("attempt timing lock poisoned");
+        match self.kind {
+            TimedWork::Model => accumulator.model_latency_ms += elapsed_ms,
+            TimedWork::Tool => accumulator.tool_latency_ms += elapsed_ms,
+        }
+    }
+}
+
+/// Eval-only provider decorator. A timer is RAII-backed so a task timeout
+/// still records the observed portion of an in-flight request.
+struct TimedProvider {
+    inner: Arc<dyn Provider>,
+    timing: Arc<StdMutex<AttemptTimingAccumulator>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for TimedProvider {
+    async fn send(
+        &self,
+        messages: &[Message],
+        tools: Option<&[ToolDefinition]>,
+        overrides: &serde_json::Value,
+    ) -> Result<ChatCompletionResponse> {
+        let _timer = ElapsedTimer::new(self.timing.clone(), TimedWork::Model);
+        self.inner.send(messages, tools, overrides).await
+    }
+
+    fn stream(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<ToolDefinition>>,
+        overrides: serde_json::Value,
+    ) -> ChunkStream {
+        self.inner.stream(messages, tools, overrides)
+    }
+
+    fn with(&self, overrides: serde_json::Value) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            inner: self.inner.with(overrides),
+            timing: self.timing.clone(),
         })
     }
 }
@@ -563,6 +704,10 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Serialize, Deserialize)]
 struct CompactTrace {
     assistant_turns: u32,
+    /// Mirrors the durable per-case latency fields, so an error can be
+    /// diagnosed from bounded evidence without loading a transcript.
+    #[serde(default)]
+    latency: LatencyBreakdown,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tool_sequence: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1597,6 +1742,7 @@ async fn run_one(
     options: &RunOneOptions,
 ) -> TaskResult {
     let start = Instant::now();
+    let timing = Arc::new(StdMutex::new(AttemptTimingAccumulator::default()));
     let tempdir = tempfile::tempdir().expect("tempdir");
     let workspace = tempdir.path();
     if let Err(e) = copy_dir_recursive(&task.dir.join("before"), workspace) {
@@ -1634,12 +1780,15 @@ async fn run_one(
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };
 
-    let provider = make_provider(
-        model,
-        api_key.to_string(),
-        options.max_tokens_per_response,
-        options.cache.as_ref(),
-    );
+    let provider: Arc<dyn Provider> = Arc::new(TimedProvider {
+        inner: make_provider(
+            model,
+            api_key.to_string(),
+            options.max_tokens_per_response,
+            options.cache.as_ref(),
+        ),
+        timing: timing.clone(),
+    });
     let effective_max_turns = task_max_turns(task.spec.max_turns, options.max_turns);
     // task.toml budget wins when set; else CLI default.
     let effective_max_tokens = task
@@ -1677,6 +1826,7 @@ async fn run_one(
     let mut finish_reasons: Vec<String> = Vec::new();
     let mut assistant_messages: Vec<AssistantTrace> = Vec::new();
     let mut budget_exceeded = false;
+    let mut active_tool_timer: Option<ElapsedTimer> = None;
 
     let prev_cwd = std::env::current_dir().ok();
     if std::env::set_current_dir(workspace).is_err() {
@@ -1712,12 +1862,14 @@ async fn run_one(
 
             match event {
                 AgentEvent::ToolStart { name, .. } => {
+                    active_tool_timer = Some(ElapsedTimer::new(timing.clone(), TimedWork::Tool));
                     tool_calls += 1;
                     println!("      -> {name}");
                     std::io::Write::flush(&mut std::io::stdout()).ok();
                     tool_sequence.push(name);
                 }
                 AgentEvent::ToolEnd { name, result, .. } => {
+                    drop(active_tool_timer.take());
                     if is_tool_failure(&result) {
                         let detail = truncate_trace_detail(&result);
                         let used_bytes: usize = tool_failures
@@ -1896,6 +2048,9 @@ async fn run_one(
     if let Some(call) = current_call.take() {
         call_telemetry.push(call);
     }
+    // If timeout/cancellation cut a tool short, dropping the timer records
+    // the observed execution time through attempt teardown.
+    drop(active_tool_timer);
     if let Some(prev) = prev_cwd {
         let _ = std::env::set_current_dir(prev);
     }
@@ -1983,8 +2138,13 @@ async fn run_one(
     {
         routed_models.clear();
     }
+    let latency = timing
+        .lock()
+        .expect("attempt timing lock poisoned")
+        .breakdown(start.elapsed().as_millis());
     let trace = Some(build_compact_trace(CompactTraceInput {
         assistant_turns: turns,
+        latency,
         tool_sequence: &tool_sequence,
         tool_failures: &tool_failures,
         finish_reasons: &finish_reasons,
@@ -2002,7 +2162,11 @@ async fn run_one(
         heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
         timestamp: Utc::now().to_rfc3339(),
-        duration_ms: start.elapsed().as_millis(),
+        duration_ms: latency.wall_latency_ms,
+        wall_latency_ms: latency.wall_latency_ms,
+        model_latency_ms: latency.model_latency_ms,
+        tool_latency_ms: latency.tool_latency_ms,
+        harness_latency_ms: latency.harness_latency_ms,
         rendered_system_prompt_chars,
         input_contract: Some(input_contract),
         routed_models,
@@ -2059,6 +2223,7 @@ fn error_result(
     err: String,
     start: Instant,
 ) -> TaskResult {
+    let latency = LatencyBreakdown::from_components(start.elapsed().as_millis(), 0, 0);
     TaskResult {
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
@@ -2067,7 +2232,11 @@ fn error_result(
         heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
         timestamp: Utc::now().to_rfc3339(),
-        duration_ms: start.elapsed().as_millis(),
+        duration_ms: latency.wall_latency_ms,
+        wall_latency_ms: latency.wall_latency_ms,
+        model_latency_ms: latency.model_latency_ms,
+        tool_latency_ms: latency.tool_latency_ms,
+        harness_latency_ms: latency.harness_latency_ms,
         rendered_system_prompt_chars: 0,
         input_contract: None,
         routed_models: Vec::new(),
@@ -2083,6 +2252,7 @@ fn error_result(
         assistant_messages: Vec::new(),
         trace: Some(CompactTrace {
             assistant_turns: 0,
+            latency,
             tool_sequence: Vec::new(),
             tool_counts: BTreeMap::new(),
             tool_failures: Vec::new(),
@@ -2123,6 +2293,17 @@ fn error_result(
     }
 }
 
+fn apply_case_latency(result: &mut TaskResult, latency: LatencyBreakdown) {
+    result.duration_ms = latency.wall_latency_ms;
+    result.wall_latency_ms = latency.wall_latency_ms;
+    result.model_latency_ms = latency.model_latency_ms;
+    result.tool_latency_ms = latency.tool_latency_ms;
+    result.harness_latency_ms = latency.harness_latency_ms;
+    if let Some(trace) = &mut result.trace {
+        trace.latency = latency;
+    }
+}
+
 async fn run_with_provider_retry(
     task: &Task,
     prompt: &Prompt,
@@ -2130,6 +2311,7 @@ async fn run_with_provider_retry(
     api_key: &str,
     options: &RunOneOptions,
 ) -> (TaskResult, Option<TaskResult>) {
+    let case_start = Instant::now();
     let first = run_one(task, prompt, model, api_key, options).await;
     let Some(policy) = retry_policy(&first) else {
         return (first, None);
@@ -2153,6 +2335,15 @@ async fn run_with_provider_retry(
             ..attempt
         });
     }
+    // The durable case record describes the complete logical task, while the
+    // retry artifact above preserves the first attempt on its own. The delay
+    // between attempts is intentionally residual harness time.
+    let case_latency = LatencyBreakdown::from_components(
+        case_start.elapsed().as_millis(),
+        first.model_latency_ms + retry.model_latency_ms,
+        first.tool_latency_ms + retry.tool_latency_ms,
+    );
+    apply_case_latency(&mut retry, case_latency);
     (retry, Some(first))
 }
 
@@ -2212,6 +2403,7 @@ fn truncate_trace_detail(detail: &str) -> String {
 
 struct CompactTraceInput<'a> {
     assistant_turns: u32,
+    latency: LatencyBreakdown,
     tool_sequence: &'a [String],
     tool_failures: &'a [ToolFailureTrace],
     finish_reasons: &'a [String],
@@ -2224,6 +2416,7 @@ struct CompactTraceInput<'a> {
 fn build_compact_trace(input: CompactTraceInput<'_>) -> CompactTrace {
     let CompactTraceInput {
         assistant_turns,
+        latency,
         tool_sequence,
         tool_failures,
         finish_reasons,
@@ -2257,6 +2450,7 @@ fn build_compact_trace(input: CompactTraceInput<'_>) -> CompactTrace {
         (distinct_providers.len() > 1).then(|| distinct_providers.join(" -> "));
     CompactTrace {
         assistant_turns,
+        latency,
         tool_sequence: tool_sequence
             .iter()
             .take(TRACE_MAX_TOOL_EVENTS)
@@ -2490,6 +2684,7 @@ fn format_summary(results: &[TaskResult]) -> String {
         "tokens",
         "cache r/w",
         "usd",
+        "wall",
         "err",
     ]);
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(results.len() + 1);
@@ -2521,6 +2716,7 @@ fn format_summary(results: &[TaskResult]) -> String {
                 r.scores.cost.cached_tokens, r.scores.cost.cache_write_tokens
             ),
             format!("{:.6}", r.scores.cost.usd),
+            format_duration_ms(r.wall_latency_ms),
             err,
         ]);
         rows.push(row);
@@ -2721,8 +2917,9 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         "cache read (avg)",
         "cache write (avg)",
         "usd (avg)",
+        "wall (avg)",
     ];
-    let mut rows: Vec<[String; 10]> = Vec::with_capacity(groups.len() + 1);
+    let mut rows: Vec<[String; 11]> = Vec::with_capacity(groups.len() + 1);
     rows.push(header.map(String::from));
 
     for ((task_id, prompt_id), runs_of) in &groups {
@@ -2777,6 +2974,11 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             .sum::<f64>()
             / n;
         let mean_usd = runs_of.iter().map(|r| r.scores.cost.usd).sum::<f64>() / n;
+        let mean_wall_latency_ms = runs_of
+            .iter()
+            .map(|r| r.wall_latency_ms as f64)
+            .sum::<f64>()
+            / n;
         let mean_cached = runs_of
             .iter()
             .map(|r| r.scores.cost.cached_tokens as f64)
@@ -2803,16 +3005,17 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
             format!("{mean_cached:.0}"),
             format!("{mean_cache_write:.0}"),
             format!("{mean_usd:.6}"),
+            format_duration_ms(mean_wall_latency_ms.round() as u128),
         ]);
     }
 
-    let mut widths = [0usize; 10];
+    let mut widths = [0usize; 11];
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
         }
     }
-    let render = |row: &[String; 10]| -> String {
+    let render = |row: &[String; 11]| -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
@@ -2956,6 +3159,13 @@ fn format_failure_details(results: &[TaskResult]) -> String {
             if let Some(cause) = failure_cause(r) {
                 out.push_str(&format!("    cause: {}\n", cause.label()));
             }
+            out.push_str(&format!(
+                "    timing: wall={}, model={}, tool={}, harness={}\n",
+                format_duration_ms(r.wall_latency_ms),
+                format_duration_ms(r.model_latency_ms),
+                format_duration_ms(r.tool_latency_ms),
+                format_duration_ms(r.harness_latency_ms),
+            ));
             if !r.scores.outcome.diff_files.is_empty() {
                 for d in &r.scores.outcome.diff_files {
                     out.push_str(&format!("    diff: {} ({})\n", d.path, d.kind));
@@ -3078,7 +3288,7 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>
     let stem = result_artifact_stem(r, attempt);
     let correlation = serde_json::to_string(&r.provider_telemetry)?;
     let contents = format!(
-        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nupstream_providers: {}\ngeneration_ids: {}\nprovider_correlation: {}\ncause: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
+        "task: {}\nprompt: {}\nrun_index: {}\nmodel: {}\nrouted_models: {}\nupstream_providers: {}\ngeneration_ids: {}\nprovider_correlation: {}\ncause: {}\nwall_latency_ms: {}\nmodel_latency_ms: {}\ntool_latency_ms: {}\nharness_latency_ms: {}\nturns: {}\ntool_calls: {}\ntokens: {}/{}\nusd: {:.6}\ntools: {}\nresult: ../{}.json\ntranscript: ../transcripts/{}.jsonl\n\nerror:\n{}\n",
         r.task_id,
         r.prompt_id,
         r.run_index,
@@ -3088,6 +3298,10 @@ fn write_error_artifact(results_dir: &Path, r: &TaskResult, attempt: Option<u32>
         r.generation_ids.join(","),
         correlation,
         failure_cause(r).map(FailureCause::label).unwrap_or("unknown"),
+        r.wall_latency_ms,
+        r.model_latency_ms,
+        r.tool_latency_ms,
+        r.harness_latency_ms,
         r.scores.efficiency.turns,
         r.scores.efficiency.tool_calls,
         r.scores.cost.tokens_in,
@@ -3997,6 +4211,10 @@ expected_signal = "x"
             evals_version: "0.1.0".into(),
             timestamp: "2026-07-22T00:00:00Z".into(),
             duration_ms: 1,
+            wall_latency_ms: 1,
+            model_latency_ms: 0,
+            tool_latency_ms: 0,
+            harness_latency_ms: 1,
             scores: Scores {
                 outcome: OutcomeScore {
                     passed: true,
@@ -4437,6 +4655,7 @@ expected_signal = "x"
             .collect::<Vec<_>>();
         let trace = build_compact_trace(CompactTraceInput {
             assistant_turns: 3,
+            latency: LatencyBreakdown::from_components(120, 80, 30),
             tool_sequence: &tools,
             tool_failures: &[ToolFailureTrace {
                 name: "edit_file".into(),
@@ -4481,7 +4700,43 @@ expected_signal = "x"
             trace.upstream_provider_change.as_deref(),
             Some("provider-a -> provider-b")
         );
+        assert_eq!(trace.latency.model_latency_ms, 80);
+        assert_eq!(trace.latency.harness_latency_ms, 10);
         assert!(trace.truncated);
+    }
+
+    #[test]
+    fn latency_breakdown_reports_residual_harness_time_without_overlap() {
+        assert_eq!(
+            LatencyBreakdown::from_components(1_000, 640, 250),
+            LatencyBreakdown {
+                wall_latency_ms: 1_000,
+                model_latency_ms: 640,
+                tool_latency_ms: 250,
+                harness_latency_ms: 110,
+            }
+        );
+        // An invalid overlapping measurement never produces a negative or
+        // fabricated residual.
+        assert_eq!(
+            LatencyBreakdown::from_components(100, 80, 40).harness_latency_ms,
+            0
+        );
+    }
+
+    #[test]
+    fn logical_case_latency_keeps_retry_delay_as_harness_time() {
+        let mut result = result(0, 0, None);
+        apply_case_latency(
+            &mut result,
+            LatencyBreakdown::from_components(1_000, 700, 200),
+        );
+
+        assert_eq!(result.duration_ms, 1_000);
+        assert_eq!(result.wall_latency_ms, 1_000);
+        assert_eq!(result.model_latency_ms, 700);
+        assert_eq!(result.tool_latency_ms, 200);
+        assert_eq!(result.harness_latency_ms, 100);
     }
 
     #[test]
@@ -4508,6 +4763,7 @@ expected_signal = "x"
         assert!(!summary.contains("| model |"));
         assert!(!summary.contains("| routed |"));
         assert!(summary.contains("| task"));
+        assert!(summary.contains("wall"));
         assert!(summary.contains("\nmodel: openrouter/auto\n1 passed"));
     }
 
@@ -4585,6 +4841,8 @@ expected_signal = "x"
 
         let log = std::fs::read_to_string(dir.path().join("errors/task-1__prompt-1.log")).unwrap();
         assert!(log.contains("routed_models: nvidia/nemotron:free"));
+        assert!(log.contains("wall_latency_ms: 1"));
+        assert!(log.contains("model_latency_ms: 0"));
         assert!(log.contains("error decoding provider JSON response"));
         assert!(log.contains("result: ../task-1__prompt-1.json"));
     }
@@ -4645,6 +4903,10 @@ expected_signal = "x"
             cause: FailureCause::ProviderApi,
             error: "error decoding provider JSON response".into(),
             duration_ms: 12,
+            wall_latency_ms: 12,
+            model_latency_ms: 10,
+            tool_latency_ms: 0,
+            harness_latency_ms: 2,
             cost: CostScore {
                 tokens_in: 50,
                 tokens_out: 5,
