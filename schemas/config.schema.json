@@ -180,6 +180,16 @@
         "boolean",
         "null"
       ]
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceConfigSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "definitions": {
@@ -410,6 +420,20 @@
           }
         }
       ]
+    },
+    "WorkspaceConfigSchema": {
+      "type": "object",
+      "properties": {
+        "additional_roots": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }
