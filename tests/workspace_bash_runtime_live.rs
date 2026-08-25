@@ -77,6 +77,21 @@ mod macos {
     }
 
     #[tokio::test]
+    async fn confined_bash_discovers_curated_developer_runtimes() {
+        let workspace = fixture();
+        let Some(result) = run(
+            workspace.path(),
+            "node --version && npx --version && tsc --version && bun --version && go version",
+        )
+        .await
+        else {
+            return;
+        };
+
+        assert!(!result.contains("Exit code:"), "{result}");
+    }
+
+    #[tokio::test]
     async fn confined_bash_resolves_the_macos_sdk_and_compiles_rust() {
         let workspace = fixture();
         let Some(result) = run(

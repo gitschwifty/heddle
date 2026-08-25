@@ -210,7 +210,14 @@ fn confined_bash_command(
     std::fs::create_dir_all(&cargo_target_dir)
         .map_err(|error| format!("Error: could not create Cargo target directory: {error}"))?;
     let toolchain = rust_toolchain_runtime()?;
-    let profile = sandbox_profile(&root, &additional, &runtime_root, toolchain.as_ref());
+    let runtimes = curated_runtimes()?;
+    let profile = sandbox_profile(
+        &root,
+        &additional,
+        &runtime_root,
+        toolchain.as_ref(),
+        &runtimes,
+    );
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile, "/bin/bash", "-c", command])
         .current_dir(&root)
@@ -222,9 +229,19 @@ fn confined_bash_command(
         .env("TMPDIR", runtime_tmp)
         .env("CARGO_TARGET_DIR", cargo_target_dir);
     if let Some(toolchain) = toolchain {
-        cmd.env("PATH", format!("{}:/usr/bin:/bin", toolchain.cargo_bin));
+        cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
         cmd.env("CARGO_HOME", toolchain.cargo_home);
+    } else {
+        cmd.env("PATH", runtime_path(&runtimes, None));
     }
+    cmd.env(
+        "GOCACHE",
+        std::path::Path::new(&runtime_root).join("go-cache"),
+    );
+    cmd.env(
+        "GOMODCACHE",
+        std::path::Path::new(&runtime_root).join("go-mod-cache"),
+    );
     Ok(cmd)
 }
 
@@ -233,6 +250,70 @@ struct RustToolchainRuntime {
     cargo_bin: String,
     cargo_home: String,
     toolchain_root: String,
+}
+
+#[cfg(target_os = "macos")]
+struct CuratedRuntime {
+    bin_dir: String,
+    root: String,
+}
+
+#[cfg(target_os = "macos")]
+fn curated_runtimes() -> Result<Vec<CuratedRuntime>, String> {
+    const COMMANDS: [&str; 5] = ["node", "npx", "tsc", "bun", "go"];
+    let mut candidates = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    candidates.extend([
+        std::path::PathBuf::from("/opt/homebrew/bin"),
+        std::path::PathBuf::from("/usr/local/bin"),
+    ]);
+    let mut runtimes = Vec::new();
+    for command in COMMANDS {
+        let Some(executable) = candidates
+            .iter()
+            .map(|directory| directory.join(command))
+            .find(|candidate| candidate.is_file())
+        else {
+            continue;
+        };
+        let Ok(canonical) = executable.canonicalize() else {
+            continue;
+        };
+        let Some(root) = canonical
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+        else {
+            continue;
+        };
+        let runtime = CuratedRuntime {
+            bin_dir: sandbox_string(
+                executable
+                    .parent()
+                    .ok_or_else(|| "Error: runtime command has no bin directory".to_string())?,
+            )?,
+            root: sandbox_string(root)?,
+        };
+        if !runtimes.iter().any(|existing: &CuratedRuntime| {
+            existing.bin_dir == runtime.bin_dir && existing.root == runtime.root
+        }) {
+            runtimes.push(runtime);
+        }
+    }
+    Ok(runtimes)
+}
+
+#[cfg(target_os = "macos")]
+fn runtime_path(runtimes: &[CuratedRuntime], cargo_bin: Option<&str>) -> String {
+    let mut entries = cargo_bin.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    for runtime in runtimes {
+        if !entries.contains(&runtime.bin_dir) {
+            entries.push(runtime.bin_dir.clone());
+        }
+    }
+    entries.extend(["/usr/bin".to_string(), "/bin".to_string()]);
+    entries.join(":")
 }
 
 #[cfg(target_os = "macos")]
@@ -282,6 +363,7 @@ fn sandbox_profile(
     additional: &[String],
     runtime_root: &str,
     toolchain: Option<&RustToolchainRuntime>,
+    runtimes: &[CuratedRuntime],
 ) -> String {
     let additional_rules = additional
         .iter()
@@ -301,8 +383,22 @@ fn sandbox_profile(
             toolchain.toolchain_root
         )
     });
+    let runtime_rules = runtimes
+        .iter()
+        .map(|runtime| {
+            format!(
+                "(allow file-read* file-map-executable (literal \"{}\") (subpath \"{}\") (literal \"{}\") (subpath \"{}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{}\") (path-ancestors \"{}\"))\n",
+                runtime.bin_dir,
+                runtime.bin_dir,
+                runtime.root,
+                runtime.root,
+                runtime.bin_dir,
+                runtime.root
+            )
+        })
+        .collect::<String>();
     format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{additional_rules}{toolchain_rules}"
+        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{additional_rules}{toolchain_rules}{runtime_rules}"
     )
 }
 
@@ -330,6 +426,7 @@ mod tests {
             &[],
             "/private/tmp/heddle-runtime",
             None,
+            &[],
         );
 
         assert!(profile.contains("(subpath \"/private/tmp/workspace\")"));
@@ -348,6 +445,7 @@ mod tests {
                 toolchain_root: "/Users/test/.rustup/toolchains/stable-aarch64-apple-darwin"
                     .to_string(),
             }),
+            &[],
         );
 
         assert!(profile.contains("(subpath \"/Users/test/.cargo/bin\")"));
@@ -364,6 +462,7 @@ mod tests {
             &[],
             "/private/tmp/heddle-runtime",
             None,
+            &[],
         );
 
         assert!(profile.contains("(literal \"/var/db/xcode_select_link\")"));
