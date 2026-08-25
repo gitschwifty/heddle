@@ -102,6 +102,17 @@ mod macos {
     }
 
     #[tokio::test]
+    async fn confined_bash_forwards_explicit_go_telemetry_setting() {
+        let workspace = fixture();
+        let Some(result) = run(workspace.path(), "go env GOTELEMETRY").await else {
+            return;
+        };
+
+        let expected = std::env::var("GOTELEMETRY").unwrap_or_else(|_| "off".into());
+        assert_eq!(result.trim(), expected);
+    }
+
+    #[tokio::test]
     async fn confined_bash_resolves_the_macos_sdk_and_compiles_rust() {
         let workspace = fixture();
         let Some(result) = run(
