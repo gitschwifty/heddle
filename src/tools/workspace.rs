@@ -25,6 +25,7 @@ pub enum WorkspaceError {
 pub struct WorkspaceBoundary {
     root: PathBuf,
     additional_roots: Vec<PathBuf>,
+    runtime_root: Arc<tempfile::TempDir>,
 }
 
 pub type SharedWorkspaceBoundary = Arc<RwLock<WorkspaceBoundary>>;
@@ -35,9 +36,14 @@ impl WorkspaceBoundary {
         if !root.is_dir() {
             return Err(WorkspaceError::Unresolvable);
         }
+        let runtime_root = tempfile::Builder::new()
+            .prefix("heddle-runtime-")
+            .tempdir()
+            .map_err(|_| WorkspaceError::Unresolvable)?;
         Ok(Self {
             root,
             additional_roots: Vec::new(),
+            runtime_root: Arc::new(runtime_root),
         })
     }
 
@@ -48,6 +54,13 @@ impl WorkspaceBoundary {
     pub fn roots(&self) -> impl Iterator<Item = &Path> {
         std::iter::once(self.root.as_path())
             .chain(self.additional_roots.iter().map(PathBuf::as_path))
+    }
+
+    /// Heddle-owned mutable runtime state for the lifetime of this boundary.
+    /// It is deliberately not a workspace root and is therefore unavailable to
+    /// filesystem-facing agent tools.
+    pub(crate) fn runtime_root(&self) -> &Path {
+        self.runtime_root.path()
     }
 
     pub fn add_root(&mut self, raw: impl AsRef<Path>) -> Result<PathBuf, WorkspaceError> {
@@ -140,6 +153,10 @@ mod tests {
         ));
         assert!(matches!(
             boundary.resolve(root.path().join("escape/secret")),
+            Err(WorkspaceError::OutsideRoot)
+        ));
+        assert!(matches!(
+            boundary.resolve(boundary.runtime_root()),
             Err(WorkspaceError::OutsideRoot)
         ));
     }

@@ -128,13 +128,13 @@ impl HeddleTool for WorkspaceBashTool {
         {
             return "Error: Aborted".to_string();
         }
-        let roots: Vec<_> = self
-            .0
-            .read()
-            .roots()
-            .map(std::path::Path::to_path_buf)
-            .collect();
-        let mut cmd = match confined_bash_command(&roots, command) {
+        let (roots, runtime_root) = {
+            let boundary = self.0.read();
+            let roots: Vec<std::path::PathBuf> =
+                boundary.roots().map(std::path::Path::to_path_buf).collect();
+            (roots, boundary.runtime_root().to_path_buf())
+        };
+        let mut cmd = match confined_bash_command(&roots, &runtime_root, command) {
             Ok(command) => command,
             Err(error) => return error,
         };
@@ -186,7 +186,11 @@ fn format_output(output: std::process::Output) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<Command, String> {
+fn confined_bash_command(
+    roots: &[std::path::PathBuf],
+    runtime_root: &std::path::Path,
+    command: &str,
+) -> Result<Command, String> {
     // `sandbox-exec` is a process/filesystem boundary: expansion, redirects,
     // children, and inherited cwd are all subject to this profile.
     let root = roots
@@ -198,9 +202,15 @@ fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<
         .skip(1)
         .map(|root| sandbox_string(root))
         .collect::<Result<Vec<_>, _>>()?;
+    let runtime_root = sandbox_string(runtime_root)?;
+    let runtime_tmp = std::path::Path::new(&runtime_root).join("tmp");
+    let cargo_target_dir = std::path::Path::new(&runtime_root).join("cargo-target");
+    std::fs::create_dir_all(&runtime_tmp)
+        .map_err(|error| format!("Error: could not create runtime temp directory: {error}"))?;
+    std::fs::create_dir_all(&cargo_target_dir)
+        .map_err(|error| format!("Error: could not create Cargo target directory: {error}"))?;
     let toolchain = rust_toolchain_runtime()?;
-    let macos_sdk = macos_sdk_runtime()?;
-    let profile = sandbox_profile(&root, &additional, toolchain.as_ref());
+    let profile = sandbox_profile(&root, &additional, &runtime_root, toolchain.as_ref());
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile, "/bin/bash", "-c", command])
         .current_dir(&root)
@@ -209,60 +219,13 @@ fn confined_bash_command(roots: &[std::path::PathBuf], command: &str) -> Result<
         // Developer toolchains expect a real, writable home directory. Point
         // it at the workspace, never the user's actual home directory.
         .env("HOME", &root)
-        // Keep temporary build files inside the writable workspace rather
-        // than accidentally requiring access to the host's temp directory.
-        .env("TMPDIR", root);
+        .env("TMPDIR", runtime_tmp)
+        .env("CARGO_TARGET_DIR", cargo_target_dir);
     if let Some(toolchain) = toolchain {
         cmd.env("PATH", format!("{}:/usr/bin:/bin", toolchain.cargo_bin));
         cmd.env("CARGO_HOME", toolchain.cargo_home);
     }
-    // The sandbox deliberately redirects HOME into the workspace, so Xcode's
-    // normal per-user discovery can no longer recover the selected developer
-    // directory. Preserve only the selected, non-secret system runtime paths.
-    if let Some(macos_sdk) = macos_sdk {
-        cmd.env("DEVELOPER_DIR", macos_sdk.developer_dir);
-        cmd.env("SDKROOT", macos_sdk.sdk_root);
-    }
     Ok(cmd)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_sdk_runtime() -> Result<Option<MacosSdkRuntime>, String> {
-    let Ok(output) = std::process::Command::new("/usr/bin/xcrun")
-        .args(["--sdk", "macosx", "--show-sdk-path"])
-        .output()
-    else {
-        // A shell must remain usable on Macs which have neither Xcode nor the
-        // Command Line Tools installed.
-        return Ok(None);
-    };
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let sdk_root = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    let developer_roots = [
-        std::path::Path::new("/Applications/Xcode.app/Contents/Developer"),
-        std::path::Path::new("/Library/Developer/CommandLineTools"),
-    ];
-    let Some(developer_dir) = developer_roots
-        .iter()
-        .find(|root| sdk_root.starts_with(root))
-    else {
-        return Ok(None);
-    };
-    if !sdk_root.is_dir() {
-        return Ok(None);
-    }
-    Ok(Some(MacosSdkRuntime {
-        sdk_root: sandbox_string(&sdk_root)?,
-        developer_dir: sandbox_string(developer_dir)?,
-    }))
-}
-
-#[cfg(target_os = "macos")]
-struct MacosSdkRuntime {
-    sdk_root: String,
-    developer_dir: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -317,6 +280,7 @@ fn rust_toolchain_runtime() -> Result<Option<RustToolchainRuntime>, String> {
 fn sandbox_profile(
     root: &str,
     additional: &[String],
+    runtime_root: &str,
     toolchain: Option<&RustToolchainRuntime>,
 ) -> String {
     let additional_rules = additional
@@ -338,7 +302,7 @@ fn sandbox_profile(
         )
     });
     format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n{additional_rules}{toolchain_rules}"
+        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{additional_rules}{toolchain_rules}"
     )
 }
 
@@ -361,7 +325,12 @@ mod tests {
 
     #[test]
     fn sandbox_profile_uses_sandbox_string_literals_for_workspace_paths() {
-        let profile = sandbox_profile("/private/tmp/workspace", &[], None);
+        let profile = sandbox_profile(
+            "/private/tmp/workspace",
+            &[],
+            "/private/tmp/heddle-runtime",
+            None,
+        );
 
         assert!(profile.contains("(subpath \"/private/tmp/workspace\")"));
         assert!(!profile.contains("\\\\\"/private/tmp/workspace\\\\\""));
@@ -372,6 +341,7 @@ mod tests {
         let profile = sandbox_profile(
             "/private/tmp/workspace",
             &[],
+            "/private/tmp/heddle-runtime",
             Some(&RustToolchainRuntime {
                 cargo_bin: "/Users/test/.cargo/bin".to_string(),
                 cargo_home: "/Users/test/.cargo".to_string(),
@@ -389,7 +359,12 @@ mod tests {
 
     #[test]
     fn sandbox_profile_allows_the_macos_xcode_runtime_needed_by_cargo() {
-        let profile = sandbox_profile("/private/tmp/workspace", &[], None);
+        let profile = sandbox_profile(
+            "/private/tmp/workspace",
+            &[],
+            "/private/tmp/heddle-runtime",
+            None,
+        );
 
         assert!(profile.contains("(literal \"/var/db/xcode_select_link\")"));
         assert!(profile.contains("(literal \"/private/var/db/xcode_select_link\")"));

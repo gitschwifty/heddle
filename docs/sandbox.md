@@ -70,11 +70,14 @@ container, remote, or cloud sandbox), which owns its runtime environment.
 
 Heddle deliberately takes the stricter of those approaches for local sessions:
 it constructs a small environment rather than inheriting the terminal's entire
-`PATH`. `HOME` and `TMPDIR` point into the workspace. Cargo is made available
-via `~/.cargo/bin`, with read-only access to its registry cache and Rustup
-toolchains; build artifacts and temporary files remain in the workspace. This
-keeps a host's unrelated PATH entries and
-credential-bearing home directories out of the bash tool.
+`PATH`. `HOME` points into the workspace, while `TMPDIR` and Cargo build output
+point into a separate Heddle-owned runtime root. That root is writable only to
+the confined Bash child, is unavailable to workspace file tools, and is removed
+when its session or eval case ends. Cargo is made available via `~/.cargo/bin`,
+with read-only access to its registry cache and Rustup toolchains. This keeps
+transient files such as build artifacts and Xcode's `xcrun_db` out of source
+diffs, while also keeping a host's unrelated PATH entries and credential-bearing
+home directories out of the bash tool.
 
 As more runtimes are added, model them as runtime descriptors: a constructed
 environment plus the executable, library, read-only state, and workspace-local

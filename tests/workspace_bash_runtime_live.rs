@@ -93,5 +93,9 @@ mod macos {
         }
 
         assert!(!result.contains("Exit code:"), "{result}");
+        assert!(
+            !workspace.path().join("xcrun_db").exists(),
+            "xcrun cache escaped runtime output root"
+        );
     }
 }
