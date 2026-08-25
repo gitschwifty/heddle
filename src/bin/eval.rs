@@ -2806,7 +2806,6 @@ fn format_summary(results: &[TaskResult]) -> String {
         "totals: {} prompt + {} completion = {} tokens, ${:.6}\n",
         totals.prompt_tokens, totals.completion_tokens, totals.total_tokens, totals.usd
     ));
-    out.push('\n');
     out
 }
 
@@ -3132,7 +3131,6 @@ fn format_aggregated_summary(results: &[TaskResult], runs: u32) -> String {
         "totals: {} prompt + {} completion = {} tokens, ${:.6}\n",
         totals.prompt_tokens, totals.completion_tokens, totals.total_tokens, totals.usd
     ));
-    out.push('\n');
     out
 }
 
@@ -4887,6 +4885,7 @@ expected_signal = "x"
         assert!(summary.contains("0/0"));
         assert!(summary.contains("cache tokens: 75 read, 25 written"));
         assert!(summary.contains("totals: 200 prompt + 40 completion = 240 tokens, $0.020000"));
+        assert!(summary.ends_with("totals: 200 prompt + 40 completion = 240 tokens, $0.020000\n"));
 
         let aggregated = format_aggregated_summary(&results, 2);
         assert!(aggregated.contains("cache read (avg)"));
@@ -6034,6 +6033,7 @@ async fn cmd_run(
         format_duration_ms(run_timing.duration_ms),
         format_duration_ms(summed_case_wall_ms),
     ));
+    summary.push('\n');
     let failures = format_failure_details(&results);
     print!("{summary}");
     print!("{failures}");
