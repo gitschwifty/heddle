@@ -1828,18 +1828,6 @@ async fn run_one(
     let mut budget_exceeded = false;
     let mut active_tool_timer: Option<ElapsedTimer> = None;
 
-    let prev_cwd = std::env::current_dir().ok();
-    if std::env::set_current_dir(workspace).is_err() {
-        return error_result(task, prompt, model, "set_current_dir failed".into(), start);
-    }
-    // Commands such as `cargo test` are legitimate agent behavior but their
-    // build output is not part of the requested workspace edit. Keep it in a
-    // separate temporary directory so exact-directory scoring remains about
-    // source changes rather than tool byproducts.
-    let cargo_target_dir = tempfile::tempdir().expect("cargo target tempdir");
-    let previous_cargo_target_dir = std::env::var_os("CARGO_TARGET_DIR");
-    std::env::set_var("CARGO_TARGET_DIR", cargo_target_dir.path());
-
     let opts = AgentLoopOptions {
         max_iterations: Some(effective_max_turns),
         ..AgentLoopOptions::default()
@@ -2051,14 +2039,6 @@ async fn run_one(
     // If timeout/cancellation cut a tool short, dropping the timer records
     // the observed execution time through attempt teardown.
     drop(active_tool_timer);
-    if let Some(prev) = prev_cwd {
-        let _ = std::env::set_current_dir(prev);
-    }
-    match previous_cargo_target_dir {
-        Some(path) => std::env::set_var("CARGO_TARGET_DIR", path),
-        None => std::env::remove_var("CARGO_TARGET_DIR"),
-    }
-
     let diff = match task.spec.score.outcome.expected_dir.as_deref() {
         Some(expected_dir) => match diff_dirs_ignoring(
             workspace,
