@@ -1743,6 +1743,7 @@ async fn run_one(
     model: &str,
     api_key: &str,
     options: &RunOneOptions,
+    progress_label: &str,
 ) -> TaskResult {
     let start = Instant::now();
     let timing = Arc::new(StdMutex::new(AttemptTimingAccumulator::default()));
@@ -1855,7 +1856,7 @@ async fn run_one(
                 AgentEvent::ToolStart { name, .. } => {
                     active_tool_timer = Some(ElapsedTimer::new(timing.clone(), TimedWork::Tool));
                     tool_calls += 1;
-                    println!("      -> {name}");
+                    println!("{progress_label} -> {name}");
                     std::io::Write::flush(&mut std::io::stdout()).ok();
                     tool_sequence.push(name);
                 }
@@ -1974,7 +1975,7 @@ async fn run_one(
                         .is_some_and(|previous| previous.provider != provider)
                     {
                         println!(
-                            "      upstream provider switch: {} -> {provider}",
+                            "{progress_label} upstream provider switch: {} -> {provider}",
                             upstream_providers.last().expect("checked above").provider
                         );
                     }
@@ -2293,9 +2294,10 @@ async fn run_with_provider_retry(
     model: &str,
     api_key: &str,
     options: &RunOneOptions,
+    progress_label: &str,
 ) -> (TaskResult, Option<TaskResult>) {
     let case_start = Instant::now();
-    let first = run_one(task, prompt, model, api_key, options).await;
+    let first = run_one(task, prompt, model, api_key, options, progress_label).await;
     let Some(policy) = retry_policy(&first) else {
         return (first, None);
     };
@@ -2303,14 +2305,14 @@ async fn run_with_provider_retry(
     let cause = failure_cause(&first)
         .expect("retryable_provider_error requires a structured failure cause");
     println!(
-        "      retrying from a fresh workspace and conversation after {} ({})",
+        "{progress_label} retrying from a fresh workspace and conversation after {} ({})",
         cause.label(),
         policy.reason
     );
     if !policy.delay.is_zero() {
         sleep(policy.delay).await;
     }
-    let mut retry = run_one(task, prompt, model, api_key, options).await;
+    let mut retry = run_one(task, prompt, model, api_key, options, progress_label).await;
     if let Some(attempt) = RetryAttempt::from_result(&first, 1) {
         retry.retry_attempts.push(RetryAttempt {
             retry_reason: Some(policy.reason),
@@ -5811,8 +5813,19 @@ async fn cmd_run(
             "[smoke {idx}/{smoke_total}] {} | {}",
             task.spec.id, prompt.id
         );
-        let (r, retry_attempt) =
-            run_with_provider_retry(task, prompt, &model, &api_key, &run_options).await;
+        let progress_label = format!(
+            "[smoke {idx}/{smoke_total} {} | {}]",
+            task.spec.id, prompt.id
+        );
+        let (r, retry_attempt) = run_with_provider_retry(
+            task,
+            prompt,
+            &model,
+            &api_key,
+            &run_options,
+            &progress_label,
+        )
+        .await;
         if let Some(retry_attempt) = retry_attempt.as_ref() {
             write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
         }
@@ -5881,45 +5894,58 @@ async fn cmd_run(
         eprintln!();
     } else {
         // Pass 2: matrix, repeated `runs` times to average out variance.
+        let matrix_total = matrix_pairs.len();
         for run_n in 1..=runs {
             let matrix_run_start = Instant::now();
             if runs > 1 {
                 println!();
                 println!("=== run {run_n}/{runs} ===");
             }
-            let workers = parallel_prompts.clamp(1, 4).min(chosen_prompts.len());
-            println!("  matrix prompt workers: {workers}");
+            let workers = parallel_prompts.clamp(1, 4).min(matrix_total.max(1));
+            println!("  matrix task workers: {workers}");
             let worker_tasks = chosen_tasks.clone();
             let worker_model = model.clone();
             let worker_api_key = api_key.clone();
             let worker_options = run_options.clone();
+            let prompt_count = chosen_prompts.len();
             let mut worker_results = futures::stream::iter(chosen_prompts.iter().enumerate())
                 .map(move |(prompt_index, prompt)| {
                     let tasks = worker_tasks.clone();
                     let model = worker_model.clone();
                     let api_key = worker_api_key.clone();
                     let options = worker_options.clone();
+                    let prompt_workers =
+                        workers / prompt_count + usize::from(prompt_index < workers % prompt_count);
                     async move {
-                        let mut cases = Vec::new();
-                        for task in tasks {
-                            if task.spec.smoke {
-                                continue;
-                            }
-                            let (mut result, mut retry_attempt) =
-                                run_with_provider_retry(task, prompt, &model, &api_key, &options)
-                                    .await;
-                            if runs > 1 {
-                                result.run_index = run_n;
-                                if let Some(attempt) = &mut retry_attempt {
-                                    attempt.run_index = run_n;
+                        let cases = futures::stream::iter(
+                            tasks.into_iter().filter(|task| !task.spec.smoke),
+                        )
+                        .map(|task| {
+                            let model = model.clone();
+                            let api_key = api_key.clone();
+                            let options = options.clone();
+                            let label = format!("[{} | {}]", task.spec.id, prompt.id);
+                            async move {
+                                let (mut result, mut retry_attempt) = run_with_provider_retry(
+                                    task, prompt, &model, &api_key, &options, &label,
+                                )
+                                .await;
+                                if runs > 1 {
+                                    result.run_index = run_n;
+                                    if let Some(attempt) = &mut retry_attempt {
+                                        attempt.run_index = run_n;
+                                    }
                                 }
+                                (result, retry_attempt)
                             }
-                            cases.push((result, retry_attempt));
-                        }
+                        })
+                        .buffer_unordered(prompt_workers.max(1))
+                        .collect::<Vec<_>>()
+                        .await;
                         (prompt_index, cases)
                     }
                 })
-                .buffer_unordered(workers)
+                .buffer_unordered(prompt_count)
                 .collect::<Vec<_>>()
                 .await;
             worker_results.sort_by_key(|(prompt_index, _)| *prompt_index);
