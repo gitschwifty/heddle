@@ -227,16 +227,23 @@ fn confined_bash_command(
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile, "/bin/bash", "-c", command])
         .current_dir(&root)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        // Developer toolchains expect a real, writable home directory. Point
-        // it at the workspace, never the user's actual home directory.
-        .env("HOME", &root)
+        // Preserve the normal process environment. Seatbelt provides the boundary.
+        .env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+        )
+        .env(
+            "HOME",
+            std::env::var("HOME").unwrap_or_else(|_| root.clone()),
+        )
         .env("TMPDIR", runtime_tmp)
         .env("CARGO_TARGET_DIR", cargo_target_dir);
     if let Some(toolchain) = toolchain {
         cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
-        cmd.env("CARGO_HOME", toolchain.cargo_home);
+        cmd.env(
+            "CARGO_HOME",
+            std::path::Path::new(&runtime_root).join("cargo-home"),
+        );
         // Cargo commands such as `cargo fmt` can invoke Rustup proxies. The
         // confined child has a workspace HOME, so provide the host's resolved,
         // read-only Rustup configuration and selected installed toolchain.
@@ -395,6 +402,35 @@ fn sandbox_profile(
     toolchain: Option<&RustToolchainRuntime>,
     runtimes: &[CuratedRuntime],
 ) -> String {
+    // Read-only host access is needed by dynamically linked developer tools.
+    // Keep writes limited to the workspace/runtime allowances below.
+    let sensitive_rules = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .flat_map(|home| {
+            [
+                home.join(".ssh"),
+                home.join(".aws"),
+                home.join(".gnupg"),
+                home.join(".config/gcloud"),
+                home.join(".config/gh"),
+                home.join(".npmrc"),
+                home.join(".netrc"),
+            ]
+        })
+        .filter_map(|path| sandbox_string(&path).ok())
+        .chain([
+            "/etc/master.passwd".to_string(),
+            "/etc/passwd".to_string(),
+            "/etc/shadow".to_string(),
+            "/private/var/db/dslocal".to_string(),
+        ])
+        .map(|path| {
+            format!(
+                "(deny file-read* (subpath \"{path}\"))\n(deny file-write* (subpath \"{path}\"))\n"
+            )
+        })
+        .collect::<String>();
     let additional_rules = additional
         .iter()
         .map(|root| {
@@ -432,7 +468,7 @@ fn sandbox_profile(
         })
         .collect::<String>();
     format!(
-        "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{additional_rules}{toolchain_rules}{runtime_rules}"
+        "(version 1)\n(deny default)\n(allow network-outbound)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-map-executable (subpath \"/\"))\n(allow file-read-metadata file-test-existence (subpath \"/\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{sensitive_rules}{additional_rules}{toolchain_rules}{runtime_rules}"
     )
 }
 
