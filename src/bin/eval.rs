@@ -115,6 +115,9 @@ enum Cmd {
         /// averaging out LLM stochastic variance.
         #[arg(long, default_value_t = 1)]
         runs: u32,
+        /// Maximum prompt workers for the matrix after serial smoke preflight.
+        #[arg(long, default_value_t = 1)]
+        parallel_prompts: usize,
         /// Include assistant text for passing runs too. Failed runs always
         /// include assistant text for diagnosis.
         #[arg(long, default_value_t = false)]
@@ -3361,6 +3364,7 @@ async fn main() -> Result<()> {
             cache_ttl_1h,
             static_context_only,
             condition,
+            parallel_prompts,
         } => {
             cmd_run(
                 &evals,
@@ -3377,6 +3381,7 @@ async fn main() -> Result<()> {
                 tag.as_deref(),
                 suite_label.as_deref(),
                 runs.max(1),
+                parallel_prompts,
                 record_all_text,
                 cache_prewarm,
                 cache_ttl_1h,
@@ -5587,6 +5592,7 @@ async fn cmd_run(
     tag: Option<&str>,
     suite_label_flag: Option<&str>,
     runs: u32,
+    parallel_prompts: usize,
     record_all_text: bool,
     cache_prewarm: bool,
     cache_ttl_1h: bool,
@@ -5875,56 +5881,77 @@ async fn cmd_run(
         eprintln!();
     } else {
         // Pass 2: matrix, repeated `runs` times to average out variance.
-        let matrix_total = matrix_pairs.len();
         for run_n in 1..=runs {
             let matrix_run_start = Instant::now();
             if runs > 1 {
                 println!();
                 println!("=== run {run_n}/{runs} ===");
             }
-            for (i, (task, prompt)) in matrix_pairs.iter().enumerate() {
-                let idx = i + 1;
-                let prefix = if runs > 1 {
-                    format!("[run {run_n}/{runs}, matrix {idx}/{matrix_total}]")
-                } else {
-                    format!("[matrix {idx}/{matrix_total}]")
-                };
-                println!("{prefix} {} | {}", task.spec.id, prompt.id);
-                let (mut r, mut retry_attempt) =
-                    run_with_provider_retry(task, prompt, &model, &api_key, &run_options).await;
-                if runs > 1 {
-                    r.run_index = run_n;
-                    if let Some(attempt) = retry_attempt.as_mut() {
-                        attempt.run_index = run_n;
+            let workers = parallel_prompts.clamp(1, 4).min(chosen_prompts.len());
+            println!("  matrix prompt workers: {workers}");
+            let worker_tasks = chosen_tasks.clone();
+            let worker_model = model.clone();
+            let worker_api_key = api_key.clone();
+            let worker_options = run_options.clone();
+            let mut worker_results = futures::stream::iter(chosen_prompts.iter().enumerate())
+                .map(move |(prompt_index, prompt)| {
+                    let tasks = worker_tasks.clone();
+                    let model = worker_model.clone();
+                    let api_key = worker_api_key.clone();
+                    let options = worker_options.clone();
+                    async move {
+                        let mut cases = Vec::new();
+                        for task in tasks {
+                            if task.spec.smoke {
+                                continue;
+                            }
+                            let (mut result, mut retry_attempt) =
+                                run_with_provider_retry(task, prompt, &model, &api_key, &options)
+                                    .await;
+                            if runs > 1 {
+                                result.run_index = run_n;
+                                if let Some(attempt) = &mut retry_attempt {
+                                    attempt.run_index = run_n;
+                                }
+                            }
+                            cases.push((result, retry_attempt));
+                        }
+                        (prompt_index, cases)
                     }
-                }
-                if let Some(retry_attempt) = retry_attempt.as_ref() {
-                    write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
-                }
-                let outcome = outcome_label(&r);
-                println!(
-                    "      {outcome} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
-                    r.scores.efficiency.tool_calls,
-                    r.scores.efficiency.turns,
-                    r.scores.cost.tokens_in,
-                    r.scores.cost.tokens_out,
-                    r.scores.cost.cached_tokens,
-                    r.scores.cost.cache_write_tokens,
-                    r.scores.cost.usd,
-                    r.duration_ms,
-                );
-                write_result_artifacts(&results_dir, &r)?;
-                cumulative_usd += attempt_cost(&r).usd;
-                if cumulative_usd > budget_stop_usd {
-                    budget_stopped = true;
-                }
-                results.push(r);
-                if budget_stopped {
-                    eprintln!(
-                        "budget_stop_usd exceeded (${cumulative_usd:.4} > ${budget_stop_usd:.4}); aborting remaining runs."
+                })
+                .buffer_unordered(workers)
+                .collect::<Vec<_>>()
+                .await;
+            worker_results.sort_by_key(|(prompt_index, _)| *prompt_index);
+            for (_, cases) in worker_results {
+                for (result, retry_attempt) in cases {
+                    if let Some(retry_attempt) = retry_attempt.as_ref() {
+                        write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
+                    }
+                    let outcome = outcome_label(&result);
+                    println!(
+                        "      {outcome} {} | {} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
+                        result.task_id,
+                        result.prompt_id,
+                        result.scores.efficiency.tool_calls,
+                        result.scores.efficiency.turns,
+                        result.scores.cost.tokens_in,
+                        result.scores.cost.tokens_out,
+                        result.scores.cost.cached_tokens,
+                        result.scores.cost.cache_write_tokens,
+                        result.scores.cost.usd,
+                        result.duration_ms,
                     );
-                    break;
+                    write_result_artifacts(&results_dir, &result)?;
+                    cumulative_usd += attempt_cost(&result).usd;
+                    results.push(result);
                 }
+            }
+            if cumulative_usd > budget_stop_usd {
+                budget_stopped = true;
+                eprintln!(
+                    "budget_stop_usd exceeded (${cumulative_usd:.4} > ${budget_stop_usd:.4}); aborting remaining runs."
+                );
             }
             if budget_stopped {
                 matrix_runs.push(MatrixRunTiming {
@@ -5939,20 +5966,34 @@ async fn cmd_run(
             });
         }
     }
-    let summary = if runs > 1 {
-        format_aggregated_summary(&results, runs)
-    } else {
-        format_summary(&results)
-    };
-    let failures = format_failure_details(&results);
-    print!("{summary}");
-    print!("{failures}");
     let run_timing = RunTiming {
         started_at: invocation_started_at,
         finished_at: Utc::now().to_rfc3339(),
         duration_ms: invocation_start.elapsed().as_millis(),
         matrix_runs,
     };
+    let summed_case_wall_ms = results
+        .iter()
+        .map(|result| result.wall_latency_ms)
+        .sum::<u128>();
+    let parallel_speedup = if run_timing.duration_ms == 0 {
+        0.0
+    } else {
+        summed_case_wall_ms as f64 / run_timing.duration_ms as f64
+    };
+    let mut summary = if runs > 1 {
+        format_aggregated_summary(&results, runs)
+    } else {
+        format_summary(&results)
+    };
+    summary.push_str(&format!(
+        "\nrun timing: measured wall={}, summed case wall={}, effective parallelism={parallel_speedup:.2}x\n",
+        format_duration_ms(run_timing.duration_ms),
+        format_duration_ms(summed_case_wall_ms),
+    ));
+    let failures = format_failure_details(&results);
+    print!("{summary}");
+    print!("{failures}");
     println!("wall time: {}", format_duration_ms(run_timing.duration_ms));
 
     let comparison = comparison_config(
