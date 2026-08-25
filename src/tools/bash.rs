@@ -508,7 +508,11 @@ mod tests {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn confined_bash_command(_roots: &[std::path::PathBuf], _command: &str) -> Result<Command, String> {
+fn confined_bash_command(
+    _roots: &[std::path::PathBuf],
+    _runtime_root: &std::path::Path,
+    _command: &str,
+) -> Result<Command, String> {
     Err(
         "Error: workspace boundary denied bash: no supported filesystem sandbox on this platform"
             .to_string(),
