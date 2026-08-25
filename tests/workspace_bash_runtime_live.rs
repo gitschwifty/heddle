@@ -22,7 +22,7 @@ mod macos {
         .unwrap();
         std::fs::write(
             workspace.path().join("src/lib.rs"),
-            "pub fn answer() -> u32 { 42 }\n",
+            "pub fn answer() -> u32 {\n    42\n}\n",
         )
         .unwrap();
 
@@ -74,6 +74,16 @@ mod macos {
         assert!(result.contains("cargo"), "{result}");
         assert!(!result.contains("Exit code:"), "{result}");
         assert!(workspace.path().join("Cargo.lock").exists(), "{result}");
+    }
+
+    #[tokio::test]
+    async fn confined_bash_runs_cargo_fmt_through_the_selected_rustup_toolchain() {
+        let workspace = fixture();
+        let Some(result) = run(workspace.path(), "cargo fmt --check").await else {
+            return;
+        };
+
+        assert!(!result.contains("Exit code:"), "{result}");
     }
 
     #[tokio::test]

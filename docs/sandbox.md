@@ -32,13 +32,17 @@ echo sandbox-echo
 printf ' sandbox-printf'
 cargo metadata --no-deps --format-version 1 >/dev/null
 cargo generate-lockfile
+cargo fmt --check
 xcrun --sdk macosx --show-sdk-path >/dev/null
 cargo test --no-run
 ```
 
 That contract proves basic shell execution, builtin output, Rust-toolchain
-discovery, dynamic loading, `Cargo.lock` generation, and native Rust
-compilation. The macOS policy admits only the Xcode selector link, the standard
+discovery, Rustup-proxy resolution, dynamic loading, `Cargo.lock` generation,
+and native Rust compilation. `CARGO_HOME`, `RUSTUP_HOME`, and the resolved
+`RUSTUP_TOOLCHAIN` are constructed from Heddle's startup environment and
+granted read-only; Heddle never runs `rustup default` or downloads a toolchain
+from within the sandbox. The macOS policy admits only the Xcode selector link, the standard
 `/Applications/Xcode.app` bundle, and Command Line Tools runtime needed by
 `xcrun`, `clang`, and the macOS SDK; it does not grant write access to them. It
 is deliberately a small starting point; additional runtimes are added as named
@@ -74,7 +78,10 @@ it constructs a small environment rather than inheriting the terminal's entire
 point into a separate Heddle-owned runtime root. That root is writable only to
 the confined Bash child, is unavailable to workspace file tools, and is removed
 when its session or eval case ends. Cargo is made available via `~/.cargo/bin`,
-with read-only access to its registry cache and Rustup toolchains. This keeps
+with read-only access to its registry cache, Rustup settings, and selected
+toolchain. `GOTELEMETRY` is the sole general runtime variable forwarded from
+the Heddle process; it defaults to `off` to prevent Go telemetry state from
+appearing under the workspace, while an explicit startup value wins. This keeps
 transient files such as build artifacts and Xcode's `xcrun_db` out of source
 diffs, while also keeping a host's unrelated PATH entries and credential-bearing
 home directories out of the bash tool.

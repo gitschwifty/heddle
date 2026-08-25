@@ -231,9 +231,21 @@ fn confined_bash_command(
     if let Some(toolchain) = toolchain {
         cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
         cmd.env("CARGO_HOME", toolchain.cargo_home);
+        // Cargo commands such as `cargo fmt` can invoke Rustup proxies. The
+        // confined child has a workspace HOME, so provide the host's resolved,
+        // read-only Rustup configuration and selected installed toolchain.
+        cmd.env("RUSTUP_HOME", toolchain.rustup_home)
+            .env("RUSTUP_TOOLCHAIN", toolchain.name);
     } else {
         cmd.env("PATH", runtime_path(&runtimes, None));
     }
+    // Go otherwise creates telemetry state beneath HOME. Defaulting this to
+    // off keeps worker workspaces clean, while a caller that deliberately set
+    // GOTELEMETRY at headless-process startup retains that choice.
+    cmd.env(
+        "GOTELEMETRY",
+        std::env::var_os("GOTELEMETRY").unwrap_or_else(|| "off".into()),
+    );
     cmd.env(
         "GOCACHE",
         std::path::Path::new(&runtime_root).join("go-cache"),
@@ -249,6 +261,8 @@ fn confined_bash_command(
 struct RustToolchainRuntime {
     cargo_bin: String,
     cargo_home: String,
+    rustup_home: String,
+    name: String,
     toolchain_root: String,
 }
 
@@ -321,7 +335,9 @@ fn rust_toolchain_runtime() -> Result<Option<RustToolchainRuntime>, String> {
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
         return Ok(None);
     };
-    let cargo_home = home.join(".cargo");
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".cargo"));
     let cargo_bin = cargo_home.join("bin");
     let rustup_home = std::env::var_os("RUSTUP_HOME")
         .map(std::path::PathBuf::from)
@@ -346,6 +362,12 @@ fn rust_toolchain_runtime() -> Result<Option<RustToolchainRuntime>, String> {
         .and_then(std::path::Path::parent)
         .filter(|root| root.starts_with(rustup_home.join("toolchains")))
         .ok_or_else(|| "Error: Rustup resolved an unsafe Cargo path".to_string())?;
+    let name = toolchain_root
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "Error: Rustup resolved a toolchain without a name".to_string())?
+        .to_string();
     Ok(Some(RustToolchainRuntime {
         cargo_bin: sandbox_string(
             cargo.parent().ok_or_else(|| {
@@ -353,6 +375,8 @@ fn rust_toolchain_runtime() -> Result<Option<RustToolchainRuntime>, String> {
             })?,
         )?,
         cargo_home: sandbox_string(&cargo_home)?,
+        rustup_home: sandbox_string(&rustup_home)?,
+        name,
         toolchain_root: sandbox_string(toolchain_root)?,
     }))
 }
@@ -375,12 +399,16 @@ fn sandbox_profile(
         .collect::<String>();
     let toolchain_rules = toolchain.map_or_else(String::new, |toolchain| {
         format!(
-            "(allow file-read* file-map-executable (subpath \"{}\"))\n(allow file-read* (literal \"{}\") (subpath \"{}/registry\") (subpath \"{}/git\"))\n(allow file-read* file-map-executable (subpath \"{}\"))\n",
+            "(allow file-read* file-map-executable (subpath \"{}\"))\n(allow file-read* (literal \"{}\") (literal \"{}/config.toml\") (subpath \"{}/registry\") (subpath \"{}/git\"))\n(allow file-read* (literal \"{}\") (literal \"{}/settings.toml\"))\n(allow file-read-metadata file-test-existence (literal \"{}\"))\n(allow file-read* file-map-executable (subpath \"{}\"))\n",
             toolchain.cargo_bin,
             toolchain.cargo_home,
             toolchain.cargo_home,
             toolchain.cargo_home,
-            toolchain.toolchain_root
+            toolchain.cargo_home,
+            toolchain.rustup_home,
+            toolchain.rustup_home,
+            toolchain.rustup_home,
+            toolchain.toolchain_root,
         )
     });
     let runtime_rules = runtimes
@@ -442,6 +470,8 @@ mod tests {
             Some(&RustToolchainRuntime {
                 cargo_bin: "/Users/test/.cargo/bin".to_string(),
                 cargo_home: "/Users/test/.cargo".to_string(),
+                rustup_home: "/Users/test/.rustup".to_string(),
+                name: "stable-aarch64-apple-darwin".to_string(),
                 toolchain_root: "/Users/test/.rustup/toolchains/stable-aarch64-apple-darwin"
                     .to_string(),
             }),
@@ -450,9 +480,11 @@ mod tests {
 
         assert!(profile.contains("(subpath \"/Users/test/.cargo/bin\")"));
         assert!(profile.contains("(subpath \"/Users/test/.cargo/registry\")"));
+        assert!(profile.contains("(literal \"/Users/test/.rustup/settings.toml\")"));
         assert!(profile
             .contains("(subpath \"/Users/test/.rustup/toolchains/stable-aarch64-apple-darwin\")"));
         assert!(!profile.contains("(allow file-write* (subpath \"/Users/test/.cargo\"))"));
+        assert!(!profile.contains("(allow file-write* (subpath \"/Users/test/.rustup\"))"));
     }
 
     #[test]
