@@ -23,7 +23,7 @@ use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::{
     ChunkStream, Provider, ProviderConfig, ProviderFailureKind, ProviderTelemetry, RetryConfig,
 };
-use heddle::tools::bash::create_workspace_bash_tool;
+use heddle::tools::bash::{create_workspace_bash_tool, WORKSPACE_BASH_CAPABILITY_CONTEXT};
 use heddle::tools::edit::create_workspace_edit_tool;
 use heddle::tools::glob::create_workspace_glob_tool;
 use heddle::tools::grep::create_workspace_grep_tool;
@@ -1208,12 +1208,15 @@ fn compose_system_prompt(prompt: &Prompt, workspace: &Path) -> String {
 
 fn compose_messages(prompt: &Prompt, workspace: &Path, cache_mode: bool) -> Vec<Message> {
     if !cache_mode {
+        let mut messages = Vec::new();
         let composed = compose_system_prompt(prompt, workspace);
-        return if composed.is_empty() {
-            Vec::new()
-        } else {
-            vec![Message::System(SystemMessage { content: composed })]
-        };
+        if !composed.is_empty() {
+            messages.push(Message::System(SystemMessage { content: composed }));
+        }
+        messages.push(Message::System(SystemMessage {
+            content: WORKSPACE_BASH_CAPABILITY_CONTEXT.into(),
+        }));
+        return messages;
     }
 
     // Put the stable prompt body first so it remains a reusable provider-cache
@@ -1229,6 +1232,9 @@ fn compose_messages(prompt: &Prompt, workspace: &Path, cache_mode: bool) -> Vec<
     if !context.is_empty() {
         messages.push(Message::System(SystemMessage { content: context }));
     }
+    messages.push(Message::System(SystemMessage {
+        content: WORKSPACE_BASH_CAPABILITY_CONTEXT.into(),
+    }));
     messages
 }
 
@@ -5395,7 +5401,7 @@ expected_signal = "x"
         };
 
         let messages = compose_messages(&prompt, dir.path(), true);
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 3);
         assert!(matches!(
             &messages[0],
             Message::System(SystemMessage { content }) if content == "Follow the project instructions."
@@ -5403,6 +5409,10 @@ expected_signal = "x"
         assert!(matches!(
             &messages[1],
             Message::System(SystemMessage { content }) if content.contains("Current Working Directory")
+        ));
+        assert!(matches!(
+            &messages[2],
+            Message::System(SystemMessage { content }) if content.contains("network_mode: closed")
         ));
     }
 

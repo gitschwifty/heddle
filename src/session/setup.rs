@@ -45,7 +45,7 @@ use crate::tools::{
     create_web_fetch_tool_with_options, create_workspace_bash_tool, create_workspace_edit_tool,
     create_workspace_glob_tool, create_workspace_grep_tool, create_workspace_read_tool,
     create_workspace_write_tool, SharedWorkspaceBoundary, SubagentOptions, WebFetchOptions,
-    WorkspaceBoundary,
+    WorkspaceBoundary, WORKSPACE_BASH_CAPABILITY_CONTEXT,
 };
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
@@ -187,6 +187,7 @@ fn build_system_message(
         parts.push(tasks_ctx);
     }
     parts.push(runtime_context(&std::env::current_dir()?));
+    parts.push(WORKSPACE_BASH_CAPABILITY_CONTEXT.to_string());
     parts.push(base_prompt.to_string());
 
     Ok(Message::System(SystemMessage {

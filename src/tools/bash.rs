@@ -13,6 +13,12 @@ use super::workspace::SharedWorkspaceBoundary;
 pub struct BashTool;
 pub struct WorkspaceBashTool(SharedWorkspaceBoundary);
 
+/// Agent-facing capabilities for the OS-confined Bash tool. Provider traffic
+/// is not part of this capability: it never runs inside the Bash child.
+pub const WORKSPACE_BASH_CAPABILITY_CONTEXT: &str = "## Sandbox Capability Context\n\n- `network_mode: closed`\n- Outbound network is disabled for Bash commands in this sandbox. Do not use package downloads, `npx --yes`, `curl`, or other network-dependent commands; use installed local tools and dependencies instead.";
+
+const WORKSPACE_BASH_DESCRIPTION: &str = "Run a shell command and return its stdout and stderr. Bash runs in a workspace-confined sandbox with network_mode: closed; outbound network commands are unavailable.";
+
 pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
     Arc::new(BashTool)
 }
@@ -110,7 +116,7 @@ impl HeddleTool for WorkspaceBashTool {
         "bash"
     }
     fn description(&self) -> &str {
-        BashTool.description()
+        WORKSPACE_BASH_DESCRIPTION
     }
     fn parameters(&self) -> Value {
         BashTool.parameters()

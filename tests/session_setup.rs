@@ -248,6 +248,10 @@ async fn system_prompt_includes_runtime_cwd_context() {
             .content
             .contains(&format!("Current working directory: {}", cwd_dir.display())));
         assert!(m.content.contains("Do not invent absolute paths."));
+        assert!(m.content.contains("network_mode: closed"));
+        assert!(m
+            .content
+            .contains("Do not use package downloads, `npx --yes`, `curl`"));
     } else {
         panic!("expected system message");
     }
