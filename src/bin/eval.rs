@@ -2674,7 +2674,13 @@ fn format_summary(results: &[TaskResult]) -> String {
     ]);
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(results.len() + 1);
     rows.push(header.into_iter().map(String::from).collect());
-    for r in results {
+    let mut sorted_results: Vec<&TaskResult> = results.iter().collect();
+    sorted_results.sort_by(|left, right| {
+        left.task_id
+            .cmp(&right.task_id)
+            .then_with(|| left.prompt_id.cmp(&right.prompt_id))
+    });
+    for r in sorted_results {
         let err = r.scores.error.as_deref().unwrap_or("");
         let err: String = err.chars().take(50).collect();
         let tool_calls = r
@@ -2802,6 +2808,22 @@ fn format_summary(results: &[TaskResult]) -> String {
     ));
     out.push('\n');
     out
+}
+
+fn print_case_completion(progress_label: &str, result: &TaskResult) {
+    let outcome = outcome_label(result);
+    println!(
+        "{progress_label} {outcome} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
+        result.scores.efficiency.tool_calls,
+        result.scores.efficiency.turns,
+        result.scores.cost.tokens_in,
+        result.scores.cost.tokens_out,
+        result.scores.cost.cached_tokens,
+        result.scores.cost.cache_write_tokens,
+        result.scores.cost.usd,
+        result.duration_ms,
+    );
+    std::io::Write::flush(&mut std::io::stdout()).ok();
 }
 
 fn run_totals(results: &[TaskResult]) -> RunTotals {
@@ -4755,6 +4777,25 @@ expected_signal = "x"
     }
 
     #[test]
+    fn summary_orders_rows_by_task_then_prompt() {
+        let mut task_two_default = result(0, 0, None);
+        task_two_default.task_id = "002-task".into();
+        task_two_default.prompt_id = "default".into();
+        let mut task_one_default = result(0, 0, None);
+        task_one_default.task_id = "001-task".into();
+        task_one_default.prompt_id = "default".into();
+        let mut task_one_distilled = result(0, 0, None);
+        task_one_distilled.task_id = "001-task".into();
+        task_one_distilled.prompt_id = "claude-code-distilled".into();
+
+        let summary = format_summary(&[task_two_default, task_one_default, task_one_distilled]);
+        let distilled = summary.find("| 001-task | claude-code-distilled").unwrap();
+        let default = summary.find("| 001-task | default").unwrap();
+        let task_two = summary.find("| 002-task | default").unwrap();
+        assert!(distilled < default && default < task_two);
+    }
+
+    #[test]
     fn summaries_label_execution_errors_separately_from_scored_failures() {
         let mut result = result(0, 0, None);
         result.scores.outcome.passed = false;
@@ -5809,14 +5850,12 @@ async fn cmd_run(
     let smoke_total = smoke_pairs.len();
     for (i, (task, prompt)) in smoke_pairs.iter().enumerate() {
         let idx = i + 1;
-        println!(
-            "[smoke {idx}/{smoke_total}] {} | {}",
-            task.spec.id, prompt.id
-        );
         let progress_label = format!(
             "[smoke {idx}/{smoke_total} {} | {}]",
             task.spec.id, prompt.id
         );
+        println!("{progress_label} START");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
         let (r, retry_attempt) = run_with_provider_retry(
             task,
             prompt,
@@ -5829,18 +5868,7 @@ async fn cmd_run(
         if let Some(retry_attempt) = retry_attempt.as_ref() {
             write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
         }
-        let outcome = outcome_label(&r);
-        println!(
-            "      {outcome} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
-            r.scores.efficiency.tool_calls,
-            r.scores.efficiency.turns,
-            r.scores.cost.tokens_in,
-            r.scores.cost.tokens_out,
-            r.scores.cost.cached_tokens,
-            r.scores.cost.cache_write_tokens,
-            r.scores.cost.usd,
-            r.duration_ms,
-        );
+        print_case_completion(&progress_label, &r);
         if !r.scores.outcome.passed {
             smoke_failed = true;
         }
@@ -5926,6 +5954,8 @@ async fn cmd_run(
                             let options = options.clone();
                             let label = format!("[{} | {}]", task.spec.id, prompt.id);
                             async move {
+                                println!("{label} START");
+                                std::io::Write::flush(&mut std::io::stdout()).ok();
                                 let (mut result, mut retry_attempt) = run_with_provider_retry(
                                     task, prompt, &model, &api_key, &options, &label,
                                 )
@@ -5936,6 +5966,7 @@ async fn cmd_run(
                                         attempt.run_index = run_n;
                                     }
                                 }
+                                print_case_completion(&label, &result);
                                 (result, retry_attempt)
                             }
                         })
@@ -5954,20 +5985,6 @@ async fn cmd_run(
                     if let Some(retry_attempt) = retry_attempt.as_ref() {
                         write_retry_attempt_artifacts(&results_dir, retry_attempt, 1)?;
                     }
-                    let outcome = outcome_label(&result);
-                    println!(
-                        "      {outcome} {} | {} (tools={}, turns={}, tokens={}/{}, cache={}/{} r/w, usd=${:.6}, {}ms)",
-                        result.task_id,
-                        result.prompt_id,
-                        result.scores.efficiency.tool_calls,
-                        result.scores.efficiency.turns,
-                        result.scores.cost.tokens_in,
-                        result.scores.cost.tokens_out,
-                        result.scores.cost.cached_tokens,
-                        result.scores.cost.cache_write_tokens,
-                        result.scores.cost.usd,
-                        result.duration_ms,
-                    );
                     write_result_artifacts(&results_dir, &result)?;
                     cumulative_usd += attempt_cost(&result).usd;
                     results.push(result);
@@ -6013,14 +6030,13 @@ async fn cmd_run(
         format_summary(&results)
     };
     summary.push_str(&format!(
-        "\nrun timing: measured wall={}, summed case wall={}, effective parallelism={parallel_speedup:.2}x\n",
+        "run timing: measured wall={}, summed case wall={}, effective parallelism={parallel_speedup:.2}x\n",
         format_duration_ms(run_timing.duration_ms),
         format_duration_ms(summed_case_wall_ms),
     ));
     let failures = format_failure_details(&results);
     print!("{summary}");
     print!("{failures}");
-    println!("wall time: {}", format_duration_ms(run_timing.duration_ms));
 
     let comparison = comparison_config(
         &chosen_prompts,
