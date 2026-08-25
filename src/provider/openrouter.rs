@@ -14,7 +14,8 @@ use serde_json::{json, Map, Value};
 
 use super::overrides::validate_overrides;
 use super::types::{
-    AppAttribution, ChunkStream, Provider, ProviderConfig, ProviderFailure, ProviderTelemetry,
+    AppAttribution, ChunkStream, Provider, ProviderConfig, ProviderFailure, ProviderFailureKind,
+    ProviderTelemetry,
 };
 use crate::debug::debug;
 use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition};
@@ -392,6 +393,19 @@ impl Provider for OpenRouterProvider {
                 "provider",
                 &format!("{}: {:?}", failure.message, failure.telemetry),
             );
+            return Err(anyhow::Error::new(failure));
+        }
+        // A 2xx response with an empty JSON body is a provider-side malformed
+        // success, not an arbitrary response decode error. Preserve only the
+        // status/header correlation data so evals can safely retry it once.
+        if response_body.iter().all(u8::is_ascii_whitespace) {
+            let mut failure = provider_failure(
+                &response_headers,
+                Some(status.as_u16()),
+                &response_body,
+                "provider returned an empty HTTP-success JSON body",
+            );
+            failure.telemetry.failure_kind = Some(ProviderFailureKind::EmptySuccessBody);
             return Err(anyhow::Error::new(failure));
         }
         let parsed: ChatCompletionResponse =

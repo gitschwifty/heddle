@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use heddle::provider::openrouter::create_openrouter_provider;
-use heddle::provider::types::{ProviderConfig, ProviderFailure};
+use heddle::provider::types::{ProviderConfig, ProviderFailure, ProviderFailureKind};
 use heddle::types::{Message, UserMessage};
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -86,6 +86,34 @@ async fn send_non_json_error_body_is_not_exposed_as_normal_telemetry() {
         !err.to_string().contains("Internal server error"),
         "raw provider body must not be exposed: {err}"
     );
+}
+
+#[tokio::test]
+async fn send_empty_success_json_body_has_typed_safe_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/json")
+                .set_body_string(""),
+        )
+        .mount(&server)
+        .await;
+
+    let err = provider(server.uri())
+        .send(&user_msgs(), None, &json!({}))
+        .await
+        .expect_err("empty successful JSON response must fail");
+    let failure = err
+        .downcast_ref::<ProviderFailure>()
+        .expect("failure should retain typed provider telemetry");
+    assert_eq!(failure.telemetry.status, Some(200));
+    assert_eq!(
+        failure.telemetry.failure_kind,
+        Some(ProviderFailureKind::EmptySuccessBody)
+    );
+    assert!(failure.telemetry.detail.is_none());
 }
 
 #[tokio::test]

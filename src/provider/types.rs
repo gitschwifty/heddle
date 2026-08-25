@@ -10,6 +10,15 @@ use serde_json::Value;
 
 use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition};
 
+/// A narrowly-scoped classification for a provider response that was an HTTP
+/// success but could not be used by the agent. These values deliberately do
+/// not describe arbitrary decoder failures, which remain non-retryable.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFailureKind {
+    EmptySuccessBody,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct AppAttribution {
     pub referer: String,
@@ -46,6 +55,11 @@ pub struct ProviderConfig {
 /// request bodies, authorization, and arbitrary response payloads.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProviderTelemetry {
+    /// Safe classification of a malformed HTTP-success response. This is
+    /// separate from the provider's own error type because there may be no
+    /// provider error envelope at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<ProviderFailureKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

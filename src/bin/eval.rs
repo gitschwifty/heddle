@@ -21,7 +21,7 @@ use heddle::agent::loop_::{run_agent_loop, AgentLoopOptions};
 use heddle::agent::types::AgentEvent;
 use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::{
-    ChunkStream, Provider, ProviderConfig, ProviderTelemetry, RetryConfig,
+    ChunkStream, Provider, ProviderConfig, ProviderFailureKind, ProviderTelemetry, RetryConfig,
 };
 use heddle::tools::bash::create_workspace_bash_tool;
 use heddle::tools::edit::create_workspace_edit_tool;
@@ -505,6 +505,10 @@ struct TaskResult {
     /// and conversation. The final result remains one matrix observation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retry_attempts: Vec<RetryAttempt>,
+    /// Agent-loop retries which occurred inside this attempt. These remain
+    /// distinct from fresh-workspace eval retries in `retry_attempts`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_loop_retry_reasons: Vec<String>,
     /// Order of tool calls (names only). Useful for diagnosing why a task
     /// failed without re-reading the result JSON.
     tool_sequence: Vec<String>,
@@ -557,6 +561,8 @@ struct RetryAttempt {
     retry_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_delay_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_loop_retry_reasons: Vec<String>,
 }
 
 impl RetryAttempt {
@@ -576,6 +582,7 @@ impl RetryAttempt {
             call_telemetry: result.call_telemetry.clone(),
             retry_reason: None,
             retry_delay_ms: None,
+            agent_loop_retry_reasons: result.agent_loop_retry_reasons.clone(),
         })
     }
 }
@@ -721,6 +728,9 @@ struct CompactTrace {
     finish_reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     terminal_cause: Option<FailureCause>,
+    /// Retries performed without resetting the workspace/conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_loop_retry_reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     routed_model_change: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -849,6 +859,8 @@ enum FailureCause {
     DoomLoop,
     Timeout,
     ProviderApi,
+    ProviderMalformedSuccess,
+    EmptyAssistantResponse,
     Transport,
     Tool,
     Permission,
@@ -870,6 +882,8 @@ impl FailureCause {
             Self::DoomLoop => "doom_loop",
             Self::Timeout => "timeout",
             Self::ProviderApi => "provider_api",
+            Self::ProviderMalformedSuccess => "provider_malformed_success",
+            Self::EmptyAssistantResponse => "empty_assistant_response",
             Self::Transport => "transport",
             Self::Tool => "tool",
             Self::Permission => "permission",
@@ -1828,6 +1842,7 @@ async fn run_one(
     let mut tool_failures: Vec<ToolFailureTrace> = Vec::new();
     let mut tool_trace_truncated = false;
     let mut finish_reasons: Vec<String> = Vec::new();
+    let mut agent_loop_retry_reasons: Vec<String> = Vec::new();
     let mut assistant_messages: Vec<AssistantTrace> = Vec::new();
     let mut budget_exceeded = false;
     let mut active_tool_timer: Option<ElapsedTimer> = None;
@@ -1989,10 +2004,16 @@ async fn run_one(
                         call_telemetry.push(call);
                     }
                     if message.contains("; retrying once") {
+                        if is_empty_assistant_response_error(&message) {
+                            agent_loop_retry_reasons.push("empty_assistant_response".into());
+                        }
                         continue;
                     }
                     if message.starts_with("Max iterations (") {
                         limit = Some(LimitReason::MaxTurns);
+                    } else if is_empty_assistant_response_error(&message) {
+                        error_cause = Some(FailureCause::EmptyAssistantResponse);
+                        error = Some(message);
                     } else {
                         error_cause = Some(classify_runtime_error(&message));
                         error = Some(message);
@@ -2019,8 +2040,14 @@ async fn run_one(
                             telemetry: telemetry.clone(),
                         });
                     }
+                    let failure_kind = telemetry.failure_kind;
                     provider_telemetry.push(telemetry);
-                    error_cause = Some(FailureCause::ProviderApi);
+                    error_cause = Some(match failure_kind {
+                        Some(ProviderFailureKind::EmptySuccessBody) => {
+                            FailureCause::ProviderMalformedSuccess
+                        }
+                        None => FailureCause::ProviderApi,
+                    });
                     error = Some(message);
                     break;
                 }
@@ -2133,6 +2160,7 @@ async fn run_one(
         tool_failures: &tool_failures,
         finish_reasons: &finish_reasons,
         terminal_cause: failure_cause,
+        agent_loop_retry_reasons: &agent_loop_retry_reasons,
         routed_models: &routed_models,
         upstream_providers: &upstream_providers,
         tool_trace_truncated,
@@ -2161,6 +2189,7 @@ async fn run_one(
         call_telemetry,
         run_index: 0,
         retry_attempts: Vec::new(),
+        agent_loop_retry_reasons,
         tool_sequence,
         finish_reasons,
         assistant_messages,
@@ -2231,6 +2260,7 @@ fn error_result(
         call_telemetry: Vec::new(),
         run_index: 0,
         retry_attempts: Vec::new(),
+        agent_loop_retry_reasons: Vec::new(),
         tool_sequence: Vec::new(),
         finish_reasons: Vec::new(),
         assistant_messages: Vec::new(),
@@ -2242,6 +2272,7 @@ fn error_result(
             tool_failures: Vec::new(),
             finish_reasons: Vec::new(),
             terminal_cause: Some(FailureCause::HarnessInternal),
+            agent_loop_retry_reasons: Vec::new(),
             routed_model_change: None,
             upstream_provider_change: None,
             truncated: false,
@@ -2352,6 +2383,10 @@ fn classify_runtime_error(message: &str) -> FailureCause {
     }
 }
 
+fn is_empty_assistant_response_error(message: &str) -> bool {
+    message.starts_with("Empty assistant response from provider (")
+}
+
 fn classify_workspace_failure(
     changes_from_before: &[DirDiffEntry],
     expected_diff: &[DirDiffEntry],
@@ -2393,6 +2428,7 @@ struct CompactTraceInput<'a> {
     tool_failures: &'a [ToolFailureTrace],
     finish_reasons: &'a [String],
     terminal_cause: Option<FailureCause>,
+    agent_loop_retry_reasons: &'a [String],
     routed_models: &'a [RoutedModelObservation],
     upstream_providers: &'a [UpstreamProviderObservation],
     tool_trace_truncated: bool,
@@ -2406,6 +2442,7 @@ fn build_compact_trace(input: CompactTraceInput<'_>) -> CompactTrace {
         tool_failures,
         finish_reasons,
         terminal_cause,
+        agent_loop_retry_reasons,
         routed_models,
         upstream_providers,
         tool_trace_truncated,
@@ -2445,6 +2482,7 @@ fn build_compact_trace(input: CompactTraceInput<'_>) -> CompactTrace {
         tool_failures: tool_failures.to_vec(),
         finish_reasons: finish_reasons.to_vec(),
         terminal_cause,
+        agent_loop_retry_reasons: agent_loop_retry_reasons.to_vec(),
         routed_model_change,
         upstream_provider_change,
         truncated,
@@ -2572,6 +2610,18 @@ fn retry_policy(result: &TaskResult) -> Option<RetryPolicy> {
     if failure_cause(result) == Some(FailureCause::Transport) {
         return Some(RetryPolicy {
             reason: "transport_failure".into(),
+            delay: Duration::ZERO,
+        });
+    }
+    if failure_cause(result) == Some(FailureCause::ProviderMalformedSuccess) {
+        return Some(RetryPolicy {
+            reason: "malformed_success_empty_body".into(),
+            delay: Duration::ZERO,
+        });
+    }
+    if failure_cause(result) == Some(FailureCause::EmptyAssistantResponse) {
+        return Some(RetryPolicy {
+            reason: "empty_assistant_response_exhausted".into(),
             delay: Duration::ZERO,
         });
     }
@@ -4253,6 +4303,7 @@ expected_signal = "x"
             input_contract: None,
             run_index: 0,
             retry_attempts: Vec::new(),
+            agent_loop_retry_reasons: Vec::new(),
             tool_sequence: Vec::new(),
             finish_reasons: Vec::new(),
             assistant_messages: Vec::new(),
@@ -4670,6 +4721,7 @@ expected_signal = "x"
             }],
             finish_reasons: &["tool_calls".into()],
             terminal_cause: Some(FailureCause::Permission),
+            agent_loop_retry_reasons: &["empty_assistant_response".into()],
             routed_models: &[
                 RoutedModelObservation {
                     assistant_turn: 1,
@@ -4709,6 +4761,7 @@ expected_signal = "x"
         );
         assert_eq!(trace.latency.model_latency_ms, 80);
         assert_eq!(trace.latency.harness_latency_ms, 10);
+        assert_eq!(trace.agent_loop_retry_reasons, ["empty_assistant_response"]);
         assert!(trace.truncated);
     }
 
@@ -4729,6 +4782,39 @@ expected_signal = "x"
             LatencyBreakdown::from_components(100, 80, 40).harness_latency_ms,
             0
         );
+    }
+
+    #[test]
+    fn retry_policy_only_admits_the_two_typed_malformed_success_failures() {
+        let mut empty_body = result(0, 0, None);
+        empty_body.scores.outcome.passed = false;
+        empty_body.scores.error = Some("provider returned an empty HTTP-success JSON body".into());
+        empty_body.scores.failure_cause = Some(FailureCause::ProviderMalformedSuccess);
+        assert_eq!(
+            retry_policy(&empty_body).map(|policy| policy.reason),
+            Some("malformed_success_empty_body".into())
+        );
+
+        let mut empty_assistant = result(0, 0, None);
+        empty_assistant.scores.outcome.passed = false;
+        empty_assistant.scores.error = Some("Empty assistant response from provider".into());
+        empty_assistant.scores.failure_cause = Some(FailureCause::EmptyAssistantResponse);
+        assert_eq!(
+            retry_policy(&empty_assistant).map(|policy| policy.reason),
+            Some("empty_assistant_response_exhausted".into())
+        );
+
+        let mut ordinary_decode_error = result(0, 0, None);
+        ordinary_decode_error.scores.outcome.passed = false;
+        ordinary_decode_error.scores.error = Some("error decoding provider JSON response".into());
+        ordinary_decode_error.scores.failure_cause = Some(FailureCause::ProviderApi);
+        ordinary_decode_error
+            .provider_telemetry
+            .push(ProviderTelemetry {
+                status: Some(200),
+                ..ProviderTelemetry::default()
+            });
+        assert!(retry_policy(&ordinary_decode_error).is_none());
     }
 
     #[test]
@@ -4946,6 +5032,7 @@ expected_signal = "x"
             call_telemetry: Vec::new(),
             retry_reason: None,
             retry_delay_ms: None,
+            agent_loop_retry_reasons: Vec::new(),
         });
 
         let summary = format_summary(std::slice::from_ref(&final_result));
