@@ -54,6 +54,8 @@ pub struct RuntimePlacementConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit_ambient_config: Option<bool>,
 }
 
@@ -170,7 +172,6 @@ pub struct InitConfig {
     pub permissions: Option<PermissionsConfigSchema>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimePlacementConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<RoutingMetadata>,

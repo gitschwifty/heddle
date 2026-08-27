@@ -85,6 +85,12 @@ pub struct WorkspaceConfigSchema {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SandboxConfigSchema {
+    /// Additional absolute host paths Bash must not read or write.
+    pub deny_paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HeddleConfigSchema {
     pub api_key: Option<String>,
     pub model: Option<String>,
@@ -110,4 +116,5 @@ pub struct HeddleConfigSchema {
     pub permissions: Option<PermissionsConfigSchema>,
     pub hooks: Option<HooksConfig>,
     pub workspace: Option<WorkspaceConfigSchema>,
+    pub sandbox: Option<SandboxConfigSchema>,
 }

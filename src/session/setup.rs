@@ -20,7 +20,7 @@ use crate::config::agents_md::load_agents_context;
 use crate::config::discovery::{resolve_discovery, DiscoveryResult};
 use crate::config::features::{get_features, FeatureFlags, Mode};
 use crate::config::loader::{
-    load_config, load_config_without_files, HeddleConfig, PermissionsLayer,
+    load_config, load_config_from_file, load_config_without_files, HeddleConfig, PermissionsLayer,
 };
 use crate::config::paths::{ensure_heddle_dirs, get_project_memory_dir, get_project_sessions_dir};
 use crate::context::paste_cache::PasteCache;
@@ -42,10 +42,10 @@ use crate::tools::types::HeddleTool;
 use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_update_task_tool};
 use crate::tools::{
     create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
-    create_web_fetch_tool_with_options, create_workspace_bash_tool, create_workspace_edit_tool,
-    create_workspace_glob_tool, create_workspace_grep_tool, create_workspace_read_tool,
-    create_workspace_write_tool, SharedWorkspaceBoundary, SubagentOptions, WebFetchOptions,
-    WorkspaceBoundary, WORKSPACE_BASH_CAPABILITY_CONTEXT,
+    create_web_fetch_tool_with_options, create_workspace_bash_tool_with_deny_paths,
+    create_workspace_edit_tool, create_workspace_glob_tool, create_workspace_grep_tool,
+    create_workspace_read_tool, create_workspace_write_tool, SharedWorkspaceBoundary,
+    SubagentOptions, WebFetchOptions, WorkspaceBoundary, WORKSPACE_BASH_CAPABILITY_CONTEXT,
 };
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
@@ -112,6 +112,7 @@ pub struct PermissionOverrides {
 pub struct RuntimePlacement {
     pub state_root: Option<PathBuf>,
     pub transcript_path: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
     pub suppress_ambient_context: bool,
 }
 
@@ -141,7 +142,14 @@ fn default_tools(
         create_workspace_edit_tool(boundary.clone()),
         create_workspace_glob_tool(boundary.clone()),
         create_workspace_grep_tool(boundary.clone()),
-        create_workspace_bash_tool(boundary),
+        create_workspace_bash_tool_with_deny_paths(
+            boundary,
+            config
+                .sandbox_deny_paths
+                .iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
+        ),
         create_web_fetch_tool_with_options(WebFetchOptions {
             allow_private_addresses: config.web_fetch_allow_private_addresses,
         }),
@@ -234,7 +242,9 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     let mut workspace = WorkspaceBoundary::new(std::env::current_dir()?)
         .map_err(|error| anyhow!(error.to_string()))?;
 
-    let mut config = if placement
+    let mut config = if let Some(path) = placement.as_ref().and_then(|p| p.config_path.as_ref()) {
+        load_config_from_file(path)
+    } else if placement
         .as_ref()
         .map(|p| p.suppress_ambient_context)
         .unwrap_or(false)
@@ -243,6 +253,15 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     } else {
         load_config(None)
     };
+    if let Some(path) = config
+        .sandbox_deny_paths
+        .iter()
+        .find(|path| !std::path::Path::new(path).is_absolute())
+    {
+        return Err(anyhow!(
+            "sandbox.deny_paths entries must be absolute paths: {path:?}"
+        ));
+    }
     for root in config.workspace_additional_roots.iter().flatten() {
         workspace
             .add_root(root)

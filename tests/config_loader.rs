@@ -1,4 +1,4 @@
-use heddle::config::loader::{load_config, ApprovalMode};
+use heddle::config::loader::{load_config, load_config_from_file, ApprovalMode};
 
 mod common;
 use common::Sandbox;
@@ -48,6 +48,37 @@ fn loads_global_config_toml() {
     write_global(&sb, r#"model = "anthropic/claude-sonnet""#);
     let cfg = load_config(None);
     assert_eq!(cfg.model, "anthropic/claude-sonnet");
+}
+
+#[test]
+fn sandbox_deny_paths_merge_from_global_and_local_config() {
+    let sb = Sandbox::new("loader-sandbox-deny-paths");
+    clear_env();
+    write_global(&sb, "[sandbox]\ndeny_paths = [\"/Users/test/private\"]\n");
+    write_local(&sb, "[sandbox]\ndeny_paths = [\"/Volumes/secrets\"]\n");
+
+    let cfg = load_config(None);
+
+    assert_eq!(
+        cfg.sandbox_deny_paths,
+        vec!["/Users/test/private", "/Volumes/secrets"]
+    );
+}
+
+#[test]
+fn explicit_config_file_loads_sandbox_deny_paths_without_ambient_discovery() {
+    let sb = Sandbox::new("loader-explicit-sandbox-config");
+    clear_env();
+    let config_path = sb.project.join("worker-config.toml");
+    std::fs::write(
+        &config_path,
+        "[sandbox]\ndeny_paths = [\"/Users/test/private\"]\n",
+    )
+    .unwrap();
+
+    let cfg = load_config_from_file(&config_path);
+
+    assert_eq!(cfg.sandbox_deny_paths, vec!["/Users/test/private"]);
 }
 
 #[test]

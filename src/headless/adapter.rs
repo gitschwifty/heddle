@@ -271,6 +271,9 @@ fn build_session_options(
     let transcript_path = runtime
         .and_then(|r| r.transcript_path.as_ref())
         .map(PathBuf::from);
+    let config_path = runtime
+        .and_then(|r| r.config_path.as_ref())
+        .map(PathBuf::from);
     if matches!(mode, RuntimeMode::Isolated) && state_root.is_none() {
         return Err("runtime.state_root is required when runtime.mode is isolated".into());
     }
@@ -283,6 +286,17 @@ fn build_session_options(
     {
         return Err("runtime.transcript_path must be an absolute path".into());
     }
+    if config_path.as_ref().is_some_and(|path| !path.is_absolute()) {
+        return Err("runtime.config_path must be an absolute path".into());
+    }
+    if let Some(path) = &config_path {
+        if !path.is_file() {
+            return Err(format!(
+                "runtime.config_path must name an existing configuration file: {}",
+                path.display()
+            ));
+        }
+    }
     let suppress_ambient_context = matches!(mode, RuntimeMode::Isolated)
         && !runtime
             .and_then(|r| r.inherit_ambient_config)
@@ -290,6 +304,7 @@ fn build_session_options(
     let placement = runtime.map(|_| RuntimePlacement {
         state_root: state_root.clone(),
         transcript_path: transcript_path.clone(),
+        config_path,
         suppress_ambient_context,
     });
     let runtime_metadata = runtime.map(|_| EffectiveRuntimeMetadata {

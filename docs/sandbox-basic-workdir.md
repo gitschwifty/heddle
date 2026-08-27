@@ -9,8 +9,15 @@ for local testing, not as a production security policy.
 - The workdir and Heddle runtime root are writable.
 - Installed developer tools and their runtime libraries are readable/executable.
 - Outbound network access is allowed for Cargo, Rustup, Git, and other tooling.
-- The normal subprocess environment is preserved, including `HOME` and `PATH`.
+- The normal subprocess environment is preserved, including `HOME` and `PATH`,
+  except Heddle and recognised credential variables are removed before Bash
+  starts. `SSH_AUTH_SOCK` remains available for agent-backed signing.
 - Sensitive paths are explicitly denied in the Seatbelt profile.
+
+The environment scrub removes all `HEDDLE_*` variables and common credential
+names/suffixes such as `*_TOKEN`, `*_KEY`, `*_API_KEY`, `*_SECRET`, `*_PASSWORD`,
+`*_CREDENTIAL(S)`, `GH_TOKEN`, and `DOCKER_AUTH_CONFIG`. This is defence in
+depth, not proof that every secret uses a conventional variable name.
 
 ## Sensitive-path deny list
 

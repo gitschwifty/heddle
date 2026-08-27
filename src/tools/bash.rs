@@ -11,13 +11,16 @@ use super::types::{ExecOptions, HeddleTool};
 use super::workspace::SharedWorkspaceBoundary;
 
 pub struct BashTool;
-pub struct WorkspaceBashTool(SharedWorkspaceBoundary);
+pub struct WorkspaceBashTool {
+    boundary: SharedWorkspaceBoundary,
+    additional_deny_paths: Vec<std::path::PathBuf>,
+}
 
 /// Agent-facing capabilities for the OS-confined Bash tool. Provider traffic
 /// is not part of this capability: it never runs inside the Bash child.
-pub const WORKSPACE_BASH_CAPABILITY_CONTEXT: &str = "## Sandbox Capability Context\n\n- `network_mode: closed`\n- Outbound network is disabled for Bash commands in this sandbox. Do not use package downloads, `npx --yes`, `curl`, or other network-dependent commands; use installed local tools and dependencies instead.";
+pub const WORKSPACE_BASH_CAPABILITY_CONTEXT: &str = "## Sandbox Capability Context\n\n- `network_mode: open`\n- Outbound network is available to Bash commands in this experimental developer sandbox.\n- The normal developer environment is available, except Heddle and recognised credential variables are removed before Bash starts.\n- Host credential files such as `.ssh`, `.gnupg`, `.aws`, and `.netrc` remain blocked by the OS sandbox. SSH-agent-backed signing can still use `SSH_AUTH_SOCK` without reading private key files.";
 
-const WORKSPACE_BASH_DESCRIPTION: &str = "Run a shell command and return its stdout and stderr. Bash runs in a workspace-confined sandbox with network_mode: closed; outbound network commands are unavailable.";
+const WORKSPACE_BASH_DESCRIPTION: &str = "Run a shell command and return its stdout and stderr. Bash runs in an experimental developer sandbox: workspace/runtime writes are confined, outbound network is available, and recognised credential environment variables are removed.";
 
 pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
     Arc::new(BashTool)
@@ -26,7 +29,19 @@ pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
 /// Creates a Bash tool that is confined by the OS, rather than by parsing shell
 /// text. Platforms without the supported confinement backend deny execution.
 pub fn create_workspace_bash_tool(boundary: SharedWorkspaceBoundary) -> Arc<dyn HeddleTool> {
-    Arc::new(WorkspaceBashTool(boundary))
+    create_workspace_bash_tool_with_deny_paths(boundary, Vec::new())
+}
+
+/// Like [`create_workspace_bash_tool`], with caller-configured host paths that
+/// receive additional read/write deny rules in the OS sandbox.
+pub fn create_workspace_bash_tool_with_deny_paths(
+    boundary: SharedWorkspaceBoundary,
+    additional_deny_paths: Vec<std::path::PathBuf>,
+) -> Arc<dyn HeddleTool> {
+    Arc::new(WorkspaceBashTool {
+        boundary,
+        additional_deny_paths,
+    })
 }
 
 #[async_trait]
@@ -135,12 +150,17 @@ impl HeddleTool for WorkspaceBashTool {
             return "Error: Aborted".to_string();
         }
         let (roots, runtime_root) = {
-            let boundary = self.0.read();
+            let boundary = self.boundary.read();
             let roots: Vec<std::path::PathBuf> =
                 boundary.roots().map(std::path::Path::to_path_buf).collect();
             (roots, boundary.runtime_root().to_path_buf())
         };
-        let mut cmd = match confined_bash_command(&roots, &runtime_root, command) {
+        let mut cmd = match confined_bash_command(
+            &roots,
+            &runtime_root,
+            &self.additional_deny_paths,
+            command,
+        ) {
             Ok(command) => command,
             Err(error) => return error,
         };
@@ -195,6 +215,7 @@ fn format_output(output: std::process::Output) -> String {
 fn confined_bash_command(
     roots: &[std::path::PathBuf],
     runtime_root: &std::path::Path,
+    additional_deny_paths: &[std::path::PathBuf],
     command: &str,
 ) -> Result<Command, String> {
     // `sandbox-exec` is a process/filesystem boundary: expansion, redirects,
@@ -209,6 +230,10 @@ fn confined_bash_command(
         .map(|root| sandbox_string(root))
         .collect::<Result<Vec<_>, _>>()?;
     let runtime_root = sandbox_string(runtime_root)?;
+    let additional_deny_paths = additional_deny_paths
+        .iter()
+        .map(|path| sandbox_string(path))
+        .collect::<Result<Vec<_>, _>>()?;
     let runtime_tmp = std::path::Path::new(&runtime_root).join("tmp");
     let cargo_target_dir = std::path::Path::new(&runtime_root).join("cargo-target");
     std::fs::create_dir_all(&runtime_tmp)
@@ -221,6 +246,7 @@ fn confined_bash_command(
         &root,
         &additional,
         &runtime_root,
+        &additional_deny_paths,
         toolchain.as_ref(),
         &runtimes,
     );
@@ -238,6 +264,7 @@ fn confined_bash_command(
         )
         .env("TMPDIR", runtime_tmp)
         .env("CARGO_TARGET_DIR", cargo_target_dir);
+    scrub_sensitive_environment(&mut cmd);
     if let Some(toolchain) = toolchain {
         cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
         cmd.env(
@@ -268,6 +295,38 @@ fn confined_bash_command(
         std::path::Path::new(&runtime_root).join("go-mod-cache"),
     );
     Ok(cmd)
+}
+
+/// Remove ambient credentials from the Bash child while preserving ordinary
+/// developer configuration and agent sockets such as `SSH_AUTH_SOCK`.
+#[cfg(target_os = "macos")]
+fn scrub_sensitive_environment(cmd: &mut Command) {
+    for (key, _) in std::env::vars_os() {
+        if is_sensitive_environment_variable(&key) {
+            cmd.env_remove(key);
+        }
+    }
+}
+
+fn is_sensitive_environment_variable(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy().to_ascii_uppercase();
+    key.starts_with("HEDDLE_")
+        || key == "OPENROUTER_API_KEY"
+        || key == "GH_TOKEN"
+        || key == "GITHUB_TOKEN"
+        || key == "GITLAB_TOKEN"
+        || key == "GLAB_TOKEN"
+        || key == "HF_TOKEN"
+        || key == "HUGGING_FACE_HUB_TOKEN"
+        || key == "DOCKER_AUTH_CONFIG"
+        || key.ends_with("_TOKEN")
+        || key.ends_with("_KEY")
+        || key.ends_with("_API_KEY")
+        || key.ends_with("_ACCESS_KEY")
+        || key.ends_with("_SECRET")
+        || key.ends_with("_PASSWORD")
+        || key.ends_with("_CREDENTIAL")
+        || key.ends_with("_CREDENTIALS")
 }
 
 #[cfg(target_os = "macos")]
@@ -399,6 +458,7 @@ fn sandbox_profile(
     root: &str,
     additional: &[String],
     runtime_root: &str,
+    additional_deny_paths: &[String],
     toolchain: Option<&RustToolchainRuntime>,
     runtimes: &[CuratedRuntime],
 ) -> String {
@@ -419,6 +479,7 @@ fn sandbox_profile(
             ]
         })
         .filter_map(|path| sandbox_string(&path).ok())
+        .chain(additional_deny_paths.iter().cloned())
         .chain([
             "/etc/master.passwd".to_string(),
             "/etc/passwd".to_string(),
@@ -487,7 +548,7 @@ fn sandbox_string(path: &std::path::Path) -> Result<String, String> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{sandbox_profile, RustToolchainRuntime};
+    use super::{is_sensitive_environment_variable, sandbox_profile, RustToolchainRuntime};
 
     #[test]
     fn sandbox_profile_uses_sandbox_string_literals_for_workspace_paths() {
@@ -495,6 +556,7 @@ mod tests {
             "/private/tmp/workspace",
             &[],
             "/private/tmp/heddle-runtime",
+            &[],
             None,
             &[],
         );
@@ -509,6 +571,7 @@ mod tests {
             "/private/tmp/workspace",
             &[],
             "/private/tmp/heddle-runtime",
+            &[],
             Some(&RustToolchainRuntime {
                 cargo_bin: "/Users/test/.cargo/bin".to_string(),
                 cargo_home: "/Users/test/.cargo".to_string(),
@@ -535,6 +598,7 @@ mod tests {
             "/private/tmp/workspace",
             &[],
             "/private/tmp/heddle-runtime",
+            &["/private/tmp/user-private".to_string()],
             None,
             &[],
         );
@@ -546,6 +610,33 @@ mod tests {
         assert!(profile.contains("(subpath \"/System/Volumes/Data/Applications/Xcode.app\")"));
         assert!(profile.contains("(subpath \"/Library/Developer/CommandLineTools\")"));
         assert!(!profile.contains("(allow file-write* (subpath \"/Library/Developer"));
+        assert!(profile.contains("(deny file-read* (subpath \"/private/tmp/user-private\"))"));
+        assert!(profile.contains("(deny file-write* (subpath \"/private/tmp/user-private\"))"));
+    }
+
+    #[test]
+    fn sensitive_environment_variable_detection_keeps_ssh_agent_but_removes_credentials() {
+        for key in [
+            "OPENROUTER_API_KEY",
+            "HEDDLE_HOME",
+            "GH_TOKEN",
+            "AWS_SESSION_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "CUSTOM_SERVICE_KEY",
+            "MY_SERVICE_PASSWORD",
+            "DOCKER_AUTH_CONFIG",
+        ] {
+            assert!(is_sensitive_environment_variable(key.as_ref()), "{key}");
+        }
+        for key in [
+            "HOME",
+            "PATH",
+            "SSH_AUTH_SOCK",
+            "GPG_TTY",
+            "GIT_CONFIG_GLOBAL",
+        ] {
+            assert!(!is_sensitive_environment_variable(key.as_ref()), "{key}");
+        }
     }
 }
 
@@ -553,6 +644,7 @@ mod tests {
 fn confined_bash_command(
     _roots: &[std::path::PathBuf],
     _runtime_root: &std::path::Path,
+    _additional_deny_paths: &[std::path::PathBuf],
     _command: &str,
 ) -> Result<Command, String> {
     Err(

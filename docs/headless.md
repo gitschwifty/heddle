@@ -71,7 +71,8 @@ Initialize a session. Must be sent before any other request.
     "runtime": {
       "mode": "isolated",
       "state_root": "/tmp/orboros/run-42/state",
-      "transcript_path": "/tmp/orboros/run-42/transcripts/worker-1.jsonl"
+      "transcript_path": "/tmp/orboros/run-42/transcripts/worker-1.jsonl",
+      "config_path": "/tmp/orboros/run-42/heddle-config.toml"
     },
     "routing": {
       "gateway": "openrouter",
@@ -99,6 +100,7 @@ Initialize a session. Must be sent before any other request.
 | `config.runtime.mode` | `"default"` or `"isolated"` | no | Runtime placement policy; omitted preserves current behavior |
 | `config.runtime.state_root` | absolute string | required for isolated | Caller-owned absolute root for isolated mutable state |
 | `config.runtime.transcript_path` | absolute string | no | Exact absolute JSONL transcript/session path for this session |
+| `config.runtime.config_path` | absolute string | no | Existing explicit Heddle TOML configuration file for this session; it replaces ambient TOML config discovery, including in isolated mode |
 | `config.runtime.inherit_ambient_config` | boolean | no | In isolated mode, opt back into normal config/discovery; defaults to `false` |
 | `config.routing.gateway` | string | no | Gateway/client identity, e.g. `openrouter` |
 | `config.routing.upstream_provider` | string | no | Requested upstream provider behind a gateway |

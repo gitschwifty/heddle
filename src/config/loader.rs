@@ -108,6 +108,8 @@ pub struct HeddleConfig {
     pub hooks: Option<ResolvedHooksConfig>,
     /// Project-local workspace expansions. Global configuration is deliberately ignored.
     pub workspace_additional_roots: Option<Vec<String>>,
+    /// Absolute paths that receive extra read/write deny rules in the Bash sandbox.
+    pub sandbox_deny_paths: Vec<String>,
 }
 
 impl Default for HeddleConfig {
@@ -137,6 +139,7 @@ impl Default for HeddleConfig {
             permissions_layers: None,
             hooks: None,
             workspace_additional_roots: None,
+            sandbox_deny_paths: Vec::new(),
         }
     }
 }
@@ -328,6 +331,37 @@ fn extract_permissions(raw: &TomlValue) -> Option<PermissionsLayer> {
     }
 }
 
+fn extract_sandbox_deny_paths(raw: &TomlValue) -> Vec<String> {
+    raw.as_table()
+        .and_then(|table| table.get("sandbox"))
+        .and_then(|sandbox| sandbox.as_table())
+        .and_then(|sandbox| sandbox.get("deny_paths"))
+        .and_then(as_string_array)
+        .unwrap_or_default()
+}
+
+/// Load one explicitly selected configuration file without ambient global or
+/// project discovery. Used by isolated headless sessions.
+pub fn load_config_from_file(path: &Path) -> HeddleConfig {
+    let raw = load_toml(path);
+    let mut merged = HeddleConfig::default();
+    apply_raw(&mut merged, &raw);
+    if let Some(layer) = extract_permissions(&raw) {
+        merged.permissions_layers = Some(vec![layer]);
+    }
+    let hooks = load_hooks(&TomlValue::Table(Default::default()), &raw);
+    if !hooks.is_empty() {
+        merged.hooks = Some(hooks);
+    }
+    merged.sandbox_deny_paths = extract_sandbox_deny_paths(&raw);
+    // Headless workers commonly supply their provider credential through the
+    // process environment, even when all policy is in the explicit file.
+    if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
+        merged.api_key = Some(api_key);
+    }
+    merged
+}
+
 /// Load config from defaults → global → local → env vars.
 pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     let global_path = get_heddle_home().join("config.toml");
@@ -358,6 +392,10 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     if !hooks.is_empty() {
         merged.hooks = Some(hooks);
     }
+    merged.sandbox_deny_paths = extract_sandbox_deny_paths(&global_raw);
+    merged
+        .sandbox_deny_paths
+        .extend(extract_sandbox_deny_paths(&local_raw));
     merged.workspace_additional_roots = local_raw
         .as_table()
         .and_then(|table| table.get("workspace"))

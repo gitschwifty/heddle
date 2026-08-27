@@ -72,6 +72,18 @@ allow = ["read(*)", "glob(*)"]         # Always allow
 deny = ["bash(rm *)", "write(.env*)"]  # Always deny
 ask = ["write(*)", "edit(*)"]          # Prompt for approval
 
+# ── Developer Sandbox ───────────────────────────────
+[sandbox]
+# Extra host paths that the experimental developer Bash sandbox must neither
+# read nor write. Entries must be absolute; keep personal paths in global
+# ~/.heddle/config.toml rather than committing them to project config.
+deny_paths = ["/Users/me/private", "/Volumes/work-secrets"]
+
+# Headless workers can read the same TOML shape from an explicit file passed as
+# config.runtime.config_path in their init request. This is particularly useful
+# with isolated headless mode, which otherwise intentionally avoids ambient
+# global and project config discovery.
+
 # ── Hooks ───────────────────────────────────────────
 # See docs/hooks.md for full reference
 [[hooks.pre_tool]]
