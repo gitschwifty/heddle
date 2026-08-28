@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1024,10 +1026,11 @@ impl TuiApp {
             return;
         };
         let bytes = text.len();
+        let clipboard_label = clipboard_copy_label(&text);
         self.copy_buffer = Some(text);
         self.write_copy_file(
             "heddle-copy.md",
-            "copy file updated: last assistant response",
+            &format!("{clipboard_label}; last assistant response saved"),
             bytes,
         );
     }
@@ -1039,8 +1042,13 @@ impl TuiApp {
         };
         let text = turn_logical_text(turn);
         let bytes = text.len();
+        let clipboard_label = clipboard_copy_label(&text);
         self.copy_buffer = Some(text);
-        self.write_copy_file("heddle-copy.md", "copy file updated: current turn", bytes);
+        self.write_copy_file(
+            "heddle-copy.md",
+            &format!("{clipboard_label}; current turn saved"),
+            bytes,
+        );
     }
 
     fn export_transcript(&mut self) {
@@ -1080,6 +1088,43 @@ impl TuiApp {
                 }) if !text.trim().is_empty() => Some(text.clone()),
                 _ => None,
             })
+    }
+}
+
+fn clipboard_copy_label(text: &str) -> String {
+    match copy_to_clipboard(text) {
+        Ok(()) => "copied to clipboard".to_string(),
+        Err(error) => format!("clipboard unavailable ({error}); copy file updated"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let mut command = Command::new("/usr/bin/pbcopy");
+    write_command_stdin(&mut command, text)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn copy_to_clipboard(_text: &str) -> Result<(), String> {
+    Err("clipboard integration is currently supported on macOS only".to_string())
+}
+
+fn write_command_stdin(command: &mut Command, text: &str) -> Result<(), String> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "clipboard command stdin was unavailable".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let status = child.wait().map_err(|error| error.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("clipboard command exited with {status}"))
     }
 }
 

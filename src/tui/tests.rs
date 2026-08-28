@@ -1332,6 +1332,23 @@ fn slash_command_parser_recognizes_tui_local_commands() {
     assert_eq!(parse_tui_slash_command("/exit"), SlashCommand::Quit);
 }
 
+#[test]
+fn clipboard_command_writer_preserves_logical_text() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let destination = temp.path().join("clipboard.txt");
+    let mut command = std::process::Command::new("/usr/bin/tee");
+    command
+        .arg(&destination)
+        .stdout(std::process::Stdio::null());
+
+    write_command_stdin(&mut command, "first line\nsecond line").expect("clipboard write");
+
+    assert_eq!(
+        std::fs::read_to_string(destination).expect("clipboard destination"),
+        "first line\nsecond line"
+    );
+}
+
 #[tokio::test]
 async fn copy_last_stores_raw_assistant_text_without_wrapped_line_breaks() {
     let (command_tx, mut command_rx) = mpsc::channel(1);
