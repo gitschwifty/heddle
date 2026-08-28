@@ -1,7 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-
-use super::wrap_message_lines;
+use unicode_width::UnicodeWidthChar;
 
 pub(super) fn assistant_markdown_lines(
     text: &str,
@@ -53,6 +52,7 @@ pub(super) fn assistant_markdown_lines(
                 first_prefix,
                 &indent,
                 table_spans(&cells, style),
+                text_width,
             );
             continue;
         }
@@ -66,7 +66,14 @@ pub(super) fn assistant_markdown_lines(
                     .add_modifier(Modifier::ITALIC),
             )];
             spans.extend(inline_spans(quote, quote_style));
-            push_inline_line(&mut lines, &mut first, first_prefix, &indent, spans);
+            push_inline_line(
+                &mut lines,
+                &mut first,
+                first_prefix,
+                &indent,
+                spans,
+                text_width,
+            );
             continue;
         }
 
@@ -82,6 +89,7 @@ pub(super) fn assistant_markdown_lines(
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
+                text_width,
             );
             continue;
         }
@@ -94,6 +102,7 @@ pub(super) fn assistant_markdown_lines(
                 first_prefix,
                 &indent,
                 inline_spans(rendered, style),
+                text_width,
             );
         } else {
             push_plain_wrapped(
@@ -275,19 +284,14 @@ fn push_plain_wrapped(
     width: usize,
     style: Style,
 ) {
-    let mut wrapped = wrap_message_lines(text, width);
-    if wrapped.is_empty() {
-        wrapped.push(String::new());
-    }
-    for chunk in wrapped {
-        push_inline_line(
-            lines,
-            first,
-            first_prefix,
-            indent,
-            vec![Span::styled(chunk, style)],
-        );
-    }
+    push_inline_line(
+        lines,
+        first,
+        first_prefix,
+        indent,
+        vec![Span::styled(text.to_string(), style)],
+        width,
+    );
 }
 
 fn push_inline_line(
@@ -296,15 +300,55 @@ fn push_inline_line(
     first_prefix: &str,
     indent: &str,
     spans: Vec<Span<'static>>,
+    width: usize,
 ) {
-    let prefix = if *first {
-        *first = false;
-        first_prefix.to_string()
-    } else {
-        indent.to_string()
-    };
-    let mut line_spans = Vec::with_capacity(spans.len() + 1);
-    line_spans.push(Span::styled(prefix, Style::default()));
-    line_spans.extend(spans);
-    lines.push(Line::from(line_spans));
+    for spans in wrap_inline_spans(spans, width) {
+        let prefix = if *first {
+            *first = false;
+            first_prefix.to_string()
+        } else {
+            indent.to_string()
+        };
+        let mut line_spans = Vec::with_capacity(spans.len() + 1);
+        line_spans.push(Span::styled(prefix, Style::default()));
+        line_spans.extend(spans);
+        lines.push(Line::from(line_spans));
+    }
+}
+
+fn wrap_inline_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    let mut lines = vec![Vec::new()];
+    let mut line_width = 0;
+
+    for span in spans {
+        let style = span.style;
+        let mut fragment = String::new();
+        for character in span.content.chars() {
+            if character == '\n' {
+                push_fragment(lines.last_mut().expect("line exists"), &mut fragment, style);
+                lines.push(Vec::new());
+                line_width = 0;
+                continue;
+            }
+
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if line_width > 0 && character_width > 0 && line_width + character_width > width {
+                push_fragment(lines.last_mut().expect("line exists"), &mut fragment, style);
+                lines.push(Vec::new());
+                line_width = 0;
+            }
+            fragment.push(character);
+            line_width += character_width;
+        }
+        push_fragment(lines.last_mut().expect("line exists"), &mut fragment, style);
+    }
+
+    lines
+}
+
+fn push_fragment(line: &mut Vec<Span<'static>>, fragment: &mut String, style: Style) {
+    if !fragment.is_empty() {
+        line.push(Span::styled(std::mem::take(fragment), style));
+    }
 }

@@ -799,6 +799,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.1.13",
  "url",
  "uuid",
  "walkdir",

@@ -1,4 +1,5 @@
 use crate::runtime::RuntimeStatus;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TranscriptKind {
@@ -52,13 +53,24 @@ pub(super) fn wrap_message_lines(message: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     for line in message.split('\n') {
-        let chars = line.chars().collect::<Vec<_>>();
-        if chars.is_empty() {
+        if line.is_empty() {
             lines.push(String::new());
             continue;
         }
-        for chunk in chars.chunks(width) {
-            lines.push(chunk.iter().collect());
+        let mut current = String::new();
+        let mut current_width = 0;
+        for character in line.chars() {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if current_width > 0 && character_width > 0 && current_width + character_width > width {
+                lines.push(current);
+                current = String::new();
+                current_width = 0;
+            }
+            current.push(character);
+            current_width += character_width;
+        }
+        if !current.is_empty() {
+            lines.push(current);
         }
     }
     lines
@@ -294,12 +306,22 @@ fn is_error_result(result: &str) -> bool {
 }
 
 pub(super) fn abbreviate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
+    if UnicodeWidthStr::width(value) <= max_chars {
         return value.to_string();
     }
     if max_chars <= 3 {
         return ".".repeat(max_chars);
     }
     let keep = max_chars.saturating_sub(3);
-    format!("{}...", value.chars().take(keep).collect::<String>())
+    let mut shortened = String::new();
+    let mut shortened_width = 0;
+    for character in value.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if shortened_width + character_width > keep {
+            break;
+        }
+        shortened.push(character);
+        shortened_width += character_width;
+    }
+    format!("{shortened}...")
 }

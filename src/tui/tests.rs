@@ -861,9 +861,12 @@ fn transcript_render_derives_markdown_lines_without_mutating_raw_text() {
         .any(|line| line.contains("| quoted inline note")));
     assert!(!rendered.iter().any(|line| line.contains("```")));
     assert!(rendered.iter().any(|line| line.contains("let value = 42;")));
-    assert!(rendered
+    let response_text = rendered_lines[7..]
         .iter()
-        .any(|line| line.contains("docs <https://example.invalid/docs>")));
+        .flat_map(|line| line.spans.iter().skip(1))
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(response_text.contains("See docs <https://example.invalid/docs>."));
     assert!(rendered.iter().any(|line| line.contains("Feature  State")));
     assert!(rendered.iter().any(|line| line.contains("Tables  Basic")));
     assert!(rendered.iter().any(|line| line.contains("wrap visually")));
@@ -887,6 +890,23 @@ fn transcript_render_derives_markdown_lines_without_mutating_raw_text() {
     assert_eq!(table_inline_span.style.bg, None);
 
     assert_eq!(app.transcript[0].text, raw);
+}
+
+#[test]
+fn transcript_wraps_styled_and_wide_content_to_the_display_width() {
+    let mut app = TuiApp::new();
+    app.transcript.push(TranscriptItem {
+        kind: TranscriptKind::Assistant,
+        text: "**0123456789abcdef**\n界界界界界界界界".to_string(),
+    });
+
+    let rendered_lines = transcript_text(&app, 12).lines;
+    // The startup card occupies the first seven rows. Every response row must
+    // fit the transcript rectangle, including styled Markdown and wide chars.
+    assert!(
+        rendered_lines[7..].iter().all(|line| line.width() <= 12),
+        "{rendered_lines:#?}"
+    );
 }
 
 #[test]
