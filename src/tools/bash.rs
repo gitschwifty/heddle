@@ -308,6 +308,7 @@ fn scrub_sensitive_environment(cmd: &mut Command) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn is_sensitive_environment_variable(key: &std::ffi::OsStr) -> bool {
     let key = key.to_string_lossy().to_ascii_uppercase();
     key.starts_with("HEDDLE_")

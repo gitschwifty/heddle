@@ -5,9 +5,11 @@
 
 use std::collections::HashMap;
 use std::fs;
+#[cfg(any(target_os = "macos", test))]
 use std::io::Write;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
+#[cfg(any(target_os = "macos", test))]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1109,6 +1111,7 @@ fn copy_to_clipboard(_text: &str) -> Result<(), String> {
     Err("clipboard integration is currently supported on macOS only".to_string())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn write_command_stdin(command: &mut Command, text: &str) -> Result<(), String> {
     let mut child = command
         .stdin(Stdio::piped())
