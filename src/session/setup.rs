@@ -34,7 +34,9 @@ use crate::permissions::checker::PermissionChecker;
 use crate::provider::factory::create_providers;
 use crate::provider::types::{AppAttribution, Provider};
 use crate::session::fork::{fork_session, ForkOptions};
-use crate::session::jsonl::{append_message, load_session, write_session_meta, SessionMeta};
+use crate::session::jsonl::{
+    append_context_marker, append_message, load_session, write_session_meta, SessionMeta,
+};
 use crate::session::list::find_session;
 use crate::tasks::storage::{format_tasks_summary, load_tasks};
 use crate::tools::registry::ToolRegistry;
@@ -356,10 +358,14 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         let raw = std::fs::read_to_string(&found)?;
         let first_line = raw.lines().next().unwrap_or("");
         let meta: SessionMeta = serde_json::from_str(first_line)?;
+        restore_interactive_workspace_roots(&workspace, &meta)?;
         (meta.id, found, loaded)
     } else if let Some(target) = &options.fork {
         let source = find_session(Some(target), None)
             .ok_or_else(|| anyhow!("Session not found: {target}"))?;
+        let source_meta = crate::session::jsonl::load_session_meta(&source)
+            .ok_or_else(|| anyhow!("session metadata is missing: {}", source.display()))?;
+        restore_interactive_workspace_roots(&workspace, &source_meta)?;
         let result = fork_session(&source, ForkOptions::default())?;
         let loaded = load_session(&result.session_file);
         (result.session_id, result.session_file, loaded)
@@ -384,14 +390,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
             forked_from: None,
             extra: std::iter::once((
                 "workspace_roots".to_string(),
-                serde_json::json!(workspace
-                    .read()
-                    .roots_with_sources()
-                    .map(|root| serde_json::json!({
-                        "path": root.path(),
-                        "source": root.source().label(),
-                    }))
-                    .collect::<Vec<_>>()),
+                workspace_roots_json(&workspace),
             ))
             .collect(),
         };
@@ -409,6 +408,14 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         append_message(&session_file, &system_msg)?;
         (sid, session_file, vec![system_msg])
     };
+
+    append_context_marker(
+        &session_file,
+        &serde_json::json!({
+            "type": "workspace_scope_resolved",
+            "roots": workspace_roots_json(&workspace),
+        }),
+    )?;
 
     let cost_tracker = Arc::new(Mutex::new(CostTracker::new()));
     let model_pricing = ModelPricing::new(
@@ -520,6 +527,46 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         runtime_placement: placement,
         workspace_boundary: workspace,
     })
+}
+
+fn workspace_roots_json(workspace: &SharedWorkspaceBoundary) -> serde_json::Value {
+    serde_json::json!(workspace
+        .read()
+        .roots_with_sources()
+        .map(|root| serde_json::json!({
+            "path": root.path(),
+            "source": root.source().label(),
+        }))
+        .collect::<Vec<_>>())
+}
+
+fn restore_interactive_workspace_roots(
+    workspace: &SharedWorkspaceBoundary,
+    meta: &SessionMeta,
+) -> Result<()> {
+    let Some(roots) = meta
+        .extra
+        .get("workspace_roots")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    for root in roots {
+        if root.get("source").and_then(serde_json::Value::as_str) != Some("session") {
+            continue;
+        }
+        let path = root
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("invalid session workspace root provenance"))?;
+        workspace
+            .write()
+            .add_interactive_root(path)
+            .map_err(|error| {
+                anyhow!("could not restore session workspace root {path:?}: {error}")
+            })?;
+    }
+    Ok(())
 }
 
 fn hook_mode_for(mode: Mode) -> HookMode {
