@@ -10,6 +10,11 @@ use tokio::process::Command;
 use super::types::{ExecOptions, HeddleTool};
 use super::workspace::SharedWorkspaceBoundary;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::confined_bash_command;
+
 pub struct BashTool;
 pub struct WorkspaceBashTool {
     boundary: SharedWorkspaceBoundary,
@@ -209,92 +214,6 @@ fn format_output(output: std::process::Output) -> String {
     } else {
         out
     }
-}
-
-#[cfg(target_os = "macos")]
-fn confined_bash_command(
-    roots: &[std::path::PathBuf],
-    runtime_root: &std::path::Path,
-    additional_deny_paths: &[std::path::PathBuf],
-    command: &str,
-) -> Result<Command, String> {
-    // `sandbox-exec` is a process/filesystem boundary: expansion, redirects,
-    // children, and inherited cwd are all subject to this profile.
-    let root = roots
-        .first()
-        .ok_or_else(|| "Error: workspace boundary denied empty workspace".to_string())?;
-    let root = sandbox_string(root)?;
-    let additional = roots
-        .iter()
-        .skip(1)
-        .map(|root| sandbox_string(root))
-        .collect::<Result<Vec<_>, _>>()?;
-    let runtime_root = sandbox_string(runtime_root)?;
-    let additional_deny_paths = additional_deny_paths
-        .iter()
-        .map(|path| sandbox_string(path))
-        .collect::<Result<Vec<_>, _>>()?;
-    let runtime_tmp = std::path::Path::new(&runtime_root).join("tmp");
-    let cargo_target_dir = std::path::Path::new(&runtime_root).join("cargo-target");
-    std::fs::create_dir_all(&runtime_tmp)
-        .map_err(|error| format!("Error: could not create runtime temp directory: {error}"))?;
-    std::fs::create_dir_all(&cargo_target_dir)
-        .map_err(|error| format!("Error: could not create Cargo target directory: {error}"))?;
-    let toolchain = rust_toolchain_runtime()?;
-    let runtimes = curated_runtimes()?;
-    let profile = sandbox_profile(
-        &root,
-        &additional,
-        &runtime_root,
-        &additional_deny_paths,
-        toolchain.as_ref(),
-        &runtimes,
-    );
-    let mut cmd = Command::new("/usr/bin/sandbox-exec");
-    cmd.args(["-p", &profile, "/bin/bash", "-c", command])
-        .current_dir(&root)
-        // Preserve the normal process environment. Seatbelt provides the boundary.
-        .env(
-            "PATH",
-            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
-        )
-        .env(
-            "HOME",
-            std::env::var("HOME").unwrap_or_else(|_| root.clone()),
-        )
-        .env("TMPDIR", runtime_tmp)
-        .env("CARGO_TARGET_DIR", cargo_target_dir);
-    scrub_sensitive_environment(&mut cmd);
-    if let Some(toolchain) = toolchain {
-        cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
-        cmd.env(
-            "CARGO_HOME",
-            std::path::Path::new(&runtime_root).join("cargo-home"),
-        );
-        // Cargo commands such as `cargo fmt` can invoke Rustup proxies. The
-        // confined child has a workspace HOME, so provide the host's resolved,
-        // read-only Rustup configuration and selected installed toolchain.
-        cmd.env("RUSTUP_HOME", toolchain.rustup_home)
-            .env("RUSTUP_TOOLCHAIN", toolchain.name);
-    } else {
-        cmd.env("PATH", runtime_path(&runtimes, None));
-    }
-    // Go otherwise creates telemetry state beneath HOME. Defaulting this to
-    // off keeps worker workspaces clean, while a caller that deliberately set
-    // GOTELEMETRY at headless-process startup retains that choice.
-    cmd.env(
-        "GOTELEMETRY",
-        std::env::var_os("GOTELEMETRY").unwrap_or_else(|| "off".into()),
-    );
-    cmd.env(
-        "GOCACHE",
-        std::path::Path::new(&runtime_root).join("go-cache"),
-    );
-    cmd.env(
-        "GOMODCACHE",
-        std::path::Path::new(&runtime_root).join("go-mod-cache"),
-    );
-    Ok(cmd)
 }
 
 /// Remove ambient credentials from the Bash child while preserving ordinary
