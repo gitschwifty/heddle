@@ -4,6 +4,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
 
@@ -19,13 +21,59 @@ pub struct BashTool;
 pub struct WorkspaceBashTool {
     boundary: SharedWorkspaceBoundary,
     additional_deny_paths: Vec<std::path::PathBuf>,
+    profile: SandboxProfile,
 }
 
-/// Agent-facing capabilities for the OS-confined Bash tool. Provider traffic
-/// is not part of this capability: it never runs inside the Bash child.
-pub const WORKSPACE_BASH_CAPABILITY_CONTEXT: &str = "## Sandbox Capability Context\n\n- `network_mode: open`\n- Outbound network is available to Bash commands in this experimental developer sandbox.\n- The normal developer environment is available, except Heddle and recognised credential variables are removed before Bash starts.\n- Host credential files such as `.ssh`, `.gnupg`, `.aws`, and `.netrc` remain blocked by the OS sandbox. SSH-agent-backed signing can still use `SSH_AUTH_SOCK` without reading private key files.";
+/// Named, enforced Bash policies. `strict` is the eval/headless baseline;
+/// `developer` retains the compatible interactive developer environment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxProfile {
+    Strict,
+    #[default]
+    Developer,
+}
 
-const WORKSPACE_BASH_DESCRIPTION: &str = "Run a shell command and return its stdout and stderr. Bash runs in an experimental developer sandbox: workspace/runtime writes are confined, outbound network is available, and recognised credential environment variables are removed.";
+impl SandboxProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Developer => "developer",
+        }
+    }
+
+    fn network_open(self) -> bool {
+        matches!(self, Self::Developer)
+    }
+}
+
+impl std::str::FromStr for SandboxProfile {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "strict" => Ok(Self::Strict),
+            "developer" => Ok(Self::Developer),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Agent-facing capability context for the selected OS-confined Bash policy.
+/// Provider traffic never runs in the Bash child.
+pub fn workspace_bash_capability_context(profile: SandboxProfile) -> &'static str {
+    match profile {
+        SandboxProfile::Strict => "## Sandbox Capability Context\n\n- `sandbox_profile: strict`\n- `network_mode: closed`\n- Bash has a constructed environment and may read only the workspace, Heddle runtime, and curated toolchain inputs. It may write only the workspace and runtime. Do not use package downloads, `npx --yes`, `curl`, or other network-dependent commands.",
+        SandboxProfile::Developer => "## Sandbox Capability Context\n\n- `sandbox_profile: developer`\n- `network_mode: open`\n- Outbound network is available to Bash commands in this developer sandbox. Workspace/runtime writes remain confined; the normal developer environment is available after recognised credentials are removed. Host credential files such as `.ssh`, `.gnupg`, `.aws`, and `.netrc` remain blocked by the OS sandbox.",
+    }
+}
+
+fn workspace_bash_description(profile: SandboxProfile) -> &'static str {
+    match profile {
+        SandboxProfile::Strict => "Run a shell command and return its stdout and stderr. Bash runs in the strict workspace sandbox with network_mode: closed.",
+        SandboxProfile::Developer => "Run a shell command and return its stdout and stderr. Bash runs in the developer sandbox: workspace/runtime writes are confined, outbound network is available, and recognised credential environment variables are removed.",
+    }
+}
 
 pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
     Arc::new(BashTool)
@@ -34,7 +82,7 @@ pub fn create_bash_tool() -> Arc<dyn HeddleTool> {
 /// Creates a Bash tool that is confined by the OS, rather than by parsing shell
 /// text. Platforms without the supported confinement backend deny execution.
 pub fn create_workspace_bash_tool(boundary: SharedWorkspaceBoundary) -> Arc<dyn HeddleTool> {
-    create_workspace_bash_tool_with_deny_paths(boundary, Vec::new())
+    create_workspace_bash_tool_with_profile(boundary, Vec::new(), SandboxProfile::Developer)
 }
 
 /// Like [`create_workspace_bash_tool`], with caller-configured host paths that
@@ -43,9 +91,24 @@ pub fn create_workspace_bash_tool_with_deny_paths(
     boundary: SharedWorkspaceBoundary,
     additional_deny_paths: Vec<std::path::PathBuf>,
 ) -> Arc<dyn HeddleTool> {
+    create_workspace_bash_tool_with_profile(
+        boundary,
+        additional_deny_paths,
+        SandboxProfile::Developer,
+    )
+}
+
+/// Like [`create_workspace_bash_tool_with_deny_paths`], with a named,
+/// enforced sandbox profile.
+pub fn create_workspace_bash_tool_with_profile(
+    boundary: SharedWorkspaceBoundary,
+    additional_deny_paths: Vec<std::path::PathBuf>,
+    profile: SandboxProfile,
+) -> Arc<dyn HeddleTool> {
     Arc::new(WorkspaceBashTool {
         boundary,
         additional_deny_paths,
+        profile,
     })
 }
 
@@ -136,7 +199,7 @@ impl HeddleTool for WorkspaceBashTool {
         "bash"
     }
     fn description(&self) -> &str {
-        WORKSPACE_BASH_DESCRIPTION
+        workspace_bash_description(self.profile)
     }
     fn parameters(&self) -> Value {
         BashTool.parameters()
@@ -164,6 +227,7 @@ impl HeddleTool for WorkspaceBashTool {
             &roots,
             &runtime_root,
             &self.additional_deny_paths,
+            self.profile,
             command,
         ) {
             Ok(command) => command,
@@ -379,6 +443,7 @@ fn sandbox_profile(
     additional: &[String],
     runtime_root: &str,
     additional_deny_paths: &[String],
+    profile: SandboxProfile,
     toolchain: Option<&RustToolchainRuntime>,
     runtimes: &[CuratedRuntime],
 ) -> String {
@@ -448,8 +513,18 @@ fn sandbox_profile(
             )
         })
         .collect::<String>();
+    let network_rule = if profile.network_open() {
+        "(allow network-outbound)\n"
+    } else {
+        ""
+    };
+    let developer_read_rules = if matches!(profile, SandboxProfile::Developer) {
+        "(allow file-read* file-map-executable (subpath \"/\"))\n(allow file-read-metadata file-test-existence (subpath \"/\"))\n"
+    } else {
+        ""
+    };
     format!(
-        "(version 1)\n(deny default)\n(allow network-outbound)\n(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n(allow file-read* file-map-executable (subpath \"/\"))\n(allow file-read-metadata file-test-existence (subpath \"/\"))\n(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{sensitive_rules}{additional_rules}{toolchain_rules}{runtime_rules}"
+        "(version 1)\n(deny default)\n{network_rule}(allow process-exec)\n(allow process-fork)\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n(allow sysctl-read)\n(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))\n(allow pseudo-tty)\n(allow file-read* file-write-data (literal \"/dev/null\"))\n(allow file-read* file-write-data (literal \"/dev/zero\"))\n(allow file-read-data file-write-data (subpath \"/dev/fd\"))\n{developer_read_rules}(allow file-read* file-test-existence (literal \"/\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath \"/Library/Apple\") (subpath \"/Library/Preferences\") (subpath \"/System/Library\") (subpath \"/System/Volumes/Data/Library/Preferences\") (subpath \"/usr/lib\") (subpath \"/usr/share\") (subpath \"/private/etc\"))\n(allow file-map-executable (subpath \"/Library/Apple/System/Library/Frameworks\") (subpath \"/Library/Apple/System/Library/PrivateFrameworks\") (subpath \"/System/Library/Frameworks\") (subpath \"/System/Library/PrivateFrameworks\") (subpath \"/usr/lib\"))\n(allow file-read-data file-read-metadata (subpath \"/bin\") (subpath \"/usr/bin\"))\n(allow file-read* file-map-executable (literal \"/var/db/xcode_select_link\") (literal \"/private/var/db/xcode_select_link\") (subpath \"/private/var/select\") (literal \"/Applications/Xcode.app\") (literal \"/Applications/Xcode.app/Contents/Developer\") (subpath \"/Applications/Xcode.app\") (literal \"/Library/Developer/CommandLineTools\") (subpath \"/Library/Developer/CommandLineTools\") (literal \"/System/Volumes/Data/Applications/Xcode.app\") (subpath \"/System/Volumes/Data/Applications/Xcode.app\") (literal \"/System/Volumes/Data/Library/Developer/CommandLineTools\") (subpath \"/System/Volumes/Data/Library/Developer/CommandLineTools\"))\n(allow file-read-metadata file-test-existence (literal \"/etc\") (literal \"/tmp\") (literal \"/var\") (literal \"/Applications\") (literal \"/Library\") (literal \"/Library/Developer\") (path-ancestors \"/System/Volumes/Data/private\") (path-ancestors \"{root}\"))\n(allow file-read* file-map-executable (literal \"{root}\") (subpath \"{root}\"))\n(allow file-write* (literal \"{root}\") (subpath \"{root}\"))\n(allow file-read* file-map-executable (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-write* (literal \"{runtime_root}\") (subpath \"{runtime_root}\"))\n(allow file-read-metadata file-test-existence (path-ancestors \"{runtime_root}\"))\n{sensitive_rules}{additional_rules}{toolchain_rules}{runtime_rules}"
     )
 }
 
@@ -468,7 +543,9 @@ fn sandbox_string(path: &std::path::Path) -> Result<String, String> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{is_sensitive_environment_variable, sandbox_profile, RustToolchainRuntime};
+    use super::{
+        is_sensitive_environment_variable, sandbox_profile, RustToolchainRuntime, SandboxProfile,
+    };
 
     #[test]
     fn sandbox_profile_uses_sandbox_string_literals_for_workspace_paths() {
@@ -477,6 +554,7 @@ mod tests {
             &[],
             "/private/tmp/heddle-runtime",
             &[],
+            SandboxProfile::Strict,
             None,
             &[],
         );
@@ -492,6 +570,7 @@ mod tests {
             &[],
             "/private/tmp/heddle-runtime",
             &[],
+            SandboxProfile::Strict,
             Some(&RustToolchainRuntime {
                 cargo_bin: "/Users/test/.cargo/bin".to_string(),
                 cargo_home: "/Users/test/.cargo".to_string(),
@@ -519,6 +598,7 @@ mod tests {
             &[],
             "/private/tmp/heddle-runtime",
             &["/private/tmp/user-private".to_string()],
+            SandboxProfile::Developer,
             None,
             &[],
         );
@@ -532,6 +612,33 @@ mod tests {
         assert!(!profile.contains("(allow file-write* (subpath \"/Library/Developer"));
         assert!(profile.contains("(deny file-read* (subpath \"/private/tmp/user-private\"))"));
         assert!(profile.contains("(deny file-write* (subpath \"/private/tmp/user-private\"))"));
+    }
+
+    #[test]
+    fn strict_profile_restores_closed_network_without_developer_host_reads() {
+        let strict = sandbox_profile(
+            "/private/tmp/workspace",
+            &[],
+            "/private/tmp/heddle-runtime",
+            &[],
+            SandboxProfile::Strict,
+            None,
+            &[],
+        );
+        let developer = sandbox_profile(
+            "/private/tmp/workspace",
+            &[],
+            "/private/tmp/heddle-runtime",
+            &[],
+            SandboxProfile::Developer,
+            None,
+            &[],
+        );
+
+        assert!(!strict.contains("(allow network-outbound)"));
+        assert!(!strict.contains("(allow file-read* file-map-executable (subpath \"/\"))"));
+        assert!(developer.contains("(allow network-outbound)"));
+        assert!(developer.contains("(allow file-read* file-map-executable (subpath \"/\"))"));
     }
 
     #[test]
@@ -565,6 +672,7 @@ fn confined_bash_command(
     _roots: &[std::path::PathBuf],
     _runtime_root: &std::path::Path,
     _additional_deny_paths: &[std::path::PathBuf],
+    _profile: SandboxProfile,
     _command: &str,
 ) -> Result<Command, String> {
     Err(

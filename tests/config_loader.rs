@@ -1,4 +1,5 @@
 use heddle::config::loader::{load_config, load_config_from_file, ApprovalMode};
+use heddle::tools::SandboxProfile;
 
 mod common;
 use common::Sandbox;
@@ -79,6 +80,18 @@ fn explicit_config_file_loads_sandbox_deny_paths_without_ambient_discovery() {
     let cfg = load_config_from_file(&config_path);
 
     assert_eq!(cfg.sandbox_deny_paths, vec!["/Users/test/private"]);
+}
+
+#[test]
+fn sandbox_profile_uses_the_configured_named_policy() {
+    let sb = Sandbox::new("loader-sandbox-profile");
+    clear_env();
+    let config_path = sb.project.join("worker-config.toml");
+    std::fs::write(&config_path, "[sandbox]\nprofile = \"strict\"\n").unwrap();
+
+    let cfg = load_config_from_file(&config_path);
+
+    assert_eq!(cfg.sandbox_profile, SandboxProfile::Strict);
 }
 
 #[test]

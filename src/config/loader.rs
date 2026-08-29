@@ -12,6 +12,7 @@ use crate::debug::debug;
 use crate::hooks::loader::load_hooks;
 use crate::hooks::types::ResolvedHooksConfig;
 use crate::provider::types::AppAttribution;
+use crate::tools::SandboxProfile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -110,6 +111,9 @@ pub struct HeddleConfig {
     pub workspace_additional_roots: Option<Vec<String>>,
     /// Absolute paths that receive extra read/write deny rules in the Bash sandbox.
     pub sandbox_deny_paths: Vec<String>,
+    /// Named policy for interactive Bash sessions. Eval and headless paths
+    /// intentionally override this to strict.
+    pub sandbox_profile: SandboxProfile,
 }
 
 impl Default for HeddleConfig {
@@ -140,6 +144,7 @@ impl Default for HeddleConfig {
             hooks: None,
             workspace_additional_roots: None,
             sandbox_deny_paths: Vec::new(),
+            sandbox_profile: SandboxProfile::Developer,
         }
     }
 }
@@ -261,6 +266,15 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
         .and_then(as_bool)
     {
         config.web_fetch_allow_private_addresses = b;
+    }
+    if let Some(profile) = table
+        .get("sandbox")
+        .and_then(|value| value.as_table())
+        .and_then(|sandbox| sandbox.get("profile"))
+        .and_then(as_str)
+        .and_then(|value| value.parse::<SandboxProfile>().ok())
+    {
+        config.sandbox_profile = profile;
     }
 
     if let Some(am) = table

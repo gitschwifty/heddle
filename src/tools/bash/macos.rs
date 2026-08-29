@@ -6,13 +6,14 @@ use tokio::process::Command;
 
 use super::{
     curated_runtimes, runtime_path, rust_toolchain_runtime, sandbox_profile, sandbox_string,
-    scrub_sensitive_environment,
+    scrub_sensitive_environment, SandboxProfile,
 };
 
 pub(super) fn confined_bash_command(
     roots: &[PathBuf],
     runtime_root: &Path,
     additional_deny_paths: &[PathBuf],
+    profile: SandboxProfile,
     command: &str,
 ) -> Result<Command, String> {
     let root = roots
@@ -37,28 +38,38 @@ pub(super) fn confined_bash_command(
         .map_err(|error| format!("Error: could not create Cargo target directory: {error}"))?;
     let toolchain = rust_toolchain_runtime()?;
     let runtimes = curated_runtimes()?;
-    let profile = sandbox_profile(
+    let profile_text = sandbox_profile(
         &root,
         &additional,
         &runtime_root,
         &additional_deny_paths,
+        profile,
         toolchain.as_ref(),
         &runtimes,
     );
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
-    cmd.args(["-p", &profile, "/bin/bash", "-c", command])
+    cmd.args(["-p", &profile_text, "/bin/bash", "-c", command])
         .current_dir(&root)
-        .env(
-            "PATH",
-            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
-        )
-        .env(
-            "HOME",
-            std::env::var("HOME").unwrap_or_else(|_| root.clone()),
-        )
         .env("TMPDIR", runtime_tmp)
         .env("CARGO_TARGET_DIR", cargo_target_dir);
-    scrub_sensitive_environment(&mut cmd);
+    match profile {
+        SandboxProfile::Strict => {
+            cmd.env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &root);
+        }
+        SandboxProfile::Developer => {
+            cmd.env(
+                "PATH",
+                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+            )
+            .env(
+                "HOME",
+                std::env::var("HOME").unwrap_or_else(|_| root.clone()),
+            );
+            scrub_sensitive_environment(&mut cmd);
+        }
+    }
     if let Some(toolchain) = toolchain {
         cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
         cmd.env("CARGO_HOME", Path::new(&runtime_root).join("cargo-home"));

@@ -7,6 +7,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::tools::SandboxProfile;
+
 use crate::hooks::types::HooksConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -86,6 +88,9 @@ pub struct WorkspaceConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxConfigSchema {
+    /// Named Bash sandbox policy. Interactive sessions default to `developer`;
+    /// evals and headless workers enforce `strict` regardless of this value.
+    pub profile: Option<SandboxProfile>,
     /// Additional absolute host paths Bash must not read or write.
     pub deny_paths: Option<Vec<String>>,
 }

@@ -44,10 +44,10 @@ use crate::tools::types::HeddleTool;
 use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_update_task_tool};
 use crate::tools::{
     create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
-    create_web_fetch_tool_with_options, create_workspace_bash_tool_with_deny_paths,
+    create_web_fetch_tool_with_options, create_workspace_bash_tool_with_profile,
     create_workspace_edit_tool, create_workspace_glob_tool, create_workspace_grep_tool,
-    create_workspace_read_tool, create_workspace_write_tool, SharedWorkspaceBoundary,
-    SubagentOptions, WebFetchOptions, WorkspaceBoundary, WORKSPACE_BASH_CAPABILITY_CONTEXT,
+    create_workspace_read_tool, create_workspace_write_tool, workspace_bash_capability_context,
+    SandboxProfile, SharedWorkspaceBoundary, SubagentOptions, WebFetchOptions, WorkspaceBoundary,
 };
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
@@ -81,6 +81,9 @@ fn runtime_context(cwd: &std::path::Path) -> String {
 
 pub struct SessionContext {
     pub config: HeddleConfig,
+    /// Resolved backend policy. Headless sessions intentionally override a
+    /// project-configured developer profile with strict.
+    pub sandbox_profile: SandboxProfile,
     pub provider: Arc<dyn Provider>,
     pub weak_provider: Option<Arc<dyn Provider>>,
     pub editor_provider: Option<Arc<dyn Provider>>,
@@ -137,6 +140,7 @@ pub struct SessionOptions {
 fn default_tools(
     config: &HeddleConfig,
     boundary: SharedWorkspaceBoundary,
+    sandbox_profile: SandboxProfile,
 ) -> Vec<Arc<dyn HeddleTool>> {
     vec![
         create_workspace_read_tool(boundary.clone()),
@@ -144,13 +148,14 @@ fn default_tools(
         create_workspace_edit_tool(boundary.clone()),
         create_workspace_glob_tool(boundary.clone()),
         create_workspace_grep_tool(boundary.clone()),
-        create_workspace_bash_tool_with_deny_paths(
+        create_workspace_bash_tool_with_profile(
             boundary,
             config
                 .sandbox_deny_paths
                 .iter()
                 .map(std::path::PathBuf::from)
                 .collect(),
+            sandbox_profile,
         ),
         create_web_fetch_tool_with_options(WebFetchOptions {
             allow_private_addresses: config.web_fetch_allow_private_addresses,
@@ -158,11 +163,20 @@ fn default_tools(
     ]
 }
 
+fn effective_sandbox_profile(mode: Mode, configured: SandboxProfile) -> SandboxProfile {
+    if matches!(mode, Mode::Headless) {
+        SandboxProfile::Strict
+    } else {
+        configured
+    }
+}
+
 fn build_system_message(
     features: &FeatureFlags,
     session_id: &str,
     base_prompt: &str,
     include_ambient_context: bool,
+    sandbox_profile: SandboxProfile,
 ) -> Result<Message> {
     let agents_ctx = include_ambient_context
         .then(|| load_agents_context(None))
@@ -197,7 +211,7 @@ fn build_system_message(
         parts.push(tasks_ctx);
     }
     parts.push(runtime_context(&std::env::current_dir()?));
-    parts.push(WORKSPACE_BASH_CAPABILITY_CONTEXT.to_string());
+    parts.push(workspace_bash_capability_context(sandbox_profile).to_string());
     parts.push(base_prompt.to_string());
 
     Ok(Message::System(SystemMessage {
@@ -215,6 +229,7 @@ pub fn fresh_system_message(session: &SessionContext) -> Result<Message> {
             .as_ref()
             .map(|p| p.suppress_ambient_context)
             .unwrap_or(false),
+        session.sandbox_profile,
     )
 }
 
@@ -271,6 +286,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     }
     let workspace = Arc::new(RwLock::new(workspace));
     let mode = options.mode.unwrap_or(Mode::Interactive);
+    let sandbox_profile = effective_sandbox_profile(mode, config.sandbox_profile);
     let mut features = get_features(mode, config.features.as_ref());
     if isolated {
         // These components still use global path helpers. Do not let an isolated
@@ -335,7 +351,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     // Tool registry
     let mut registry = ToolRegistry::new();
-    let all_tools = default_tools(&config, workspace.clone());
+    let all_tools = default_tools(&config, workspace.clone(), sandbox_profile);
     let filter: Option<Vec<String>> = options.tools.clone().or_else(|| config.tools.clone());
     let to_register: Vec<Arc<dyn HeddleTool>> = match &filter {
         Some(names) => all_tools
@@ -404,6 +420,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
                 .as_ref()
                 .map(|p| p.suppress_ambient_context)
                 .unwrap_or(false),
+            sandbox_profile,
         )?;
         append_message(&session_file, &system_msg)?;
         (sid, session_file, vec![system_msg])
@@ -506,6 +523,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     Ok(SessionContext {
         config,
+        sandbox_profile,
         provider,
         weak_provider: providers.weak,
         editor_provider: providers.editor,
@@ -573,5 +591,22 @@ fn hook_mode_for(mode: Mode) -> HookMode {
     match mode {
         Mode::Interactive | Mode::NonInteractive => HookMode::Interactive,
         Mode::Headless => HookMode::Headless,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effective_sandbox_profile, Mode, SandboxProfile};
+
+    #[test]
+    fn headless_mode_overrides_a_developer_profile_to_strict() {
+        assert_eq!(
+            effective_sandbox_profile(Mode::Headless, SandboxProfile::Developer),
+            SandboxProfile::Strict
+        );
+        assert_eq!(
+            effective_sandbox_profile(Mode::Interactive, SandboxProfile::Developer),
+            SandboxProfile::Developer
+        );
     }
 }

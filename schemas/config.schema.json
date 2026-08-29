@@ -147,6 +147,16 @@
       ],
       "format": "double"
     },
+    "sandbox": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SandboxConfigSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "system_prompt": {
       "type": [
         "string",
@@ -407,6 +417,40 @@
           }
         }
       }
+    },
+    "SandboxConfigSchema": {
+      "type": "object",
+      "properties": {
+        "deny_paths": {
+          "description": "Additional absolute host paths Bash must not read or write.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "profile": {
+          "description": "Named Bash sandbox policy. Interactive sessions default to `developer`; evals and headless workers enforce `strict` regardless of this value.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SandboxProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "SandboxProfile": {
+      "description": "Named, enforced Bash policies. `strict` is the eval/headless baseline; `developer` retains the compatible interactive developer environment.",
+      "type": "string",
+      "enum": [
+        "strict",
+        "developer"
+      ]
     },
     "ToolMatch": {
       "anyOf": [

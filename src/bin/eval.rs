@@ -23,7 +23,9 @@ use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::{
     ChunkStream, Provider, ProviderConfig, ProviderFailureKind, ProviderTelemetry, RetryConfig,
 };
-use heddle::tools::bash::{create_workspace_bash_tool, WORKSPACE_BASH_CAPABILITY_CONTEXT};
+use heddle::tools::bash::{
+    create_workspace_bash_tool_with_profile, workspace_bash_capability_context, SandboxProfile,
+};
 use heddle::tools::edit::create_workspace_edit_tool;
 use heddle::tools::glob::create_workspace_glob_tool;
 use heddle::tools::grep::create_workspace_grep_tool;
@@ -1284,7 +1286,12 @@ fn compose_system_prompt(prompt: &Prompt, workspace: &Path) -> String {
     parts.join("\n\n")
 }
 
-fn compose_messages(prompt: &Prompt, workspace: &Path, cache_mode: bool) -> Vec<Message> {
+fn compose_messages(
+    prompt: &Prompt,
+    workspace: &Path,
+    cache_mode: bool,
+    profile: SandboxProfile,
+) -> Vec<Message> {
     if !cache_mode {
         let mut messages = Vec::new();
         let composed = compose_system_prompt(prompt, workspace);
@@ -1292,7 +1299,7 @@ fn compose_messages(prompt: &Prompt, workspace: &Path, cache_mode: bool) -> Vec<
             messages.push(Message::System(SystemMessage { content: composed }));
         }
         messages.push(Message::System(SystemMessage {
-            content: WORKSPACE_BASH_CAPABILITY_CONTEXT.into(),
+            content: workspace_bash_capability_context(profile).into(),
         }));
         return messages;
     }
@@ -1311,7 +1318,7 @@ fn compose_messages(prompt: &Prompt, workspace: &Path, cache_mode: bool) -> Vec<
         messages.push(Message::System(SystemMessage { content: context }));
     }
     messages.push(Message::System(SystemMessage {
-        content: WORKSPACE_BASH_CAPABILITY_CONTEXT.into(),
+        content: workspace_bash_capability_context(profile).into(),
     }));
     messages
 }
@@ -1559,7 +1566,11 @@ fn build_registry(names: &[String]) -> Result<ToolRegistry> {
     Ok(r)
 }
 
-fn build_workspace_registry(names: &[String], root: &Path) -> Result<ToolRegistry> {
+fn build_workspace_registry(
+    names: &[String],
+    root: &Path,
+    profile: SandboxProfile,
+) -> Result<ToolRegistry> {
     let boundary = Arc::new(parking_lot::RwLock::new(
         WorkspaceBoundary::new(root).map_err(|error| anyhow!(error.to_string()))?,
     ));
@@ -1571,7 +1582,9 @@ fn build_workspace_registry(names: &[String], root: &Path) -> Result<ToolRegistr
             "edit_file" => create_workspace_edit_tool(boundary.clone()),
             "glob" => create_workspace_glob_tool(boundary.clone()),
             "grep" => create_workspace_grep_tool(boundary.clone()),
-            "bash" => create_workspace_bash_tool(boundary.clone()),
+            "bash" => {
+                create_workspace_bash_tool_with_profile(boundary.clone(), Vec::new(), profile)
+            }
             "web_fetch" => create_web_fetch_tool(),
             _ => return Err(anyhow!("unknown tool: {name}")),
         };
@@ -1852,7 +1865,7 @@ async fn run_one(
     }
 
     let cache_mode = options.cache.is_some();
-    let mut messages = compose_messages(prompt, workspace, cache_mode);
+    let mut messages = compose_messages(prompt, workspace, cache_mode, SandboxProfile::Strict);
     let rendered_system_prompt_chars = messages
         .iter()
         .filter_map(|message| match message {
@@ -1873,7 +1886,7 @@ async fn run_one(
             "grep".into(),
         ]
     });
-    let registry = match build_workspace_registry(&tool_names, workspace) {
+    let registry = match build_workspace_registry(&tool_names, workspace, SandboxProfile::Strict) {
         Ok(r) => r,
         Err(e) => return error_result(task, prompt, model, e.to_string(), start),
     };
@@ -5287,6 +5300,7 @@ expected_signal = "x"
         assert_eq!(meta["heddle_dirty"], false);
         assert_eq!(meta["evals_commit"], "evals-test");
         assert_eq!(meta["evals_dirty"], false);
+        assert_eq!(meta["sandbox_profile"], "strict");
         assert_eq!(
             meta["cache_prewarm"]["session_id"],
             "heddle-eval-cache-test"
@@ -5486,7 +5500,7 @@ expected_signal = "x"
             body: "Follow the project instructions.".into(),
         };
 
-        let messages = compose_messages(&prompt, dir.path(), true);
+        let messages = compose_messages(&prompt, dir.path(), true, SandboxProfile::Strict);
         assert_eq!(messages.len(), 3);
         assert!(matches!(
             &messages[0],
@@ -6297,6 +6311,8 @@ struct RunMeta {
     evals_version: String,
     model: String,
     openrouter_routing: String,
+    /// Evals always use the closed, constructed-environment backend policy.
+    sandbox_profile: String,
     runs_per_case: u32,
     prompts: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -6916,6 +6932,7 @@ fn write_run_artifacts(
         evals_version: "0.1.0".into(),
         model: model.to_string(),
         openrouter_routing: "balanced".into(),
+        sandbox_profile: SandboxProfile::Strict.as_str().into(),
         runs_per_case,
         prompts: prompts.to_vec(),
         prompt_conditions: comparison.prompt_conditions.clone(),
@@ -6967,6 +6984,7 @@ fn write_run_artifacts(
         meta.started_at,
         meta.finished_at
     ));
+    md.push_str(&format!("- sandbox_profile: `{}`\n", meta.sandbox_profile));
     if !meta.matrix_runs.is_empty() {
         md.push_str(&format!(
             "- matrix_run_wall_times: {}\n",

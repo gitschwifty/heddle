@@ -22,7 +22,7 @@ pub mod write;
 pub use ask_user::create_ask_user_tool;
 pub use bash::{
     create_bash_tool, create_workspace_bash_tool, create_workspace_bash_tool_with_deny_paths,
-    WORKSPACE_BASH_CAPABILITY_CONTEXT,
+    create_workspace_bash_tool_with_profile, workspace_bash_capability_context, SandboxProfile,
 };
 pub use edit::{create_edit_tool, create_workspace_edit_tool};
 pub use glob::{create_glob_tool, create_workspace_glob_tool};
