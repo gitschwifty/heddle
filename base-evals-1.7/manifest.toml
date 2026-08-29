@@ -1,0 +1,9 @@
+version = "0.1.0"
+description = "Heddle eval harness: prompts, tasks, baselines"
+default_model = "openrouter/free"
+suite_label = "base-evals-1.7"
+
+[defaults]
+max_turns = 8
+max_tokens_per_task = 10000
+budget_stop_usd = 1.0
