@@ -181,13 +181,13 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
                     return None;
                 }
                 match ctx.workspace_boundary.write().remove_interactive_root(path) {
-                    Ok(true) => {
-                        println!("Removed workdir from this session: {path}");
+                    Ok(Some(root)) => {
+                        println!("Removed workdir from this session: {}", root.display());
                         let _ = append_context_marker(&ctx.session_file, &json!({
-                            "type": "workspace_root_removed", "path": path, "source": "interactive"
+                            "type": "workspace_root_removed", "path": root, "source": "interactive"
                         }));
                     }
-                    Ok(false) => println!("Error: workdir is not a session-added root"),
+                    Ok(None) => println!("Error: workdir is not a session-added root"),
                     Err(error) => println!("Error: {error}"),
                 }
                 None

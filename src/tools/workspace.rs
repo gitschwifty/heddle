@@ -142,7 +142,7 @@ impl WorkspaceBoundary {
     pub fn remove_interactive_root(
         &mut self,
         raw: impl AsRef<Path>,
-    ) -> Result<bool, WorkspaceError> {
+    ) -> Result<Option<PathBuf>, WorkspaceError> {
         let raw = raw.as_ref();
         let candidate = if raw.is_absolute() {
             raw.to_path_buf()
@@ -150,10 +150,13 @@ impl WorkspaceBoundary {
             self.root.join(raw)
         };
         let root = std::fs::canonicalize(candidate).map_err(|_| WorkspaceError::Unresolvable)?;
-        let before = self.additional_roots.len();
+        let removed = self
+            .additional_roots
+            .iter()
+            .any(|entry| entry.path == root && entry.source == WorkspaceRootSource::Interactive);
         self.additional_roots
             .retain(|entry| entry.path != root || entry.source != WorkspaceRootSource::Interactive);
-        Ok(before != self.additional_roots.len())
+        Ok(removed.then_some(root))
     }
 
     /// Resolves a path without permitting lexical `..` components or symlink
@@ -238,11 +241,15 @@ mod tests {
         assert_eq!(roots[0].source(), WorkspaceRootSource::Primary);
         assert_eq!(roots[1].source(), WorkspaceRootSource::ProjectConfig);
         assert_eq!(roots[2].source(), WorkspaceRootSource::Interactive);
-        assert!(!boundary
-            .remove_interactive_root(project_root.path())
-            .unwrap());
         assert!(boundary
-            .remove_interactive_root(session_root.path())
-            .unwrap());
+            .remove_interactive_root(project_root.path())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            boundary
+                .remove_interactive_root(session_root.path())
+                .unwrap(),
+            Some(std::fs::canonicalize(session_root.path()).unwrap())
+        );
     }
 }
