@@ -1,7 +1,10 @@
 //! Tests for `create_session`.
 
 use heddle::config::features::Mode;
-use heddle::session::setup::{create_session, SessionOptions};
+use heddle::session::{
+    load_session_meta,
+    setup::{create_session, SessionOptions},
+};
 use heddle::types::{Message, UserMessage};
 use serde_json::Value;
 use wiremock::matchers::{method, path};
@@ -67,6 +70,21 @@ async fn returns_valid_session_context_with_all_fields_populated() {
     assert!(matches!(ctx.messages[0], heddle::types::Message::System(_)));
     assert!(!ctx.session_id.is_empty());
     assert!(ctx.session_file.exists());
+}
+
+#[tokio::test]
+async fn session_meta_records_workspace_root_origin() {
+    let sb = Sandbox::new("setup-workspace-roots");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+    let ctx = create_session(opts()).await.expect("create_session");
+    let meta = load_session_meta(&ctx.session_file).expect("session metadata");
+    let roots = meta.extra["workspace_roots"]
+        .as_array()
+        .expect("workspace roots");
+
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0]["path"], sb.project.to_string_lossy().as_ref());
+    assert_eq!(roots[0]["source"], "primary");
 }
 
 #[tokio::test]

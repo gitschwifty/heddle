@@ -386,8 +386,11 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
                 "workspace_roots".to_string(),
                 serde_json::json!(workspace
                     .read()
-                    .roots()
-                    .map(|root| root.to_string_lossy().into_owned())
+                    .roots_with_sources()
+                    .map(|root| serde_json::json!({
+                        "path": root.path(),
+                        "source": root.source().label(),
+                    }))
                     .collect::<Vec<_>>()),
             ))
             .collect(),
