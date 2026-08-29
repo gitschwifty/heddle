@@ -82,7 +82,10 @@ async fn file_tools_deny_absolute_parent_and_symlink_escapes_without_disclosure(
 async fn explicitly_added_root_is_available_to_the_same_tool_registry() {
     let (_workspace, outside, boundary) = boundary();
     let path = outside.path().join("secret.txt");
-    boundary.write().add_root(outside.path()).unwrap();
+    boundary
+        .write()
+        .add_interactive_root(outside.path())
+        .unwrap();
     let result = create_workspace_read_tool(boundary)
         .execute(json!({"file_path": path}), ExecOptions::default())
         .await;

@@ -10,6 +10,39 @@ use thiserror::Error;
 /// The stable agent-facing error returned when a tool path leaves its workspace.
 pub const WORKSPACE_DENIAL: &str = "Error: workspace boundary denied path";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceRootSource {
+    Primary,
+    ProjectConfig,
+    Interactive,
+}
+
+impl WorkspaceRootSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::ProjectConfig => "project config",
+            Self::Interactive => "session",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceRoot {
+    path: PathBuf,
+    source: WorkspaceRootSource,
+}
+
+impl WorkspaceRoot {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn source(&self) -> WorkspaceRootSource {
+        self.source
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
     #[error("{WORKSPACE_DENIAL}: parent traversal is not allowed")]
@@ -24,7 +57,7 @@ pub enum WorkspaceError {
 #[derive(Debug, Clone)]
 pub struct WorkspaceBoundary {
     root: PathBuf,
-    additional_roots: Vec<PathBuf>,
+    additional_roots: Vec<WorkspaceRoot>,
     runtime_root: Arc<tempfile::TempDir>,
 }
 
@@ -53,7 +86,15 @@ impl WorkspaceBoundary {
 
     pub fn roots(&self) -> impl Iterator<Item = &Path> {
         std::iter::once(self.root.as_path())
-            .chain(self.additional_roots.iter().map(PathBuf::as_path))
+            .chain(self.additional_roots.iter().map(WorkspaceRoot::path))
+    }
+
+    pub fn roots_with_sources(&self) -> impl Iterator<Item = WorkspaceRoot> + '_ {
+        std::iter::once(WorkspaceRoot {
+            path: self.root.clone(),
+            source: WorkspaceRootSource::Primary,
+        })
+        .chain(self.additional_roots.iter().cloned())
     }
 
     /// Heddle-owned mutable runtime state for the lifetime of this boundary.
@@ -63,7 +104,22 @@ impl WorkspaceBoundary {
         self.runtime_root.path()
     }
 
-    pub fn add_root(&mut self, raw: impl AsRef<Path>) -> Result<PathBuf, WorkspaceError> {
+    pub fn add_project_root(&mut self, raw: impl AsRef<Path>) -> Result<PathBuf, WorkspaceError> {
+        self.add_root(raw, WorkspaceRootSource::ProjectConfig)
+    }
+
+    pub fn add_interactive_root(
+        &mut self,
+        raw: impl AsRef<Path>,
+    ) -> Result<PathBuf, WorkspaceError> {
+        self.add_root(raw, WorkspaceRootSource::Interactive)
+    }
+
+    fn add_root(
+        &mut self,
+        raw: impl AsRef<Path>,
+        source: WorkspaceRootSource,
+    ) -> Result<PathBuf, WorkspaceError> {
         let raw = raw.as_ref();
         let candidate = if raw.is_absolute() {
             raw.to_path_buf()
@@ -74,13 +130,19 @@ impl WorkspaceBoundary {
         if !root.is_dir() {
             return Err(WorkspaceError::Unresolvable);
         }
-        if root != self.root && !self.additional_roots.contains(&root) {
-            self.additional_roots.push(root.clone());
+        if root != self.root && !self.additional_roots.iter().any(|entry| entry.path == root) {
+            self.additional_roots.push(WorkspaceRoot {
+                path: root.clone(),
+                source,
+            });
         }
         Ok(root)
     }
 
-    pub fn remove_root(&mut self, raw: impl AsRef<Path>) -> Result<bool, WorkspaceError> {
+    pub fn remove_interactive_root(
+        &mut self,
+        raw: impl AsRef<Path>,
+    ) -> Result<bool, WorkspaceError> {
         let raw = raw.as_ref();
         let candidate = if raw.is_absolute() {
             raw.to_path_buf()
@@ -89,7 +151,8 @@ impl WorkspaceBoundary {
         };
         let root = std::fs::canonicalize(candidate).map_err(|_| WorkspaceError::Unresolvable)?;
         let before = self.additional_roots.len();
-        self.additional_roots.retain(|entry| entry != &root);
+        self.additional_roots
+            .retain(|entry| entry.path != root || entry.source != WorkspaceRootSource::Interactive);
         Ok(before != self.additional_roots.len())
     }
 
@@ -159,5 +222,27 @@ mod tests {
             boundary.resolve(boundary.runtime_root()),
             Err(WorkspaceError::OutsideRoot)
         ));
+    }
+
+    #[test]
+    fn keeps_project_roots_visible_and_session_roots_removable() {
+        let primary = tempdir().unwrap();
+        let project_root = tempdir().unwrap();
+        let session_root = tempdir().unwrap();
+        let mut boundary = WorkspaceBoundary::new(primary.path()).unwrap();
+
+        boundary.add_project_root(project_root.path()).unwrap();
+        boundary.add_interactive_root(session_root.path()).unwrap();
+
+        let roots = boundary.roots_with_sources().collect::<Vec<_>>();
+        assert_eq!(roots[0].source(), WorkspaceRootSource::Primary);
+        assert_eq!(roots[1].source(), WorkspaceRootSource::ProjectConfig);
+        assert_eq!(roots[2].source(), WorkspaceRootSource::Interactive);
+        assert!(!boundary
+            .remove_interactive_root(project_root.path())
+            .unwrap());
+        assert!(boundary
+            .remove_interactive_root(session_root.path())
+            .unwrap());
     }
 }

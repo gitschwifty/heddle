@@ -140,9 +140,8 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
             Box::pin(async move {
                 let boundary = ctx.workspace_boundary.read();
                 println!("  Workspace roots:");
-                for (index, root) in boundary.roots().enumerate() {
-                    let source = if index == 0 { "primary" } else { "additional" };
-                    println!("  - {} ({source})", root.display());
+                for root in boundary.roots_with_sources() {
+                    println!("  - {} ({})", root.path().display(), root.source().label());
                 }
                 None
             })
@@ -158,7 +157,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
                     println!("Usage: /add-workdir <path>");
                     return None;
                 }
-                match ctx.workspace_boundary.write().add_root(path) {
+                match ctx.workspace_boundary.write().add_interactive_root(path) {
                     Ok(root) => {
                         println!("Added workdir for this session: {}", root.display());
                         let _ = append_context_marker(&ctx.session_file, &json!({
@@ -181,7 +180,7 @@ pub fn create_builtin_commands() -> Vec<SlashCommand> {
                     println!("Usage: /remove-workdir <path>");
                     return None;
                 }
-                match ctx.workspace_boundary.write().remove_root(path) {
+                match ctx.workspace_boundary.write().remove_interactive_root(path) {
                     Ok(true) => {
                         println!("Removed workdir from this session: {path}");
                         let _ = append_context_marker(&ctx.session_file, &json!({

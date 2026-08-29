@@ -264,7 +264,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     }
     for root in config.workspace_additional_roots.iter().flatten() {
         workspace
-            .add_root(root)
+            .add_project_root(root)
             .map_err(|error| anyhow!("invalid workspace additional root {root:?}: {error}"))?;
     }
     let workspace = Arc::new(RwLock::new(workspace));
