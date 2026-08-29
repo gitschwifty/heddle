@@ -332,6 +332,48 @@ fn failure_causes_by_tag_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn task_class_scoring_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
+    #[derive(Default)]
+    struct Totals {
+        cases: usize,
+        passed: usize,
+    }
+    let mut totals: BTreeMap<(String, String), Totals> = BTreeMap::new();
+    for run in runs.iter().filter(|run| run.included_in_quality_metrics) {
+        for result in &run.results {
+            let task_class = if result.task_class.is_empty() {
+                "code".to_string()
+            } else {
+                result.task_class.clone()
+            };
+            let method = result
+                .scoring_method
+                .map(|method| method.as_str().to_string())
+                .unwrap_or_else(|| {
+                    if result.scores.outcome.semantic_verification.is_some() {
+                        "deterministic-semantic".into()
+                    } else {
+                        "strict".into()
+                    }
+                });
+            let entry = totals.entry((task_class, method)).or_default();
+            entry.cases += 1;
+            entry.passed += usize::from(result_status(result) == ResultStatus::Pass);
+        }
+    }
+    totals
+        .into_iter()
+        .map(|((task_class, method), totals)| {
+            vec![
+                task_class,
+                method,
+                totals.cases.to_string(),
+                format!("{}/{}", totals.passed, totals.cases),
+            ]
+        })
+        .collect()
+}
+
 fn failure_drilldown_rows(runs: &[AggregateRun]) -> Vec<Vec<String>> {
     let mut rows = Vec::new();
     for run in runs.iter().filter(|run| run.included_in_quality_metrics) {
@@ -634,6 +676,16 @@ fn write_reports(output: &Path, snapshot: &AggregateSnapshot) -> Result<()> {
             markdown_table(
                 &["tag", "failure cause", "cases"],
                 &failure_causes_by_tag_rows(&snapshot.runs)
+            )
+        ),
+    )?;
+    fs::write(
+        output.join("by-task-class.md"),
+        format!(
+            "{preamble}## Outcomes by task class and scoring method\n\n{}",
+            markdown_table(
+                &["task class", "scoring method", "cases", "passed"],
+                &task_class_scoring_rows(&snapshot.runs)
             )
         ),
     )?;

@@ -346,6 +346,11 @@ struct Prompt {
 struct TaskSpec {
     id: String,
     prompt: String,
+    /// Broad kind of work represented by the fixture. This is retained in
+    /// artifacts and aggregates so code, local-information, and web-backed
+    /// work are never silently combined.
+    #[serde(default = "default_task_class")]
+    task_class: String,
     /// Capability/category labels used by --tags selection and reports.
     #[serde(default)]
     tags: Vec<String>,
@@ -382,6 +387,34 @@ struct TaskScoreSpec {
     semantic_verification: Option<SemanticVerificationSpec>,
     #[serde(default)]
     efficiency: Option<EfficiencySpec>,
+    /// How the outcome is determined. Explicit fixture metadata prevents an
+    /// aggregate from conflating strict, structural, and grader-backed work.
+    #[serde(default)]
+    method: Option<ScoringMethod>,
+}
+
+fn default_task_class() -> String {
+    "code".into()
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ScoringMethod {
+    Strict,
+    Structural,
+    DeterministicSemantic,
+    AiRubric,
+}
+
+impl ScoringMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Structural => "structural",
+            Self::DeterministicSemantic => "deterministic-semantic",
+            Self::AiRubric => "ai-rubric",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -441,6 +474,15 @@ struct TaskResult {
     /// reports can show which classes of work produced failures.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    /// Fixture work class and outcome method are both persisted, rather than
+    /// inferred later from a mutable task definition.
+    #[serde(
+        default = "default_task_class",
+        skip_serializing_if = "String::is_empty"
+    )]
+    task_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scoring_method: Option<ScoringMethod>,
     /// Requested model. Run metadata owns this for persisted results, so do
     /// not repeat it in every per-case or aggregate result record.
     #[serde(default, skip_serializing)]
@@ -1091,9 +1133,45 @@ fn load_task(dir: &Path) -> Result<Task> {
             })?;
         }
     }
+    if let Some(method) = spec.score.method {
+        match method {
+            ScoringMethod::Strict | ScoringMethod::Structural
+                if spec.score.outcome.expected_dir.is_none() =>
+            {
+                bail!(
+                    "{} scoring method {} requires score.outcome.expected_dir",
+                    toml_path.display(),
+                    method.as_str()
+                );
+            }
+            ScoringMethod::DeterministicSemantic if spec.score.semantic_verification.is_none() => {
+                bail!(
+                    "{} scoring method deterministic-semantic requires score.semantic_verification",
+                    toml_path.display()
+                );
+            }
+            ScoringMethod::AiRubric => {
+                bail!(
+                    "{} uses ai-rubric scoring, which is a documented future contract and is not executable yet",
+                    toml_path.display()
+                );
+            }
+            _ => {}
+        }
+    }
     Ok(Task {
         dir: dir.to_path_buf(),
         spec,
+    })
+}
+
+fn resolved_scoring_method(spec: &TaskSpec) -> ScoringMethod {
+    spec.score.method.unwrap_or_else(|| {
+        if spec.score.semantic_verification.is_some() {
+            ScoringMethod::DeterministicSemantic
+        } else {
+            ScoringMethod::Strict
+        }
     })
 }
 
@@ -2176,6 +2254,8 @@ async fn run_one(
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
         tags: task.spec.tags.clone(),
+        task_class: task.spec.task_class.clone(),
+        scoring_method: Some(resolved_scoring_method(&task.spec)),
         model: model.to_string(),
         heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
@@ -2247,6 +2327,8 @@ fn error_result(
         task_id: task.spec.id.clone(),
         prompt_id: prompt.id.clone(),
         tags: task.spec.tags.clone(),
+        task_class: task.spec.task_class.clone(),
+        scoring_method: Some(resolved_scoring_method(&task.spec)),
         model: model.to_string(),
         heddle_commit: heddle_git_info().commit,
         evals_version: "0.1.0".into(),
@@ -3916,8 +3998,10 @@ fn cmd_list(evals: &Path) -> Result<()> {
     println!("tasks ({}):", tasks.len());
     for t in &tasks {
         println!(
-            "  {:<28} tags={:<36} max_turns={}  timeout={}s  tools={:?}",
+            "  {:<28} class={:<24} scoring={:<24} tags={:<36} max_turns={}  timeout={}s  tools={:?}",
             t.spec.id,
+            t.spec.task_class,
+            resolved_scoring_method(&t.spec).as_str(),
             if t.spec.tags.is_empty() {
                 "-".to_string()
             } else {
@@ -4256,6 +4340,8 @@ expected_signal = "x"
             task_id: "task-1".into(),
             prompt_id: "prompt-1".into(),
             tags: Vec::new(),
+            task_class: default_task_class(),
+            scoring_method: Some(ScoringMethod::Strict),
             model: "openrouter/auto".into(),
             routed_models: routed_model
                 .map(|model| {
@@ -5488,6 +5574,7 @@ expected_signal = "x"
             spec: TaskSpec {
                 id: id.into(),
                 prompt: String::new(),
+                task_class: default_task_class(),
                 tags: tags.iter().map(|tag| (*tag).into()).collect(),
                 tools: None,
                 max_turns: None,
@@ -5501,6 +5588,7 @@ expected_signal = "x"
                     },
                     semantic_verification: None,
                     efficiency: None,
+                    method: None,
                 },
             },
         };
@@ -5579,6 +5667,7 @@ expected_signal = "x"
             spec: TaskSpec {
                 id: "semantic".into(),
                 prompt: "implement".into(),
+                task_class: default_task_class(),
                 tags: vec!["semantic-verification".into()],
                 tools: None,
                 max_turns: None,
@@ -5597,6 +5686,7 @@ expected_signal = "x"
                         protected_globs: Vec::new(),
                     }),
                     efficiency: None,
+                    method: None,
                 },
             },
         };
@@ -5629,6 +5719,7 @@ expected_signal = "x"
             spec: TaskSpec {
                 id: "semantic-failure".into(),
                 prompt: "implement".into(),
+                task_class: default_task_class(),
                 tags: Vec::new(),
                 tools: None,
                 max_turns: None,
@@ -5647,6 +5738,7 @@ expected_signal = "x"
                         protected_globs: Vec::new(),
                     }),
                     efficiency: None,
+                    method: None,
                 },
             },
         };
@@ -5683,6 +5775,7 @@ expected_signal = "x"
             spec: TaskSpec {
                 id: "task".into(),
                 prompt: "Edit input.txt".into(),
+                task_class: default_task_class(),
                 tags: vec!["simple-edit".into()],
                 tools: None,
                 max_turns: None,
@@ -5696,6 +5789,7 @@ expected_signal = "x"
                     },
                     semantic_verification: None,
                     efficiency: None,
+                    method: None,
                 },
             },
         };
@@ -6505,6 +6599,7 @@ struct SuitePrompt<'a> {
 struct SuiteTask<'a> {
     id: &'a str,
     prompt: &'a str,
+    task_class: &'a str,
     tools: &'a Option<Vec<String>>,
     max_turns: Option<u32>,
     task_timeout_secs: Option<u64>,
@@ -6535,6 +6630,7 @@ fn suite_identity(prompts: &[&Prompt], tasks: &[&Task]) -> Result<SuiteIdentity>
         let config = SuiteTask {
             id: &task.spec.id,
             prompt: &task.spec.prompt,
+            task_class: &task.spec.task_class,
             tools: &task.spec.tools,
             max_turns: task.spec.max_turns,
             task_timeout_secs: task.spec.task_timeout_secs,
@@ -6578,6 +6674,7 @@ fn task_input_fingerprint(tasks: &[&Task]) -> Result<String> {
         let config = SuiteTask {
             id: &task.spec.id,
             prompt: &task.spec.prompt,
+            task_class: &task.spec.task_class,
             tools: &task.spec.tools,
             max_turns: task.spec.max_turns,
             task_timeout_secs: task.spec.task_timeout_secs,
