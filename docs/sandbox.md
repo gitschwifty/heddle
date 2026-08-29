@@ -12,8 +12,8 @@ silently widening the eval baseline:
 
 | Profile | Intended use | Reads / environment | Writes / network |
 |---|---|---|---|
-| `strict` | evals, headless work, untrusted code | Workspace, runtime, and curated toolchain inputs; constructed environment | Workspace/runtime only; network closed by default |
-| `developer` | normal interactive local development | Broad host reads and normal developer environment, with hard credential-path denies | Workspace/runtime only; named network mode |
+| `strict` | evals, untrusted code | Workspace, runtime, and curated toolchain inputs; constructed environment | Workspace/runtime only; network closed by default |
+| `developer` | interactive and Orboros-style headless development | Broad host reads and normal developer environment, with hard credential-path denies | Workspace/runtime only; network open |
 | `trusted` | explicitly trusted local automation | Reserved; not selectable yet | — |
 
 All profiles keep structured file tools scoped to declared workspace roots.
@@ -22,8 +22,9 @@ sandbox backend is unavailable. On unsupported platforms, Bash still fails
 closed.
 
 Set an interactive-session profile with `[sandbox] profile = "developer"` or
-`"strict"`. Evals select `strict` directly and ignore this setting. The profile
-drives the backend, Bash description, and model-facing capability context.
+`"strict"`. Evals select `strict` directly and ignore this setting; headless
+workers retain the configured profile. The profile drives the backend, Bash
+description, and model-facing capability context.
 Heddle will not accept raw user-supplied Seatbelt fragments: they are difficult
 to validate, make the effective policy opaque, and can turn configuration into
 a sandbox escape.

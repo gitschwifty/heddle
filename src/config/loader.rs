@@ -111,8 +111,8 @@ pub struct HeddleConfig {
     pub workspace_additional_roots: Option<Vec<String>>,
     /// Absolute paths that receive extra read/write deny rules in the Bash sandbox.
     pub sandbox_deny_paths: Vec<String>,
-    /// Named policy for interactive Bash sessions. Eval and headless paths
-    /// intentionally override this to strict.
+    /// Named policy for Bash sessions. Evals intentionally override this to
+    /// strict; headless sessions retain the configured profile.
     pub sandbox_profile: SandboxProfile,
 }
 

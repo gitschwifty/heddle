@@ -81,8 +81,7 @@ fn runtime_context(cwd: &std::path::Path) -> String {
 
 pub struct SessionContext {
     pub config: HeddleConfig,
-    /// Resolved backend policy. Headless sessions intentionally override a
-    /// project-configured developer profile with strict.
+    /// Resolved backend policy selected from configuration.
     pub sandbox_profile: SandboxProfile,
     pub provider: Arc<dyn Provider>,
     pub weak_provider: Option<Arc<dyn Provider>>,
@@ -161,14 +160,6 @@ fn default_tools(
             allow_private_addresses: config.web_fetch_allow_private_addresses,
         }),
     ]
-}
-
-fn effective_sandbox_profile(mode: Mode, configured: SandboxProfile) -> SandboxProfile {
-    if matches!(mode, Mode::Headless) {
-        SandboxProfile::Strict
-    } else {
-        configured
-    }
 }
 
 fn build_system_message(
@@ -286,7 +277,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     }
     let workspace = Arc::new(RwLock::new(workspace));
     let mode = options.mode.unwrap_or(Mode::Interactive);
-    let sandbox_profile = effective_sandbox_profile(mode, config.sandbox_profile);
+    let sandbox_profile = config.sandbox_profile;
     let mut features = get_features(mode, config.features.as_ref());
     if isolated {
         // These components still use global path helpers. Do not let an isolated
@@ -591,22 +582,5 @@ fn hook_mode_for(mode: Mode) -> HookMode {
     match mode {
         Mode::Interactive | Mode::NonInteractive => HookMode::Interactive,
         Mode::Headless => HookMode::Headless,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{effective_sandbox_profile, Mode, SandboxProfile};
-
-    #[test]
-    fn headless_mode_overrides_a_developer_profile_to_strict() {
-        assert_eq!(
-            effective_sandbox_profile(Mode::Headless, SandboxProfile::Developer),
-            SandboxProfile::Strict
-        );
-        assert_eq!(
-            effective_sandbox_profile(Mode::Interactive, SandboxProfile::Developer),
-            SandboxProfile::Developer
-        );
     }
 }

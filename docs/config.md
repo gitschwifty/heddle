@@ -75,8 +75,8 @@ ask = ["write(*)", "edit(*)"]          # Prompt for approval
 # ── Developer Sandbox ───────────────────────────────
 [sandbox]
 # Named Bash policy for interactive sessions. The default is "developer".
-# Eval and isolated/headless workers always enforce "strict", regardless of
-# this setting.
+# Evals always enforce "strict", regardless of this setting. Headless workers
+# retain the configured profile (and therefore default to "developer").
 profile = "developer"            # "developer" | "strict"
 # Extra host paths that the experimental developer Bash sandbox must neither
 # read nor write. Entries must be absolute; keep personal paths in global

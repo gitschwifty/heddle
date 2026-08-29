@@ -432,7 +432,7 @@
           }
         },
         "profile": {
-          "description": "Named Bash sandbox policy. Interactive sessions default to `developer`; evals and headless workers enforce `strict` regardless of this value.",
+          "description": "Named Bash sandbox policy. Sessions default to `developer`; evals enforce `strict` regardless of this value.",
           "anyOf": [
             {
               "$ref": "#/definitions/SandboxProfile"

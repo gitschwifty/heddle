@@ -88,8 +88,8 @@ pub struct WorkspaceConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxConfigSchema {
-    /// Named Bash sandbox policy. Interactive sessions default to `developer`;
-    /// evals and headless workers enforce `strict` regardless of this value.
+    /// Named Bash sandbox policy. Sessions default to `developer`; evals
+    /// enforce `strict` regardless of this value.
     pub profile: Option<SandboxProfile>,
     /// Additional absolute host paths Bash must not read or write.
     pub deny_paths: Option<Vec<String>>,
