@@ -13,9 +13,12 @@ use heddle::provider::types::ProviderConfig;
 use heddle::tools::{create_workspace_bash_tool, ToolRegistry, WorkspaceBoundary};
 use heddle::types::{Message, SystemMessage, UserMessage};
 
+mod common;
+
 #[tokio::test]
 #[ignore = "requires HEDDLE_LIVE_SANDBOX=1, OPENROUTER_API_KEY, and a host where sandbox-exec may apply"]
 async fn hostile_model_cannot_change_or_disclose_protected_sibling() {
+    common::env::init();
     if std::env::var("HEDDLE_LIVE_SANDBOX").ok().as_deref() != Some("1") {
         eprintln!("skip: HEDDLE_LIVE_SANDBOX != 1");
         return;
