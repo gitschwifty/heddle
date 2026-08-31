@@ -264,6 +264,17 @@ impl HeddleTool for WorkspaceGrepTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    fn benchmark_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let line = "fn needle_function(value: usize) -> usize { value + 1 }\n";
+        let contents = line.repeat(1_024);
+        for index in 0..128 {
+            std::fs::write(dir.path().join(format!("source-{index:03}.rs")), &contents).unwrap();
+        }
+        dir
+    }
 
     #[test]
     fn ripgrep_uses_default_regex_and_excludes_dotenv_files() {
@@ -316,5 +327,65 @@ mod tests {
 
         assert_eq!(ripgrep.trim(), native);
         assert!(!ripgrep.contains("999"));
+    }
+
+    #[tokio::test]
+    async fn native_fallback_performance_guardrail() {
+        let dir = benchmark_fixture();
+        let path = dir.path().to_string_lossy().into_owned();
+        let pattern = r"needle_function\(value: usize\)";
+
+        let mut rg = search_command(SearchBackend::Ripgrep, pattern, &path, Some("*.rs"));
+        let Ok(output) = rg.output().await else {
+            eprintln!("rg is unavailable; native fallback benchmark skipped");
+            return;
+        };
+        assert!(output.status.success());
+
+        // Warm filesystem caches and regex compilation before measuring the
+        // implementation work rather than cold-start effects.
+        native_search(pattern, &path, Some("*.rs")).unwrap();
+        search_command(SearchBackend::Ripgrep, pattern, &path, Some("*.rs"))
+            .output()
+            .await
+            .unwrap();
+
+        let native_started = Instant::now();
+        let native = native_search(pattern, &path, Some("*.rs")).unwrap();
+        let native_elapsed = native_started.elapsed();
+
+        let rg_started = Instant::now();
+        let output = search_command(SearchBackend::Ripgrep, pattern, &path, Some("*.rs"))
+            .output()
+            .await
+            .unwrap();
+        let rg_elapsed = rg_started.elapsed();
+        assert!(output.status.success());
+        // ripgrep's parallel traversal may order files differently, so check
+        // equivalent result cardinality rather than serialized order.
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().lines().count(),
+            native.lines().count()
+        );
+
+        eprintln!(
+            "native fallback: {:?}; rg: {:?}; ratio: {:.2}x",
+            native_elapsed,
+            rg_elapsed,
+            native_elapsed.as_secs_f64() / rg_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        );
+
+        // This is intentionally forgiving: rg is expected to win on large
+        // trees, but the fallback must remain usable when rg is not installed.
+        let limit = rg_elapsed
+            .saturating_mul(10)
+            .max(Duration::from_millis(100));
+        assert!(
+            native_elapsed <= limit,
+            "native fallback took {:?}; expected at most {:?} (rg: {:?})",
+            native_elapsed,
+            limit,
+            rg_elapsed
+        );
     }
 }
