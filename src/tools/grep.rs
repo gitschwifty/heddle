@@ -1,10 +1,14 @@
-//! Search tool — prefers ripgrep, with an extended-regex grep fallback.
+//! Search tool — prefers ripgrep, with a native Rust-regex fallback.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use globset::Glob;
+use regex::bytes::Regex;
 use serde_json::{json, Value};
 use tokio::process::Command;
+use walkdir::WalkDir;
 
 use super::types::{ExecOptions, HeddleTool};
 use super::workspace::SharedWorkspaceBoundary;
@@ -15,14 +19,12 @@ pub struct WorkspaceGrepTool(SharedWorkspaceBoundary);
 #[derive(Clone, Copy)]
 enum SearchBackend {
     Ripgrep,
-    Grep,
 }
 
 impl SearchBackend {
     fn name(self) -> &'static str {
         match self {
             Self::Ripgrep => "rg",
-            Self::Grep => "grep",
         }
     }
 }
@@ -35,6 +37,9 @@ fn search_command(
 ) -> Command {
     let mut command = Command::new(backend.name());
     command.args(search_args(backend, pattern, path, glob_filter));
+    // `rg` otherwise accepts ambient RIPGREP_CONFIG_PATH options, which could
+    // change the regex engine or file-discovery behavior behind this tool.
+    command.env_remove("RIPGREP_CONFIG_PATH");
     command
 }
 
@@ -57,19 +62,138 @@ fn search_args(
                 ]
                 .map(String::from),
             );
+            // Credential-bearing dotenv files must not be surfaced through an
+            // agent search. Keep this exclusion in sync with native_search.
+            args.extend(["--glob".to_string(), "!.env*".to_string()]);
             if let Some(glob) = glob_filter {
                 args.extend(["--glob".to_string(), glob.to_string()]);
-            }
-        }
-        SearchBackend::Grep => {
-            args.extend(["-rEn".to_string(), "--color=never".to_string()]);
-            if let Some(glob) = glob_filter {
-                args.push(format!("--include={glob}"));
             }
         }
     }
     args.extend(["-e".to_string(), pattern.to_string(), path.to_string()]);
     args
+}
+
+fn is_credential_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".env"))
+}
+
+fn compile_glob(glob_filter: Option<&str>) -> Result<Option<globset::GlobMatcher>, String> {
+    glob_filter
+        .map(|glob| {
+            Glob::new(glob)
+                .map(|glob| glob.compile_matcher())
+                .map_err(|error| format!("Error: invalid glob: {error}"))
+        })
+        .transpose()
+}
+
+fn native_search(pattern: &str, path: &str, glob_filter: Option<&str>) -> Result<String, String> {
+    let regex = Regex::new(pattern).map_err(|error| format!("Error: invalid regex: {error}"))?;
+    let glob = compile_glob(glob_filter)?;
+    let root = Path::new(path);
+    if !root.exists() {
+        return Err(format!(
+            "Error: search path does not exist: {}",
+            root.display()
+        ));
+    }
+
+    let mut results = Vec::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() || is_credential_path(entry.path()) {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(entry.path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        if glob.as_ref().is_some_and(|glob| !glob.is_match(&relative)) {
+            continue;
+        }
+
+        let bytes = match std::fs::read(entry.path()) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        // Match ripgrep's default safety posture: skip binary data instead of
+        // returning arbitrary bytes into the agent transcript.
+        if bytes.contains(&0) {
+            continue;
+        }
+        for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if regex.is_match(line) {
+                results.push(format!(
+                    "{}:{}:{}",
+                    entry.path().display(),
+                    index + 1,
+                    String::from_utf8_lossy(line)
+                ));
+            }
+        }
+    }
+
+    if results.is_empty() {
+        Ok("No matches found.".to_string())
+    } else {
+        Ok(results.join("\n"))
+    }
+}
+
+async fn search(pattern: String, path: String, glob_filter: Option<String>) -> String {
+    // Validate once before choosing a backend. This gives callers one stable
+    // error for syntax unsupported by the default Rust-regex contract.
+    if let Err(error) = Regex::new(&pattern) {
+        return format!("Error: invalid regex: {error}");
+    }
+    if let Err(error) = compile_glob(glob_filter.as_deref()) {
+        return error;
+    }
+
+    let output = search_command(
+        SearchBackend::Ripgrep,
+        &pattern,
+        &path,
+        glob_filter.as_deref(),
+    )
+    .output()
+    .await;
+    match output {
+        Ok(output) => {
+            let exit = output.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            if exit > 1 {
+                format!("Error: rg exited with code {exit}: {stderr}")
+            } else if exit == 1 || stdout.trim().is_empty() {
+                "No matches found.".to_string()
+            } else {
+                stdout.trim().to_string()
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match tokio::task::spawn_blocking(move || {
+                native_search(&pattern, &path, glob_filter.as_deref())
+            })
+            .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => error,
+                Err(error) => format!("Error: native search task failed: {error}"),
+            }
+        }
+        Err(error) => format!("Error: {error}"),
+    }
 }
 
 pub fn create_grep_tool() -> Arc<dyn HeddleTool> {
@@ -111,40 +235,7 @@ impl HeddleTool for GrepTool {
             .unwrap_or_else(|| ".".to_string());
         let glob_filter = params.get("glob").and_then(Value::as_str).map(String::from);
 
-        let (output, backend) = match search_command(
-            SearchBackend::Ripgrep,
-            &pattern,
-            &path,
-            glob_filter.as_deref(),
-        )
-        .output()
-        .await
-        {
-            Ok(output) => (output, SearchBackend::Ripgrep),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match search_command(SearchBackend::Grep, &pattern, &path, glob_filter.as_deref())
-                    .output()
-                    .await
-                {
-                    Ok(output) => (output, SearchBackend::Grep),
-                    Err(error) => return format!("Error: {error}"),
-                }
-            }
-            Err(error) => return format!("Error: {error}"),
-        };
-        let exit = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        if exit > 1 {
-            return format!(
-                "Error: {} exited with code {exit}: {stderr}",
-                backend.name()
-            );
-        }
-        if exit == 1 || stdout.trim().is_empty() {
-            return "No matches found.".to_string();
-        }
-        stdout.trim().to_string()
+        search(pattern, path, glob_filter).await
     }
 }
 
@@ -175,10 +266,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grep_fallback_uses_extended_regex_and_the_same_pattern_argument() {
-        let args = search_args(SearchBackend::Grep, "one|two", "src", Some("*.rs"));
-        assert!(args.contains(&"-rEn".to_string()));
-        assert!(args.contains(&"--include=*.rs".to_string()));
+    fn ripgrep_uses_default_regex_and_excludes_dotenv_files() {
+        let args = search_args(SearchBackend::Ripgrep, "one|two", "src", Some("*.rs"));
+        assert!(args.contains(&"!.env*".to_string()));
+        assert!(args.contains(&"*.rs".to_string()));
         assert_eq!(args[args.len() - 3..], ["-e", "one|two", "src"]);
+    }
+
+    #[test]
+    fn native_search_supports_rust_regex_syntax_and_excludes_dotenv() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.txt"), "id=42\nhello WORLD\n").unwrap();
+        std::fs::write(dir.path().join(".env.local"), "id=999\n").unwrap();
+
+        let result =
+            native_search(r"id=\d+|(?i)world", &dir.path().to_string_lossy(), None).unwrap();
+
+        assert!(result.contains("id=42"));
+        assert!(result.contains("hello WORLD"));
+        assert!(!result.contains("999"));
+    }
+
+    #[test]
+    fn native_search_rejects_lookaround_with_a_stable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = native_search(r"(?<=id=)\d+", &dir.path().to_string_lossy(), None).unwrap_err();
+        assert!(error.starts_with("Error: invalid regex:"));
+    }
+
+    #[tokio::test]
+    async fn ripgrep_and_native_search_share_the_default_regex_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.txt"), "id=42\nhello WORLD\n").unwrap();
+        std::fs::write(dir.path().join(".env.local"), "id=999\n").unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        let pattern = r"id=\d+|(?i)world";
+
+        let native = native_search(pattern, &path, None).unwrap();
+        let output = match search_command(SearchBackend::Ripgrep, pattern, &path, None)
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("failed to start rg: {error}"),
+        };
+        assert!(output.status.success());
+        let ripgrep = String::from_utf8(output.stdout).unwrap();
+
+        assert_eq!(ripgrep.trim(), native);
+        assert!(!ripgrep.contains("999"));
     }
 }
