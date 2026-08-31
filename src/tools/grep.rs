@@ -1,11 +1,13 @@
 //! Search tool — prefers ripgrep, with a native Rust-regex fallback.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use globset::Glob;
-use regex::bytes::Regex;
+use grep_regex::RegexMatcher;
+use grep_searcher::{sinks::Lossy, BinaryDetection, SearcherBuilder};
 use serde_json::{json, Value};
 use tokio::process::Command;
 use walkdir::WalkDir;
@@ -90,8 +92,18 @@ fn compile_glob(glob_filter: Option<&str>) -> Result<Option<globset::GlobMatcher
         .transpose()
 }
 
+#[cfg(test)]
 fn native_search(pattern: &str, path: &str, glob_filter: Option<&str>) -> Result<String, String> {
-    let regex = Regex::new(pattern).map_err(|error| format!("Error: invalid regex: {error}"))?;
+    let matcher =
+        RegexMatcher::new(pattern).map_err(|error| format!("Error: invalid regex: {error}"))?;
+    native_search_with_matcher(&matcher, path, glob_filter)
+}
+
+fn native_search_with_matcher(
+    matcher: &RegexMatcher,
+    path: &str,
+    glob_filter: Option<&str>,
+) -> Result<String, String> {
     let glob = compile_glob(glob_filter)?;
     let root = Path::new(path);
     if !root.exists() {
@@ -101,7 +113,11 @@ fn native_search(pattern: &str, path: &str, glob_filter: Option<&str>) -> Result
         ));
     }
 
-    let mut results = Vec::new();
+    let mut searcher = SearcherBuilder::new()
+        .line_number(true)
+        .binary_detection(BinaryDetection::quit(b'\0'))
+        .build();
+    let mut results = String::new();
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -120,42 +136,43 @@ fn native_search(pattern: &str, path: &str, glob_filter: Option<&str>) -> Result
             continue;
         }
 
-        let bytes = match std::fs::read(entry.path()) {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
-        };
-        // Match ripgrep's default safety posture: skip binary data instead of
-        // returning arbitrary bytes into the agent transcript.
-        if bytes.contains(&0) {
-            continue;
-        }
-        for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
-            let line = line.strip_suffix(b"\n").unwrap_or(line);
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            if regex.is_match(line) {
-                results.push(format!(
-                    "{}:{}:{}",
-                    entry.path().display(),
-                    index + 1,
-                    String::from_utf8_lossy(line)
-                ));
-            }
-        }
+        let display_path = entry.path().display().to_string();
+        searcher
+            .search_path(
+                matcher,
+                entry.path(),
+                Lossy(|line_number, line| {
+                    if !results.is_empty() {
+                        results.push('\n');
+                    }
+                    write!(
+                        results,
+                        "{}:{}:{}",
+                        display_path,
+                        line_number,
+                        line.trim_end_matches(['\n', '\r'])
+                    )
+                    .expect("writing into String cannot fail");
+                    Ok(true)
+                }),
+            )
+            .map_err(|error| format!("Error: native search failed: {error}"))?;
     }
 
     if results.is_empty() {
         Ok("No matches found.".to_string())
     } else {
-        Ok(results.join("\n"))
+        Ok(results)
     }
 }
 
 async fn search(pattern: String, path: String, glob_filter: Option<String>) -> String {
     // Validate once before choosing a backend. This gives callers one stable
     // error for syntax unsupported by the default Rust-regex contract.
-    if let Err(error) = Regex::new(&pattern) {
-        return format!("Error: invalid regex: {error}");
-    }
+    let matcher = match RegexMatcher::new(&pattern) {
+        Ok(matcher) => matcher,
+        Err(error) => return format!("Error: invalid regex: {error}"),
+    };
     if let Err(error) = compile_glob(glob_filter.as_deref()) {
         return error;
     }
@@ -183,7 +200,7 @@ async fn search(pattern: String, path: String, glob_filter: Option<String>) -> S
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             match tokio::task::spawn_blocking(move || {
-                native_search(&pattern, &path, glob_filter.as_deref())
+                native_search_with_matcher(&matcher, &path, glob_filter.as_deref())
             })
             .await
             {
@@ -268,8 +285,12 @@ mod tests {
 
     fn benchmark_fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        let line = "fn needle_function(value: usize) -> usize { value + 1 }\n";
-        let contents = line.repeat(1_024);
+        let ordinary_line = "fn ordinary_function(value: usize) -> usize { value + 1 }\n";
+        let needle_line = "fn needle_function(value: usize) -> usize { value + 1 }\n";
+        // Search a meaningful amount of source text while keeping result
+        // formatting out of the timing: real agent searches should return a
+        // focused set of matches, not megabytes of repeated lines.
+        let contents = format!("{}{}", ordinary_line.repeat(1_023), needle_line);
         for index in 0..128 {
             std::fs::write(dir.path().join(format!("source-{index:03}.rs")), &contents).unwrap();
         }
