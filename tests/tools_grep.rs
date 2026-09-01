@@ -107,3 +107,28 @@ async fn errors_when_path_does_not_exist() {
         "got: {result}"
     );
 }
+
+#[tokio::test]
+async fn bounds_large_search_output_with_a_refinement_hint() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("many-matches.txt"),
+        "needle match with enough context to exercise output bounds\n".repeat(2_000),
+    )
+    .unwrap();
+    let tool = create_grep_tool();
+
+    let result = tool
+        .execute(
+            json!({ "pattern": "needle", "path": dir.path().to_string_lossy() }),
+            ExecOptions::default(),
+        )
+        .await;
+
+    assert!(result.contains("search output truncated"), "got: {result}");
+    assert!(
+        result.len() < 22 * 1024,
+        "result was {} bytes",
+        result.len()
+    );
+}

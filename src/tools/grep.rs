@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -9,6 +10,7 @@ use globset::Glob;
 use grep_regex::RegexMatcher;
 use grep_searcher::{sinks::Lossy, BinaryDetection, SearcherBuilder};
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use walkdir::WalkDir;
 
@@ -17,6 +19,38 @@ use super::workspace::SharedWorkspaceBoundary;
 
 pub struct GrepTool;
 pub struct WorkspaceGrepTool(SharedWorkspaceBoundary);
+
+// Keep search results comfortably below the agent loop's generic 24 KiB tool
+// history bound, while leaving room for an actionable truncation notice.
+const MAX_SEARCH_RESULT_BYTES: usize = 20 * 1024;
+const SEARCH_TRUNCATION_NOTICE: &str =
+    "[search output truncated; refine the path, glob, or pattern to inspect fewer matches]";
+
+struct SearchResult {
+    output: String,
+    truncated: bool,
+}
+
+enum RipgrepSearchError {
+    Unavailable,
+    Message(String),
+}
+
+impl SearchResult {
+    fn render(mut self) -> String {
+        if self.truncated {
+            if !self.output.is_empty() {
+                self.output.push_str("\n\n");
+            }
+            self.output.push_str(SEARCH_TRUNCATION_NOTICE);
+        }
+        if self.output.is_empty() {
+            "No matches found.".to_string()
+        } else {
+            self.output
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum SearchBackend {
@@ -96,14 +130,14 @@ fn compile_glob(glob_filter: Option<&str>) -> Result<Option<globset::GlobMatcher
 fn native_search(pattern: &str, path: &str, glob_filter: Option<&str>) -> Result<String, String> {
     let matcher =
         RegexMatcher::new(pattern).map_err(|error| format!("Error: invalid regex: {error}"))?;
-    native_search_with_matcher(&matcher, path, glob_filter)
+    native_search_with_matcher(&matcher, path, glob_filter).map(SearchResult::render)
 }
 
 fn native_search_with_matcher(
     matcher: &RegexMatcher,
     path: &str,
     glob_filter: Option<&str>,
-) -> Result<String, String> {
+) -> Result<SearchResult, String> {
     let glob = compile_glob(glob_filter)?;
     let root = Path::new(path);
     if !root.exists() {
@@ -118,6 +152,7 @@ fn native_search_with_matcher(
         .binary_detection(BinaryDetection::quit(b'\0'))
         .build();
     let mut results = String::new();
+    let mut truncated = false;
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -142,28 +177,103 @@ fn native_search_with_matcher(
                 matcher,
                 entry.path(),
                 Lossy(|line_number, line| {
-                    if !results.is_empty() {
-                        results.push('\n');
-                    }
+                    let mut rendered = String::new();
                     write!(
-                        results,
+                        rendered,
                         "{}:{}:{}",
                         display_path,
                         line_number,
                         line.trim_end_matches(['\n', '\r'])
                     )
                     .expect("writing into String cannot fail");
+                    let separator_len = usize::from(!results.is_empty());
+                    if results.len() + separator_len + rendered.len() > MAX_SEARCH_RESULT_BYTES {
+                        truncated = true;
+                        return Ok(false);
+                    }
+                    if separator_len > 0 {
+                        results.push('\n');
+                    }
+                    results.push_str(&rendered);
                     Ok(true)
                 }),
             )
             .map_err(|error| format!("Error: native search failed: {error}"))?;
+        if truncated {
+            break;
+        }
     }
 
-    if results.is_empty() {
-        Ok("No matches found.".to_string())
-    } else {
-        Ok(results)
+    Ok(SearchResult {
+        output: results,
+        truncated,
+    })
+}
+
+async fn ripgrep_search(
+    pattern: &str,
+    path: &str,
+    glob_filter: Option<&str>,
+) -> Result<SearchResult, RipgrepSearchError> {
+    let mut command = search_command(SearchBackend::Ripgrep, pattern, path, glob_filter);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(RipgrepSearchError::Unavailable)
+        }
+        Err(error) => return Err(RipgrepSearchError::Message(error.to_string())),
+    };
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        RipgrepSearchError::Message("ripgrep stdout was not captured".to_string())
+    })?;
+    let mut output = Vec::with_capacity(MAX_SEARCH_RESULT_BYTES);
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut truncated = false;
+
+    loop {
+        let read = stdout
+            .read(&mut buffer)
+            .await
+            .map_err(|error| RipgrepSearchError::Message(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_SEARCH_RESULT_BYTES.saturating_sub(output.len());
+        if read > remaining {
+            output.extend_from_slice(&buffer[..remaining]);
+            truncated = true;
+            child
+                .kill()
+                .await
+                .map_err(|error| RipgrepSearchError::Message(error.to_string()))?;
+            break;
+        }
+        output.extend_from_slice(&buffer[..read]);
     }
+    drop(stdout);
+    let output_status = child
+        .wait_with_output()
+        .await
+        .map_err(|error| RipgrepSearchError::Message(error.to_string()))?;
+    if truncated {
+        return Ok(SearchResult {
+            output: String::from_utf8_lossy(&output).trim_end().to_string(),
+            truncated: true,
+        });
+    }
+
+    let exit = output_status.status.code().unwrap_or(-1);
+    if exit > 1 {
+        return Err(RipgrepSearchError::Message(format!(
+            "rg exited with code {exit}: {}",
+            String::from_utf8_lossy(&output_status.stderr)
+        )));
+    }
+    Ok(SearchResult {
+        output: String::from_utf8_lossy(&output).trim().to_string(),
+        truncated: false,
+    })
 }
 
 async fn search(pattern: String, path: String, glob_filter: Option<String>) -> String {
@@ -177,39 +287,20 @@ async fn search(pattern: String, path: String, glob_filter: Option<String>) -> S
         return error;
     }
 
-    let output = search_command(
-        SearchBackend::Ripgrep,
-        &pattern,
-        &path,
-        glob_filter.as_deref(),
-    )
-    .output()
-    .await;
-    match output {
-        Ok(output) => {
-            let exit = output.status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            if exit > 1 {
-                format!("Error: rg exited with code {exit}: {stderr}")
-            } else if exit == 1 || stdout.trim().is_empty() {
-                "No matches found.".to_string()
-            } else {
-                stdout.trim().to_string()
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    match ripgrep_search(&pattern, &path, glob_filter.as_deref()).await {
+        Ok(result) => result.render(),
+        Err(RipgrepSearchError::Unavailable) => {
             match tokio::task::spawn_blocking(move || {
                 native_search_with_matcher(&matcher, &path, glob_filter.as_deref())
             })
             .await
             {
-                Ok(Ok(result)) => result,
+                Ok(Ok(result)) => result.render(),
                 Ok(Err(error)) => error,
                 Err(error) => format!("Error: native search task failed: {error}"),
             }
         }
-        Err(error) => format!("Error: {error}"),
+        Err(RipgrepSearchError::Message(error)) => format!("Error: {error}"),
     }
 }
 
@@ -226,7 +317,7 @@ impl HeddleTool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search for a regex pattern in files with paths and line numbers. Uses ripgrep when available, otherwise extended-regex grep."
+        "Search for a Rust-regex pattern in files with paths and line numbers. Uses ripgrep when available, otherwise a compatible native search."
     }
     fn parameters(&self) -> Value {
         json!({

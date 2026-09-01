@@ -196,17 +196,16 @@ it cannot be combined with a line range.
 ### Search backend
 
 The `grep` tool prefers [ripgrep (`rg`)](https://github.com/BurntSushi/ripgrep)
-when it is installed, and otherwise falls back to the system `grep -rEn`.
+when it is installed, and otherwise uses a compatible native Rust search.
 Ripgrep is recommended for faster, more reliable large-repository search, but
 is not a Heddle dependency and is never installed automatically.
 
-Both backends support normal literals, character classes, grouping,
-repetition, and alternation such as `one|two`. Advanced regex behavior can
-differ—especially look-around, backreferences, Unicode handling, and escapes;
-see [ripgrep's regex syntax](https://docs.rs/regex/latest/regex/#syntax) and
-the [GNU grep regular-expression reference](https://www.gnu.org/software/grep/manual/html_node/Regular-Expressions.html).
-Heddle currently passes those patterns through to the selected backend; a
-portable search-regex subset is tracked as future work.
+Both paths use ripgrep's default Rust-regex syntax: literals, character
+classes, grouping, repetition, alternation such as `one|two`, Unicode and
+shorthand classes, and supported inline flags. Look-around, backreferences,
+and PCRE2 syntax are not supported. Search results are bounded with a
+refinement hint; `.env*` files are excluded from agent-visible results. See
+[ripgrep's regex syntax](https://docs.rs/regex/latest/regex/#syntax).
 
 ### Fuzzy Edit Matching
 
