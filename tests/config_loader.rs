@@ -18,6 +18,7 @@ fn clear_env() {
     for k in [
         "HEDDLE_MODEL",
         "OPENROUTER_API_KEY",
+        "STRAITLY_API_KEY",
         "HEDDLE_BASE_URL",
         "HEDDLE_MAX_TOKENS",
         "HEDDLE_TEMPERATURE",
@@ -122,6 +123,26 @@ fn env_overrides_config() {
     let cfg = load_config(None);
     assert_eq!(cfg.model, "env-model");
     assert_eq!(cfg.api_key.as_deref(), Some("env-key"));
+    clear_env();
+}
+
+#[test]
+fn straitly_provider_uses_its_credential_default_and_environment_override() {
+    let sb = Sandbox::new("loader-straitly");
+    clear_env();
+    write_global(&sb, "[providers]\nactive = \"straitly\"\n");
+
+    let cfg = load_config(None);
+    assert_eq!(cfg.provider, heddle::config::loader::ProviderKind::Straitly);
+    assert_eq!(
+        cfg.straitly_credential.as_deref(),
+        Some("keychain:heddle/straitly")
+    );
+
+    std::env::set_var("STRAITLY_API_KEY", "straitly-env-key");
+    let cfg = load_config(None);
+    assert_eq!(cfg.api_key.as_deref(), Some("straitly-env-key"));
+    assert!(cfg.straitly_credential.is_none());
     clear_env();
 }
 

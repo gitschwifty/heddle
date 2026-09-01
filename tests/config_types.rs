@@ -119,6 +119,8 @@ fn heddle_config_accepts_full() {
     let v: Result<HeddleConfigSchema, _> = serde_json::from_value(json!({
         "api_key": "sk-test",
         "providers": {
+            "active": "straitly",
+            "straitly": { "credential": "keychain:heddle/straitly" },
             "openrouter": { "credential": "keychain:heddle/openrouter" }
         },
         "model": "anthropic/claude-sonnet",
@@ -146,6 +148,13 @@ fn heddle_config_accepts_full() {
             .and_then(|providers| providers.openrouter.as_ref())
             .and_then(|openrouter| openrouter.credential.as_deref()),
         Some("keychain:heddle/openrouter")
+    );
+    assert_eq!(
+        v.providers
+            .as_ref()
+            .and_then(|providers| providers.straitly.as_ref())
+            .and_then(|straitly| straitly.credential.as_deref()),
+        Some("keychain:heddle/straitly")
     );
 }
 

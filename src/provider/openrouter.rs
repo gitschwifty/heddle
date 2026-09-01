@@ -31,15 +31,30 @@ const DEFAULT_TITLE: &str = "Heddle";
 pub struct OpenRouterProvider {
     config: ProviderConfig,
     client: reqwest::Client,
+    openrouter_headers: bool,
 }
 
 pub fn create_openrouter_provider(config: ProviderConfig) -> Arc<dyn Provider> {
+    create_openai_compatible_provider(config, true)
+}
+
+/// Straitly accepts OpenAI-compatible chat completions but does not use
+/// OpenRouter's attribution or response-metadata headers.
+pub fn create_straitly_provider(config: ProviderConfig) -> Arc<dyn Provider> {
+    create_openai_compatible_provider(config, false)
+}
+
+fn create_openai_compatible_provider(
+    config: ProviderConfig,
+    openrouter_headers: bool,
+) -> Arc<dyn Provider> {
     Arc::new(OpenRouterProvider {
         config,
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new()),
+        openrouter_headers,
     })
 }
 
@@ -55,22 +70,21 @@ impl OpenRouterProvider {
             HeaderValue::from_str(&format!("Bearer {}", self.config.api_key))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        let attribution = effective_attribution(self.config.app_attribution.as_ref());
-        headers.insert("HTTP-Referer", HeaderValue::from_str(attribution.referer)?);
-        headers.insert(
-            "X-OpenRouter-Title",
-            HeaderValue::from_str(attribution.title)?,
-        );
-        headers.insert("X-Title", HeaderValue::from_str(attribution.title)?);
-        // OpenRouter only returns the actual selected provider and fallback
-        // context when explicitly requested. This response-only metadata is
-        // safe to retain and lets callers distinguish facts from preferences.
-        headers.insert("X-OpenRouter-Metadata", HeaderValue::from_static("enabled"));
-        if let Some(categories) = attribution.categories {
+        if self.openrouter_headers {
+            let attribution = effective_attribution(self.config.app_attribution.as_ref());
+            headers.insert("HTTP-Referer", HeaderValue::from_str(attribution.referer)?);
             headers.insert(
-                "X-OpenRouter-Categories",
-                HeaderValue::from_str(categories)?,
+                "X-OpenRouter-Title",
+                HeaderValue::from_str(attribution.title)?,
             );
+            headers.insert("X-Title", HeaderValue::from_str(attribution.title)?);
+            headers.insert("X-OpenRouter-Metadata", HeaderValue::from_static("enabled"));
+            if let Some(categories) = attribution.categories {
+                headers.insert(
+                    "X-OpenRouter-Categories",
+                    HeaderValue::from_str(categories)?,
+                );
+            }
         }
         Ok(headers)
     }
@@ -444,6 +458,7 @@ impl Provider for OpenRouterProvider {
         let model = self.config.model.clone();
         let retry = self.config.retry.clone();
         let client = self.client.clone();
+        let openrouter_headers = self.openrouter_headers;
 
         let stream = try_stream! {
             let provider = OpenRouterProvider {
@@ -456,6 +471,7 @@ impl Provider for OpenRouterProvider {
                     retry,
                 },
                 client,
+                openrouter_headers,
             };
             let body = provider.build_body(&messages, tools.as_deref(), true, &overrides);
             let headers = provider.build_headers().map_err(|e| anyhow!(e))?;

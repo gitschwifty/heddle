@@ -52,9 +52,13 @@ approval_mode = "suggest"
 temperature = 0.7
 max_tokens = 128000
 
-# Optional: override the default keychain:heddle/openrouter lookup.
-[providers.openrouter]
-credential = "keychain:work/openrouter"
+# Optional: select Straitly; OpenRouter remains the default and Straitly's API
+# URL is built in.
+[providers]
+active = "straitly"
+
+[providers.straitly]
+credential = "keychain:heddle/straitly"
 ```
 
 ### Config Fields
@@ -65,6 +69,8 @@ credential = "keychain:work/openrouter"
 | `weak_model` | string | — | Weak model for context compaction |
 | `editor_model` | string | — | Specialized editing model |
 | `providers.openrouter.credential` | string | `keychain:heddle/openrouter` | Override for the non-secret credential reference |
+| `providers.active` | string | `openrouter` | `openrouter` or `straitly` |
+| `providers.straitly.credential` | string | `keychain:heddle/straitly` | Straitly credential reference |
 | `api_key` | string | — | Legacy plaintext OpenRouter API key; migrate to Keychain |
 | `base_url` | string | — | Custom API endpoint |
 | `max_tokens` | number | — | Token limit |
@@ -112,6 +118,7 @@ All config fields have env var overrides:
 |----------|-----------|
 | `HEDDLE_MODEL` | `model` |
 | `OPENROUTER_API_KEY` | OpenRouter credential (overrides Keychain/config; useful for CI) |
+| `STRAITLY_API_KEY` | Straitly credential when `providers.active = "straitly"` |
 | `HEDDLE_BASE_URL` | `base_url` |
 | `HEDDLE_MAX_TOKENS` | `max_tokens` |
 | `HEDDLE_TEMPERATURE` | `temperature` |

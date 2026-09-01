@@ -5,10 +5,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
-use super::openrouter::create_openrouter_provider;
+use super::openrouter::{create_openrouter_provider, create_straitly_provider};
 use super::types::{Provider, ProviderConfig, RetryConfig};
-use crate::config::loader::{HeddleConfig, OpenRouterRoutingMode};
+use crate::config::loader::{HeddleConfig, OpenRouterRoutingMode, ProviderKind};
 use crate::credentials::resolve_credential;
+
+const STRAITLY_BASE_URL: &str = "https://api.straitly.ai/v1";
 
 #[derive(Clone)]
 pub struct Providers {
@@ -27,7 +29,9 @@ fn base_request_params(config: &HeddleConfig) -> Option<Value> {
             map.insert("temperature".into(), Value::Number(n));
         }
     }
-    if config.openrouter_routing == OpenRouterRoutingMode::Nitro {
+    if config.provider == ProviderKind::OpenRouter
+        && config.openrouter_routing == OpenRouterRoutingMode::Nitro
+    {
         map.insert(
             "provider".into(),
             serde_json::json!({ "sort": "throughput" }),
@@ -41,30 +45,39 @@ fn base_request_params(config: &HeddleConfig) -> Option<Value> {
 }
 
 pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
-    let api_key = config
-        .openrouter_credential
-        .as_deref()
+    let credential = match config.provider {
+        ProviderKind::OpenRouter => config.openrouter_credential.as_deref(),
+        ProviderKind::Straitly => config.straitly_credential.as_deref(),
+    };
+    let api_key = credential
         .and_then(|reference| resolve_credential(reference).ok())
         .or_else(|| config.api_key.clone())
-        .ok_or_else(|| anyhow!("OpenRouter credential is required"))?;
+        .ok_or_else(|| anyhow!("{} credential is required", provider_name(config.provider)))?;
     let params = base_request_params(config);
 
     let build = |model: &str| -> Arc<dyn Provider> {
-        let model = if config.openrouter_routing == OpenRouterRoutingMode::Exacto
+        let model = if config.provider == ProviderKind::OpenRouter
+            && config.openrouter_routing == OpenRouterRoutingMode::Exacto
             && !model.ends_with(":exacto")
         {
             format!("{model}:exacto")
         } else {
             model.to_string()
         };
-        create_openrouter_provider(ProviderConfig {
+        let provider_config = ProviderConfig {
             api_key: api_key.clone(),
             model,
-            base_url: config.base_url.clone(),
+            base_url: config.base_url.clone().or_else(|| {
+                (config.provider == ProviderKind::Straitly).then(|| STRAITLY_BASE_URL.to_string())
+            }),
             request_params: params.clone(),
             app_attribution: config.app_attribution.clone(),
             retry: Some(RetryConfig::default()),
-        })
+        };
+        match config.provider {
+            ProviderKind::OpenRouter => create_openrouter_provider(provider_config),
+            ProviderKind::Straitly => create_straitly_provider(provider_config),
+        }
     };
 
     let main = build(&config.model);
@@ -72,4 +85,11 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
     let editor = config.editor_model.as_deref().map(build);
 
     Ok(Providers { main, weak, editor })
+}
+
+fn provider_name(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::OpenRouter => "OpenRouter",
+        ProviderKind::Straitly => "Straitly",
+    }
 }

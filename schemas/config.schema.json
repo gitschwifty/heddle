@@ -441,13 +441,40 @@
         }
       }
     },
+    "ProviderKindWire": {
+      "type": "string",
+      "enum": [
+        "open-router",
+        "straitly"
+      ]
+    },
     "ProvidersConfigSchema": {
       "type": "object",
       "properties": {
+        "active": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProviderKindWire"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "openrouter": {
           "anyOf": [
             {
               "$ref": "#/definitions/OpenRouterCredentialsSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "straitly": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StraitlyCredentialsSchema"
             },
             {
               "type": "null"
@@ -489,6 +516,18 @@
         "strict",
         "developer"
       ]
+    },
+    "StraitlyCredentialsSchema": {
+      "type": "object",
+      "properties": {
+        "credential": {
+          "description": "Override the default `keychain:heddle/straitly` non-secret credential reference.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     },
     "ToolMatch": {
       "anyOf": [

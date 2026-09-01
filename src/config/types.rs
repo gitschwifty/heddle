@@ -40,8 +40,23 @@ pub struct OpenRouterCredentialsSchema {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct StraitlyCredentialsSchema {
+    /// Override the default `keychain:heddle/straitly` non-secret credential reference.
+    pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderKindWire {
+    OpenRouter,
+    Straitly,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ProvidersConfigSchema {
+    pub active: Option<ProviderKindWire>,
     pub openrouter: Option<OpenRouterCredentialsSchema>,
+    pub straitly: Option<StraitlyCredentialsSchema>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

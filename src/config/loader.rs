@@ -8,7 +8,7 @@ use toml::Value as TomlValue;
 
 use crate::config::features::FeatureFlagsOverride;
 use crate::config::paths::{get_heddle_home, get_local_heddle_dir};
-use crate::credentials::DEFAULT_OPENROUTER_CREDENTIAL;
+use crate::credentials::{DEFAULT_OPENROUTER_CREDENTIAL, DEFAULT_STRAITLY_CREDENTIAL};
 use crate::debug::debug;
 use crate::hooks::loader::load_hooks;
 use crate::hooks::types::ResolvedHooksConfig;
@@ -32,6 +32,26 @@ pub enum OpenRouterRoutingMode {
     Balanced,
     Nitro,
     Exacto,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderKind {
+    #[default]
+    OpenRouter,
+    Straitly,
+}
+
+impl std::str::FromStr for ProviderKind {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "openrouter" => Ok(Self::OpenRouter),
+            "straitly" => Ok(Self::Straitly),
+            _ => Err(()),
+        }
+    }
 }
 
 impl std::str::FromStr for OpenRouterRoutingMode {
@@ -87,6 +107,10 @@ pub struct HeddleConfig {
     /// Non-secret provider credential reference, resolved only when building providers.
     /// Defaults to the standard macOS Keychain item and may be overridden in TOML.
     pub openrouter_credential: Option<String>,
+    /// Non-secret Straitly credential reference, resolved only for Straitly.
+    pub straitly_credential: Option<String>,
+    /// Selects the provider used for agent sessions. Defaults to OpenRouter.
+    pub provider: ProviderKind,
 
     pub model: String,
     pub weak_model: Option<String>,
@@ -126,6 +150,8 @@ impl Default for HeddleConfig {
         Self {
             api_key: None,
             openrouter_credential: Some(DEFAULT_OPENROUTER_CREDENTIAL.to_string()),
+            straitly_credential: Some(DEFAULT_STRAITLY_CREDENTIAL.to_string()),
+            provider: ProviderKind::OpenRouter,
             model: "openrouter/free".to_string(),
             weak_model: None,
             editor_model: None,
@@ -212,6 +238,15 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     if let Some(s) = table.get("api_key").and_then(as_str) {
         config.api_key = Some(s.to_string());
     }
+    if let Some(provider) = table
+        .get("providers")
+        .and_then(|value| value.as_table())
+        .and_then(|providers| providers.get("active"))
+        .and_then(as_str)
+        .and_then(|value| value.parse::<ProviderKind>().ok())
+    {
+        config.provider = provider;
+    }
     if let Some(s) = table
         .get("providers")
         .and_then(|value| value.as_table())
@@ -221,6 +256,16 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
         .and_then(as_str)
     {
         config.openrouter_credential = Some(s.to_string());
+    }
+    if let Some(s) = table
+        .get("providers")
+        .and_then(|value| value.as_table())
+        .and_then(|providers| providers.get("straitly"))
+        .and_then(|value| value.as_table())
+        .and_then(|straitly| straitly.get("credential"))
+        .and_then(as_str)
+    {
+        config.straitly_credential = Some(s.to_string());
     }
     if let Some(s) = table.get("system_prompt").and_then(as_str) {
         config.system_prompt = Some(s.to_string());
@@ -387,8 +432,16 @@ pub fn load_config_from_file(path: &Path) -> HeddleConfig {
     // Headless workers commonly supply their provider credential through the
     // process environment, even when all policy is in the explicit file.
     if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-        merged.api_key = Some(api_key);
-        merged.openrouter_credential = None;
+        if merged.provider == ProviderKind::OpenRouter {
+            merged.api_key = Some(api_key);
+            merged.openrouter_credential = None;
+        }
+    }
+    if let Ok(api_key) = std::env::var("STRAITLY_API_KEY") {
+        if merged.provider == ProviderKind::Straitly {
+            merged.api_key = Some(api_key);
+            merged.straitly_credential = None;
+        }
     }
     merged
 }
@@ -452,8 +505,16 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
         merged.model = v;
     }
     if let Ok(v) = std::env::var("OPENROUTER_API_KEY") {
-        merged.api_key = Some(v);
-        merged.openrouter_credential = None;
+        if merged.provider == ProviderKind::OpenRouter {
+            merged.api_key = Some(v);
+            merged.openrouter_credential = None;
+        }
+    }
+    if let Ok(v) = std::env::var("STRAITLY_API_KEY") {
+        if merged.provider == ProviderKind::Straitly {
+            merged.api_key = Some(v);
+            merged.straitly_credential = None;
+        }
     }
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);
@@ -519,8 +580,16 @@ pub fn load_config_without_files() -> HeddleConfig {
         merged.model = v;
     }
     if let Ok(v) = std::env::var("OPENROUTER_API_KEY") {
-        merged.api_key = Some(v);
-        merged.openrouter_credential = None;
+        if merged.provider == ProviderKind::OpenRouter {
+            merged.api_key = Some(v);
+            merged.openrouter_credential = None;
+        }
+    }
+    if let Ok(v) = std::env::var("STRAITLY_API_KEY") {
+        if merged.provider == ProviderKind::Straitly {
+            merged.api_key = Some(v);
+            merged.straitly_credential = None;
+        }
     }
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);

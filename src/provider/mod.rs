@@ -6,5 +6,5 @@ pub mod overrides;
 pub mod types;
 
 pub use factory::{create_providers, Providers};
-pub use openrouter::create_openrouter_provider;
+pub use openrouter::{create_openrouter_provider, create_straitly_provider};
 pub use types::{Provider, ProviderConfig, RetryConfig};
