@@ -3490,7 +3490,7 @@ fn write_retry_attempt_artifacts(results_dir: &Path, r: &TaskResult, attempt: u3
 async fn main() -> Result<()> {
     let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::from_filename(".env.test");
-    let _ = dotenvy::dotenv();
+    let _ = dotenvy::from_filename(".env");
 
     let cli = Cli::parse();
     match cli.cmd {

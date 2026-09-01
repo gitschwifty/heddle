@@ -31,7 +31,8 @@ cargo run --bin heddle -- --help             # full flag list
 cargo run --bin heddle-headless              # headless mode (reads JSONL on stdin)
 ```
 
-The binaries auto-load `.env.local` then `.env` at startup via `dotenvy`. For
+The binaries auto-load `.env.local` then `.env` from their current working
+directory at startup via `dotenvy`; they do not search parent directories. For
 local runs, prefer the default macOS Keychain item; add the value with
 `security add-generic-password -U -s heddle -a openrouter -w`. Set
 `[providers.openrouter] credential` only to override that lookup. Keep
