@@ -442,6 +442,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ripgrep_and_native_search_share_file_discovery_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/visible.rs"), "needle visible\n").unwrap();
+        std::fs::write(root.join(".hidden.rs"), "needle hidden\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
+        std::fs::write(root.join("ignored.rs"), "needle ignored\n").unwrap();
+        std::fs::write(root.join("binary.bin"), b"needle binary\0").unwrap();
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend("needle utf16\n".encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(root.join("utf16.txt"), utf16).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("src/visible.rs"), root.join("linked.rs")).unwrap();
+        let path = root.to_string_lossy().into_owned();
+
+        let native = native_search("needle", &path, None).unwrap();
+        let output = match search_command(SearchBackend::Ripgrep, "needle", &path, None)
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("failed to start rg: {error}"),
+        };
+        assert!(output.status.success());
+        let ripgrep = String::from_utf8_lossy(&output.stdout);
+
+        for expected in ["visible.rs", ".hidden.rs", "ignored.rs", "utf16.txt"] {
+            assert!(
+                native.contains(expected),
+                "native result missing {expected}: {native}"
+            );
+            assert!(
+                ripgrep.contains(expected),
+                "ripgrep result missing {expected}: {ripgrep}"
+            );
+        }
+        assert!(!native.contains("needle binary"));
+        assert!(!ripgrep.contains("needle binary"));
+        #[cfg(unix)]
+        {
+            assert!(!native.contains("linked.rs"));
+            assert!(!ripgrep.contains("linked.rs"));
+        }
+
+        let native_glob = native_search("needle", &path, Some("*.rs")).unwrap();
+        let output = search_command(SearchBackend::Ripgrep, "needle", &path, Some("*.rs"))
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let ripgrep_glob = String::from_utf8_lossy(&output.stdout);
+        for expected in ["visible.rs", ".hidden.rs", "ignored.rs"] {
+            assert!(
+                native_glob.contains(expected),
+                "native glob result missing {expected}: {native_glob}"
+            );
+            assert!(
+                ripgrep_glob.contains(expected),
+                "ripgrep glob result missing {expected}: {ripgrep_glob}"
+            );
+        }
+        assert!(!native_glob.contains("utf16.txt"));
+        assert!(!ripgrep_glob.contains("utf16.txt"));
+    }
+
+    #[tokio::test]
     async fn native_fallback_performance_guardrail() {
         let dir = benchmark_fixture();
         let path = dir.path().to_string_lossy().into_owned();
