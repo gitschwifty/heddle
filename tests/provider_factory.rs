@@ -8,6 +8,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn base_config() -> HeddleConfig {
     HeddleConfig {
         api_key: Some("test-key".to_string()),
+        // Factory tests use a synthetic legacy key and must never query the
+        // developer's real Keychain or trigger an access prompt.
+        openrouter_credential: None,
         model: "main-model".to_string(),
         ..HeddleConfig::default()
     }
@@ -92,6 +95,7 @@ fn no_weak_no_editor_returns_only_main() {
 fn missing_api_key_errors() {
     let err = create_providers(&HeddleConfig {
         api_key: None,
+        openrouter_credential: None,
         ..base_config()
     })
     .err()
@@ -111,7 +115,7 @@ fn malformed_credential_reference_falls_back_to_legacy_api_key() {
 }
 
 #[test]
-fn unusable_credential_reference_without_legacy_key_errors() {
+fn unusable_credential_reference_errors_only_when_no_other_key_exists() {
     let err = create_providers(&HeddleConfig {
         api_key: None,
         openrouter_credential: Some("env:OPENROUTER_API_KEY".to_string()),
@@ -119,8 +123,7 @@ fn unusable_credential_reference_without_legacy_key_errors() {
     })
     .err()
     .expect("expected an error");
-    assert!(err.to_string().contains("credential is unavailable"));
-    assert!(format!("{err:#}").contains("keychain:<service>/<account>"));
+    assert!(err.to_string().contains("credential is required"));
 }
 
 #[tokio::test]

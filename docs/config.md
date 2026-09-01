@@ -21,7 +21,8 @@ HEDDLE_HOME=.heddle-dev cargo run --bin heddle   # use a dev config
 # ── Identity / API ──────────────────────────────────
 # Store the actual value in macOS Keychain first:
 # security add-generic-password -U -s heddle -a openrouter -w
-# `OPENROUTER_API_KEY` overrides Keychain/config (useful for CI and headless).
+# Heddle checks keychain:heddle/openrouter by default. `OPENROUTER_API_KEY`
+# overrides Keychain/config (useful for CI and headless).
 # `api_key = "sk-or-..."` remains supported as a legacy plaintext fallback.
 
 # ── Provider endpoint ───────────────────────────────
@@ -99,10 +100,11 @@ deny_paths = ["/Users/me/private", "/Volumes/work-secrets"]
 command = "my-guardrail"
 matchers = { tool = "bash" }
 
-# ── Provider credentials ────────────────────────────
-# Keep this table at the end: TOML fields after a table header belong to it.
+# ── Provider credentials (optional override) ─────────
+# Heddle defaults to keychain:heddle/openrouter. Keep this table at the end:
+# TOML fields after a table header belong to it.
 [providers.openrouter]
-credential = "keychain:heddle/openrouter" # Non-secret Keychain reference
+credential = "keychain:work/openrouter" # Override the non-secret reference
 ```
 
 ## Environment Variable Overrides
@@ -124,10 +126,10 @@ credential = "keychain:heddle/openrouter" # Non-secret Keychain reference
 | `HEDDLE_HOME` | Global config directory |
 
 For OpenRouter credentials, the order is `OPENROUTER_API_KEY` → a usable
-`providers.openrouter.credential` Keychain reference → legacy `api_key`.
-If a Keychain reference cannot be read, Heddle uses the legacy key when present
-and otherwise reports that no credential is available. Env vars always win over
-file config.
+credential reference (default: `keychain:heddle/openrouter`) → legacy
+`api_key`. If the default or configured reference cannot be read, Heddle keeps
+checking the remaining sources and reports no credential only when none is
+available. Env vars always win over file config.
 
 `balanced` leaves OpenRouter's default provider routing intact. `nitro` prefers
 highest-throughput providers. `exacto` requests OpenRouter's quality-first

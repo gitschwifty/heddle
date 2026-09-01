@@ -16,10 +16,6 @@ cargo build --release
 # Store your API key in the macOS login Keychain (the command prompts for it)
 security add-generic-password -U -s heddle -a openrouter -w
 
-# Tell Heddle where to find it
-mkdir -p ~/.heddle
-printf '[providers.openrouter]\ncredential = "keychain:heddle/openrouter"\n' >> ~/.heddle/config.toml
-
 # Run the interactive CLI
 ./target/release/heddle
 ```
@@ -56,8 +52,9 @@ approval_mode = "suggest"
 temperature = 0.7
 max_tokens = 128000
 
+# Optional: override the default keychain:heddle/openrouter lookup.
 [providers.openrouter]
-credential = "keychain:heddle/openrouter"
+credential = "keychain:work/openrouter"
 ```
 
 ### Config Fields
@@ -67,7 +64,7 @@ credential = "keychain:heddle/openrouter"
 | `model` | string | `openrouter/free` | Primary LLM model |
 | `weak_model` | string | — | Weak model for context compaction |
 | `editor_model` | string | — | Specialized editing model |
-| `providers.openrouter.credential` | string | — | Non-secret credential reference, e.g. `keychain:heddle/openrouter` |
+| `providers.openrouter.credential` | string | `keychain:heddle/openrouter` | Override for the non-secret credential reference |
 | `api_key` | string | — | Legacy plaintext OpenRouter API key; migrate to Keychain |
 | `base_url` | string | — | Custom API endpoint |
 | `max_tokens` | number | — | Token limit |

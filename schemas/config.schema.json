@@ -4,7 +4,7 @@
   "type": "object",
   "properties": {
     "api_key": {
-      "description": "Legacy plaintext credential. Prefer `providers.openrouter.credential`.",
+      "description": "Legacy plaintext credential. Prefer the default Keychain item or an override.",
       "type": [
         "string",
         "null"
@@ -393,7 +393,7 @@
       "type": "object",
       "properties": {
         "credential": {
-          "description": "A non-secret credential reference, for example `keychain:heddle/openrouter`.",
+          "description": "Override the default `keychain:heddle/openrouter` non-secret credential reference.",
           "type": [
             "string",
             "null"

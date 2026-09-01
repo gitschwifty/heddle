@@ -338,13 +338,20 @@ Use the writer model.
 
 #[tokio::test]
 async fn missing_api_key_returns_error() {
-    let _sb = Sandbox::new("setup-no-key");
+    let sb = Sandbox::new("setup-no-key");
+    std::fs::write(
+        sb.heddle_home.join("config.toml"),
+        "[providers.openrouter]\ncredential = \"invalid:missing\"\n",
+    )
+    .unwrap();
     std::env::remove_var("OPENROUTER_API_KEY");
     let r = create_session(opts()).await;
     assert!(r.is_err());
     let err = r.err().unwrap().to_string();
     assert!(
-        err.to_lowercase().contains("api_key") || err.to_lowercase().contains("api key"),
+        err.to_lowercase().contains("credential")
+            || err.to_lowercase().contains("api_key")
+            || err.to_lowercase().contains("api key"),
         "got: {err}"
     );
 }

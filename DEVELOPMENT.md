@@ -32,9 +32,9 @@ cargo run --bin heddle-headless              # headless mode (reads JSONL on std
 ```
 
 The binaries auto-load `.env.local` then `.env` at startup via `dotenvy`. For
-local runs, prefer macOS Keychain with `[providers.openrouter] credential =
-"keychain:heddle/openrouter"` in `~/.heddle/config.toml`; add the value with
-`security add-generic-password -U -s heddle -a openrouter -w`. Keep
+local runs, prefer the default macOS Keychain item; add the value with
+`security add-generic-password -U -s heddle -a openrouter -w`. Set
+`[providers.openrouter] credential` only to override that lookup. Keep
 `OPENROUTER_API_KEY` in `.env.local` for CI, headless, or temporary overrides.
 
 ## Evals and Benchmark Isolation

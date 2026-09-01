@@ -35,7 +35,7 @@ pub struct ProviderConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct OpenRouterCredentialsSchema {
-    /// A non-secret credential reference, for example `keychain:heddle/openrouter`.
+    /// Override the default `keychain:heddle/openrouter` non-secret credential reference.
     pub credential: Option<String>,
 }
 
@@ -108,7 +108,7 @@ pub struct SandboxConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HeddleConfigSchema {
-    /// Legacy plaintext credential. Prefer `providers.openrouter.credential`.
+    /// Legacy plaintext credential. Prefer the default Keychain item or an override.
     pub api_key: Option<String>,
     pub providers: Option<ProvidersConfigSchema>,
     pub model: Option<String>,

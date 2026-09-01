@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
 use super::openrouter::create_openrouter_provider;
@@ -41,16 +41,12 @@ fn base_request_params(config: &HeddleConfig) -> Option<Value> {
 }
 
 pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
-    let api_key = match config.openrouter_credential.as_deref().map(resolve_credential) {
-        Some(Ok(credential)) => credential,
-        Some(Err(error)) => config.api_key.clone().ok_or(error).context(
-            "OpenRouter credential is unavailable; set OPENROUTER_API_KEY or add a valid legacy api_key",
-        )?,
-        None => config
-            .api_key
-            .clone()
-            .ok_or_else(|| anyhow!("OpenRouter credential is required"))?,
-    };
+    let api_key = config
+        .openrouter_credential
+        .as_deref()
+        .and_then(|reference| resolve_credential(reference).ok())
+        .or_else(|| config.api_key.clone())
+        .ok_or_else(|| anyhow!("OpenRouter credential is required"))?;
     let params = base_request_params(config);
 
     let build = |model: &str| -> Arc<dyn Provider> {

@@ -8,6 +8,7 @@ use toml::Value as TomlValue;
 
 use crate::config::features::FeatureFlagsOverride;
 use crate::config::paths::{get_heddle_home, get_local_heddle_dir};
+use crate::credentials::DEFAULT_OPENROUTER_CREDENTIAL;
 use crate::debug::debug;
 use crate::hooks::loader::load_hooks;
 use crate::hooks::types::ResolvedHooksConfig;
@@ -84,6 +85,7 @@ pub struct HeddleConfig {
     /// Legacy plaintext API key from config or the `OPENROUTER_API_KEY` override.
     pub api_key: Option<String>,
     /// Non-secret provider credential reference, resolved only when building providers.
+    /// Defaults to the standard macOS Keychain item and may be overridden in TOML.
     pub openrouter_credential: Option<String>,
 
     pub model: String,
@@ -123,7 +125,7 @@ impl Default for HeddleConfig {
     fn default() -> Self {
         Self {
             api_key: None,
-            openrouter_credential: None,
+            openrouter_credential: Some(DEFAULT_OPENROUTER_CREDENTIAL.to_string()),
             model: "openrouter/free".to_string(),
             weak_model: None,
             editor_model: None,

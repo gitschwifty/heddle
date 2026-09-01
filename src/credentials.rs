@@ -7,6 +7,10 @@ use anyhow::{anyhow, Result};
 
 const KEYCHAIN_REFERENCE_HELP: &str = "credential must use keychain:<service>/<account>";
 
+/// The local OpenRouter credential Heddle checks when configuration does not
+/// select a different backend or keychain item.
+pub const DEFAULT_OPENROUTER_CREDENTIAL: &str = "keychain:heddle/openrouter";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CredentialReference {
     Keychain { service: String, account: String },

@@ -40,6 +40,10 @@ fn defaults_when_no_config_files() {
     let cfg = load_config(None);
     assert_eq!(cfg.model, "openrouter/free");
     assert!(cfg.api_key.is_none());
+    assert_eq!(
+        cfg.openrouter_credential.as_deref(),
+        Some("keychain:heddle/openrouter")
+    );
 }
 
 #[test]

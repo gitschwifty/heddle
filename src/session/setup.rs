@@ -298,7 +298,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     if config.api_key.is_none() && config.openrouter_credential.is_none() {
         return Err(anyhow!(
-            "an OpenRouter credential is required: set OPENROUTER_API_KEY, configure [providers.openrouter] credential = \"keychain:heddle/openrouter\", or use legacy api_key"
+            "an OpenRouter credential is required: add the default macOS Keychain item (heddle/openrouter), set OPENROUTER_API_KEY, or use legacy api_key"
         ));
     }
     if let Some(model) = &options.model {
