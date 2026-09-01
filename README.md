@@ -205,7 +205,8 @@ classes, grouping, repetition, alternation such as `one|two`, Unicode and
 shorthand classes, and supported inline flags. Look-around, backreferences,
 and PCRE2 syntax are not supported. Search results are bounded with a
 refinement hint; `.env*` files are excluded from agent-visible results. See
-[ripgrep's regex syntax](https://docs.rs/regex/latest/regex/#syntax).
+[ripgrep's regex syntax](https://docs.rs/regex/latest/regex/#syntax). Results
+are ordered by path and then line number on both search paths.
 
 ### Fuzzy Edit Matching
 

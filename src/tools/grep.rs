@@ -95,6 +95,8 @@ fn search_args(
                     "--color=never",
                     "--hidden",
                     "--no-ignore",
+                    "--sort",
+                    "path",
                 ]
                 .map(String::from),
             );
@@ -155,6 +157,7 @@ fn native_search_with_matcher(
     let mut truncated = false;
     for entry in WalkDir::new(root)
         .follow_links(false)
+        .sort_by_file_name()
         .into_iter()
         .filter_map(Result::ok)
     {
@@ -393,6 +396,7 @@ mod tests {
         let args = search_args(SearchBackend::Ripgrep, "one|two", "src", Some("*.rs"));
         assert!(args.contains(&"!.env*".to_string()));
         assert!(args.contains(&"*.rs".to_string()));
+        assert!(args.windows(2).any(|args| args == ["--sort", "path"]));
         assert_eq!(args[args.len() - 3..], ["-e", "one|two", "src"]);
     }
 
@@ -486,6 +490,18 @@ mod tests {
         {
             assert!(!native.contains("linked.rs"));
             assert!(!ripgrep.contains("linked.rs"));
+        }
+
+        let expected_order = [".hidden.rs", "ignored.rs", "visible.rs", "utf16.txt"];
+        for result in [&native, ripgrep.as_ref()] {
+            let positions: Vec<_> = expected_order
+                .iter()
+                .map(|name| result.find(name).expect("expected path was present"))
+                .collect();
+            assert!(
+                positions.windows(2).all(|window| window[0] < window[1]),
+                "search results were not path-sorted: {result}"
+            );
         }
 
         let native_glob = native_search("needle", &path, Some("*.rs")).unwrap();
