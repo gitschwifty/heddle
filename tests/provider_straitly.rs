@@ -90,4 +90,7 @@ async fn straitly_streams_openai_tool_call_chunks() {
             .iter()
             .any(|choice| choice.delta.tool_calls.is_some())
     }));
+    let request = server.received_requests().await.unwrap().remove(0);
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["stream_options"]["include_usage"], true);
 }

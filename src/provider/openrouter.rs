@@ -105,6 +105,15 @@ impl OpenRouterProvider {
             serde_json::to_value(messages).unwrap_or(Value::Null),
         );
         body.insert("stream".into(), Value::Bool(stream));
+        // OpenAI-compatible gateways generally omit the final usage chunk from
+        // streams unless explicitly asked. OpenRouter has its own usage
+        // behavior, while Straitly follows the OpenAI convention.
+        if stream && !self.openrouter_headers {
+            body.insert(
+                "stream_options".into(),
+                serde_json::json!({ "include_usage": true }),
+            );
+        }
 
         if let Some(extra) = self
             .config
