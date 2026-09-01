@@ -118,6 +118,9 @@ fn heddle_config_accepts_empty_object() {
 fn heddle_config_accepts_full() {
     let v: Result<HeddleConfigSchema, _> = serde_json::from_value(json!({
         "api_key": "sk-test",
+        "providers": {
+            "openrouter": { "credential": "keychain:heddle/openrouter" }
+        },
         "model": "anthropic/claude-sonnet",
         "weak_model": "openrouter/free",
         "editor_model": "anthropic/claude-opus",
@@ -136,7 +139,14 @@ fn heddle_config_accepts_full() {
         "doom_loop_threshold": 3,
         "budget_limit": 5.0
     }));
-    assert!(v.is_ok(), "err={:?}", v.err());
+    let v = v.expect("full config should deserialize");
+    assert_eq!(
+        v.providers
+            .as_ref()
+            .and_then(|providers| providers.openrouter.as_ref())
+            .and_then(|openrouter| openrouter.credential.as_deref()),
+        Some("keychain:heddle/openrouter")
+    );
 }
 
 #[test]

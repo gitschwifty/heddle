@@ -122,6 +122,65 @@ fn env_overrides_config() {
 }
 
 #[test]
+fn keychain_reference_overrides_legacy_api_key() {
+    let sb = Sandbox::new("loader-keychain-reference");
+    clear_env();
+    write_global(
+        &sb,
+        "api_key = \"legacy-key\"\n[providers.openrouter]\ncredential = \"keychain:heddle/openrouter\"\n",
+    );
+
+    let cfg = load_config(None);
+
+    assert_eq!(cfg.api_key.as_deref(), Some("legacy-key"));
+    assert_eq!(
+        cfg.openrouter_credential.as_deref(),
+        Some("keychain:heddle/openrouter")
+    );
+}
+
+#[test]
+fn environment_key_overrides_keychain_reference() {
+    let sb = Sandbox::new("loader-env-over-keychain");
+    clear_env();
+    write_global(
+        &sb,
+        "[providers.openrouter]\ncredential = \"keychain:heddle/openrouter\"\n",
+    );
+    std::env::set_var("OPENROUTER_API_KEY", "env-key");
+
+    let cfg = load_config(None);
+
+    assert_eq!(cfg.api_key.as_deref(), Some("env-key"));
+    assert!(cfg.openrouter_credential.is_none());
+    clear_env();
+}
+
+#[test]
+fn explicit_config_file_uses_keychain_reference_and_env_override() {
+    let sb = Sandbox::new("loader-explicit-keychain");
+    clear_env();
+    let config_path = sb.project.join("worker-config.toml");
+    std::fs::write(
+        &config_path,
+        "[providers.openrouter]\ncredential = \"keychain:heddle/openrouter\"\n",
+    )
+    .unwrap();
+
+    let cfg = load_config_from_file(&config_path);
+    assert_eq!(
+        cfg.openrouter_credential.as_deref(),
+        Some("keychain:heddle/openrouter")
+    );
+
+    std::env::set_var("OPENROUTER_API_KEY", "env-key");
+    let cfg = load_config_from_file(&config_path);
+    assert_eq!(cfg.api_key.as_deref(), Some("env-key"));
+    assert!(cfg.openrouter_credential.is_none());
+    clear_env();
+}
+
+#[test]
 fn malformed_toml_returns_defaults() {
     let sb = Sandbox::new("loader-malformed");
     clear_env();

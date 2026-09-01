@@ -13,8 +13,12 @@ Heddle gives LLMs the ability to read, write, edit, and search files, run shell 
 ```bash
 cargo build --release
 
-# Add your API key
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' > .env.local
+# Store your API key in the macOS login Keychain (the command prompts for it)
+security add-generic-password -U -s heddle -a openrouter -w
+
+# Tell Heddle where to find it
+mkdir -p ~/.heddle
+printf '[providers.openrouter]\ncredential = "keychain:heddle/openrouter"\n' >> ~/.heddle/config.toml
 
 # Run the interactive CLI
 ./target/release/heddle
@@ -47,11 +51,13 @@ Heddle uses layered TOML configuration: **defaults -> global -> local -> env var
 # ~/.heddle/config.toml
 model = "anthropic/claude-sonnet-4"
 weak_model = "openrouter/free"
-api_key = "sk-or-v1-..."
 system_prompt = "You are a helpful coding assistant."
 approval_mode = "suggest"
 temperature = 0.7
 max_tokens = 128000
+
+[providers.openrouter]
+credential = "keychain:heddle/openrouter"
 ```
 
 ### Config Fields
@@ -61,7 +67,8 @@ max_tokens = 128000
 | `model` | string | `openrouter/free` | Primary LLM model |
 | `weak_model` | string | — | Weak model for context compaction |
 | `editor_model` | string | — | Specialized editing model |
-| `api_key` | string | — | OpenRouter API key |
+| `providers.openrouter.credential` | string | — | Non-secret credential reference, e.g. `keychain:heddle/openrouter` |
+| `api_key` | string | — | Legacy plaintext OpenRouter API key; migrate to Keychain |
 | `base_url` | string | — | Custom API endpoint |
 | `max_tokens` | number | — | Token limit |
 | `temperature` | number | — | Generation temperature |
@@ -107,7 +114,7 @@ All config fields have env var overrides:
 | Variable | Overrides |
 |----------|-----------|
 | `HEDDLE_MODEL` | `model` |
-| `OPENROUTER_API_KEY` | `api_key` |
+| `OPENROUTER_API_KEY` | OpenRouter credential (overrides Keychain/config; useful for CI) |
 | `HEDDLE_BASE_URL` | `base_url` |
 | `HEDDLE_MAX_TOKENS` | `max_tokens` |
 | `HEDDLE_TEMPERATURE` | `temperature` |

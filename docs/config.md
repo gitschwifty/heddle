@@ -6,7 +6,7 @@ Heddle uses a two-layer TOML configuration: global settings in `~/.heddle/config
 
 | Location | Purpose |
 |---|---|
-| `~/.heddle/config.toml` | Global defaults (model, API key, system prompt) |
+| `~/.heddle/config.toml` | Global defaults (model, credential reference, system prompt) |
 | `.heddle/config.toml` | Project overrides (checked in or gitignored) |
 
 Override the global config directory with `HEDDLE_HOME`:
@@ -19,7 +19,12 @@ HEDDLE_HOME=.heddle-dev cargo run --bin heddle   # use a dev config
 
 ```toml
 # ── Identity / API ──────────────────────────────────
-api_key = "sk-or-..."          # OpenRouter API key (or set OPENROUTER_API_KEY)
+# Store the actual value in macOS Keychain first:
+# security add-generic-password -U -s heddle -a openrouter -w
+# `OPENROUTER_API_KEY` overrides Keychain/config (useful for CI and headless).
+# `api_key = "sk-or-..."` remains supported as a legacy plaintext fallback.
+
+# ── Provider endpoint ───────────────────────────────
 base_url = "https://..."       # Custom API base URL (or HEDDLE_BASE_URL)
 
 # ── Model Selection ─────────────────────────────────
@@ -93,13 +98,18 @@ deny_paths = ["/Users/me/private", "/Volumes/work-secrets"]
 [[hooks.pre_tool]]
 command = "my-guardrail"
 matchers = { tool = "bash" }
+
+# ── Provider credentials ────────────────────────────
+# Keep this table at the end: TOML fields after a table header belong to it.
+[providers.openrouter]
+credential = "keychain:heddle/openrouter" # Non-secret Keychain reference
 ```
 
 ## Environment Variable Overrides
 
 | Env Var | Overrides |
 |---|---|
-| `OPENROUTER_API_KEY` | `api_key` |
+| `OPENROUTER_API_KEY` | OpenRouter credential (overrides Keychain/config; useful for CI/headless) |
 | `HEDDLE_MODEL` | `model` |
 | `HEDDLE_WEAK_MODEL` | `weak_model` |
 | `HEDDLE_BASE_URL` | `base_url` |
@@ -113,7 +123,11 @@ matchers = { tool = "bash" }
 | `HEDDLE_WEB_FETCH_ALLOW_PRIVATE_ADDRESSES` | `web_fetch_allow_private_addresses` |
 | `HEDDLE_HOME` | Global config directory |
 
-Env vars always win over file config.
+For OpenRouter credentials, the order is `OPENROUTER_API_KEY` → a usable
+`providers.openrouter.credential` Keychain reference → legacy `api_key`.
+If a Keychain reference cannot be read, Heddle uses the legacy key when present
+and otherwise reports that no credential is available. Env vars always win over
+file config.
 
 `balanced` leaves OpenRouter's default provider routing intact. `nitro` prefers
 highest-throughput providers. `exacto` requests OpenRouter's quality-first

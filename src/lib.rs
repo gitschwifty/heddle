@@ -12,6 +12,7 @@ pub mod commands;
 pub mod config;
 pub mod context;
 pub mod cost;
+pub mod credentials;
 pub mod debug;
 pub mod file_history;
 pub mod headless;

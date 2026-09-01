@@ -81,7 +81,10 @@ pub struct PermissionsLayer {
 
 #[derive(Debug, Clone)]
 pub struct HeddleConfig {
+    /// Legacy plaintext API key from config or the `OPENROUTER_API_KEY` override.
     pub api_key: Option<String>,
+    /// Non-secret provider credential reference, resolved only when building providers.
+    pub openrouter_credential: Option<String>,
 
     pub model: String,
     pub weak_model: Option<String>,
@@ -120,6 +123,7 @@ impl Default for HeddleConfig {
     fn default() -> Self {
         Self {
             api_key: None,
+            openrouter_credential: None,
             model: "openrouter/free".to_string(),
             weak_model: None,
             editor_model: None,
@@ -205,6 +209,16 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(s) = table.get("api_key").and_then(as_str) {
         config.api_key = Some(s.to_string());
+    }
+    if let Some(s) = table
+        .get("providers")
+        .and_then(|value| value.as_table())
+        .and_then(|providers| providers.get("openrouter"))
+        .and_then(|value| value.as_table())
+        .and_then(|openrouter| openrouter.get("credential"))
+        .and_then(as_str)
+    {
+        config.openrouter_credential = Some(s.to_string());
     }
     if let Some(s) = table.get("system_prompt").and_then(as_str) {
         config.system_prompt = Some(s.to_string());
@@ -372,6 +386,7 @@ pub fn load_config_from_file(path: &Path) -> HeddleConfig {
     // process environment, even when all policy is in the explicit file.
     if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
         merged.api_key = Some(api_key);
+        merged.openrouter_credential = None;
     }
     merged
 }
@@ -436,6 +451,7 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
     }
     if let Ok(v) = std::env::var("OPENROUTER_API_KEY") {
         merged.api_key = Some(v);
+        merged.openrouter_credential = None;
     }
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);
@@ -502,6 +518,7 @@ pub fn load_config_without_files() -> HeddleConfig {
     }
     if let Ok(v) = std::env::var("OPENROUTER_API_KEY") {
         merged.api_key = Some(v);
+        merged.openrouter_credential = None;
     }
     if let Ok(v) = std::env::var("HEDDLE_BASE_URL") {
         merged.base_url = Some(v);

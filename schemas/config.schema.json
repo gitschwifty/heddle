@@ -4,6 +4,7 @@
   "type": "object",
   "properties": {
     "api_key": {
+      "description": "Legacy plaintext credential. Prefer `providers.openrouter.credential`.",
       "type": [
         "string",
         "null"
@@ -127,6 +128,16 @@
       "anyOf": [
         {
           "$ref": "#/definitions/PermissionsConfigSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "providers": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ProvidersConfigSchema"
         },
         {
           "type": "null"
@@ -378,6 +389,18 @@
         "both"
       ]
     },
+    "OpenRouterCredentialsSchema": {
+      "type": "object",
+      "properties": {
+        "credential": {
+          "description": "A non-secret credential reference, for example `keychain:heddle/openrouter`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "OpenRouterRoutingModeWire": {
       "type": "string",
       "enum": [
@@ -415,6 +438,21 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "ProvidersConfigSchema": {
+      "type": "object",
+      "properties": {
+        "openrouter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OpenRouterCredentialsSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },

@@ -33,6 +33,17 @@ pub struct ProviderConfigSchema {
     pub openrouter_routing: Option<OpenRouterRoutingModeWire>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct OpenRouterCredentialsSchema {
+    /// A non-secret credential reference, for example `keychain:heddle/openrouter`.
+    pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ProvidersConfigSchema {
+    pub openrouter: Option<OpenRouterCredentialsSchema>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OpenRouterRoutingModeWire {
@@ -97,7 +108,9 @@ pub struct SandboxConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HeddleConfigSchema {
+    /// Legacy plaintext credential. Prefer `providers.openrouter.credential`.
     pub api_key: Option<String>,
+    pub providers: Option<ProvidersConfigSchema>,
     pub model: Option<String>,
     pub weak_model: Option<String>,
     pub editor_model: Option<String>,

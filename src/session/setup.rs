@@ -296,9 +296,9 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         resolve_discovery(None, None)
     };
 
-    if config.api_key.is_none() {
+    if config.api_key.is_none() && config.openrouter_credential.is_none() {
         return Err(anyhow!(
-            "OPENROUTER_API_KEY environment variable or api_key in config.toml is required"
+            "an OpenRouter credential is required: set OPENROUTER_API_KEY, configure [providers.openrouter] credential = \"keychain:heddle/openrouter\", or use legacy api_key"
         ));
     }
     if let Some(model) = &options.model {

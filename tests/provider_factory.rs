@@ -96,7 +96,31 @@ fn missing_api_key_errors() {
     })
     .err()
     .expect("expected an error");
-    assert!(err.to_string().contains("API key is required"));
+    assert!(err.to_string().contains("credential is required"));
+}
+
+#[test]
+fn malformed_credential_reference_falls_back_to_legacy_api_key() {
+    let providers = create_providers(&HeddleConfig {
+        api_key: Some("legacy-key".to_string()),
+        openrouter_credential: Some("env:OPENROUTER_API_KEY".to_string()),
+        ..base_config()
+    })
+    .expect("legacy credential should be used");
+    let _ = providers.main;
+}
+
+#[test]
+fn unusable_credential_reference_without_legacy_key_errors() {
+    let err = create_providers(&HeddleConfig {
+        api_key: None,
+        openrouter_credential: Some("env:OPENROUTER_API_KEY".to_string()),
+        ..base_config()
+    })
+    .err()
+    .expect("expected an error");
+    assert!(err.to_string().contains("credential is unavailable"));
+    assert!(format!("{err:#}").contains("keychain:<service>/<account>"));
 }
 
 #[tokio::test]
