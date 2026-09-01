@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fs::OpenOptions, io::Write};
 
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
@@ -27,6 +28,7 @@ const DEFAULT_MAX_DELAY_MS: u64 = 15_000;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_REFERER: &str = "https://github.com/gitschwifty/heddle";
 const DEFAULT_TITLE: &str = "Heddle";
+const STRAITLY_DEBUG_LOG_ENV: &str = "HEDDLE_STRAITLY_DEBUG_LOG";
 
 pub struct OpenRouterProvider {
     config: ProviderConfig,
@@ -247,6 +249,26 @@ fn bounded_preview(body: &[u8]) -> String {
         .collect()
 }
 
+/// Opt-in raw response capture for diagnosing an OpenAI-compatible gateway.
+/// It never records request headers or bodies (and therefore never an API key).
+fn log_straitly_response(kind: &str, body: &str) {
+    if std::env::var_os(STRAITLY_DEBUG_LOG_ENV).is_none() {
+        return;
+    }
+    let path = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(".heddle/straitly-api-debug.jsonl");
+    let Some(parent) = path.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let record = serde_json::json!({ "kind": kind, "response": body });
+    let _ = writeln!(file, "{record}");
+}
+
 fn provider_failure(
     headers: &HeaderMap,
     status: Option<u16>,
@@ -401,6 +423,9 @@ impl Provider for OpenRouterProvider {
         let status = resp.status();
         let response_headers = resp.headers().clone();
         let response_body = resp.bytes().await.unwrap_or_default();
+        if !self.openrouter_headers {
+            log_straitly_response("response", &String::from_utf8_lossy(&response_body));
+        }
         if !status.is_success() {
             let failure = provider_failure(
                 &response_headers,
@@ -518,6 +543,9 @@ impl Provider for OpenRouterProvider {
                         continue;
                     }
                     let data = &line[6..];
+                    if !openrouter_headers {
+                        log_straitly_response("stream", data);
+                    }
                     if data == "[DONE]" {
                         return;
                     }
@@ -528,6 +556,9 @@ impl Provider for OpenRouterProvider {
             let trimmed = buffer.trim();
             if let Some(data) = trimmed.strip_prefix("data: ") {
                 if data != "[DONE]" {
+                    if !openrouter_headers {
+                        log_straitly_response("stream", data);
+                    }
                     let parsed = parse_stream_chunk(&response_headers, status.as_u16(), data)?;
                     yield parsed;
                 }
