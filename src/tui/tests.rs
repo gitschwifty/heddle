@@ -907,10 +907,10 @@ fn transcript_wraps_styled_and_wide_content_to_the_display_width() {
     });
 
     let rendered_lines = transcript_text(&app, 12).lines;
-    // The startup card occupies the first nine rows. Every response row must
+    // The startup card occupies the first eight rows. Every response row must
     // fit the transcript rectangle, including styled Markdown and wide chars.
     assert!(
-        rendered_lines[9..].iter().all(|line| line.width() <= 12),
+        rendered_lines[8..].iter().all(|line| line.width() <= 12),
         "{rendered_lines:#?}"
     );
 }

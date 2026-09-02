@@ -277,11 +277,6 @@ fn startup_text(app: &TuiApp) -> Text<'static> {
         .as_ref()
         .map(|status| status.router.as_str())
         .unwrap_or("initializing");
-    let provider = app
-        .status
-        .as_ref()
-        .and_then(|status| status.last_upstream_provider.as_deref())
-        .unwrap_or("unknown");
     let title = format!("Heddle v{}", env!("CARGO_PKG_VERSION"));
     Text::from(vec![
         Line::raw(""),
@@ -317,13 +312,6 @@ fn startup_text(app: &TuiApp) -> Text<'static> {
         )),
         Line::raw(format!(
             "{INDENT}|  {:<label_width$}{:<value_width$}|",
-            "provider:",
-            abbreviate(provider, 33),
-            label_width = 11,
-            value_width = 33
-        )),
-        Line::raw(format!(
-            "{INDENT}|  {:<label_width$}{:<value_width$}|",
             "directory:",
             abbreviate(&app.cwd, 33),
             label_width = 11,
@@ -345,14 +333,9 @@ fn full_status_line(app: &TuiApp) -> String {
     let cost = status.cost_usd.map(format_cost).unwrap_or_default();
     let tool_count = visible_tool_count(app);
     format!(
-        "model: {} | router: {}{} | msgs: {} | tools: {} | tokens: {}/{}{}",
+        "model: {} | router: {} | msgs: {} | tools: {} | tokens: {}/{}{}",
         display_model(status),
         status.router,
-        status
-            .last_upstream_provider
-            .as_deref()
-            .map(|provider| format!(" | provider: {provider}"))
-            .unwrap_or_default(),
         status.messages_count,
         tool_count,
         status.total_input_tokens,
