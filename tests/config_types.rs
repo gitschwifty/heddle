@@ -118,7 +118,7 @@ fn heddle_config_accepts_empty_object() {
 fn heddle_config_accepts_full() {
     let v: Result<HeddleConfigSchema, _> = serde_json::from_value(json!({
         "api_key": "sk-test",
-        "providers": {
+        "routers": {
             "active": "straitly",
             "straitly": { "credential": "keychain:heddle/straitly" },
             "openrouter": { "credential": "keychain:heddle/openrouter" }
@@ -143,16 +143,16 @@ fn heddle_config_accepts_full() {
     }));
     let v = v.expect("full config should deserialize");
     assert_eq!(
-        v.providers
+        v.routers
             .as_ref()
-            .and_then(|providers| providers.openrouter.as_ref())
+            .and_then(|routers| routers.openrouter.as_ref())
             .and_then(|openrouter| openrouter.credential.as_deref()),
         Some("keychain:heddle/openrouter")
     );
     assert_eq!(
-        v.providers
+        v.routers
             .as_ref()
-            .and_then(|providers| providers.straitly.as_ref())
+            .and_then(|routers| routers.straitly.as_ref())
             .and_then(|straitly| straitly.credential.as_deref()),
         Some("keychain:heddle/straitly")
     );

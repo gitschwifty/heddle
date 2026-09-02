@@ -244,6 +244,7 @@ pub fn run_agent_loop<'a>(
             if aborted(&options.signal) { return; }
 
             let tools_arg: Option<&[ToolDefinition]> = if tools.is_empty() { None } else { Some(&tools) };
+            let provider_call_started = std::time::Instant::now();
             let response = match provider.send(messages, tools_arg, &overrides).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -322,6 +323,12 @@ pub fn run_agent_loop<'a>(
                 yield AgentEvent::Usage {
                     usage,
                     generation_id: Some(response.id.clone()),
+                    timing: crate::agent::types::ProviderCallTiming {
+                        // A non-streaming response has no observable earlier chunk.
+                        time_to_first_chunk_ms: None,
+                        time_to_first_output_ms: Some(provider_call_started.elapsed().as_millis() as u64),
+                        total_duration_ms: provider_call_started.elapsed().as_millis() as u64,
+                    },
                 };
             }
             yield AgentEvent::AssistantMessage {
@@ -458,6 +465,7 @@ pub fn run_agent_loop_streaming<'a>(
 
             let messages_clone = messages.clone();
             let tools_clone = if tools.is_empty() { None } else { Some(tools.clone()) };
+            let provider_call_started = std::time::Instant::now();
             let mut chunk_stream = provider.stream(messages_clone, tools_clone, overrides.clone());
 
             let mut content_parts = String::new();
@@ -467,6 +475,8 @@ pub fn run_agent_loop_streaming<'a>(
             let mut last_routed_model: Option<String> = None;
             let mut last_upstream_provider: Option<String> = None;
             let mut usage_generation_id: Option<String> = None;
+            let mut time_to_first_chunk_ms: Option<u64> = None;
+            let mut time_to_first_output_ms: Option<u64> = None;
 
             loop {
                 let chunk_res = match &options.signal {
@@ -497,6 +507,9 @@ pub fn run_agent_loop_streaming<'a>(
                         return;
                     }
                 };
+                time_to_first_chunk_ms.get_or_insert_with(|| {
+                    provider_call_started.elapsed().as_millis() as u64
+                });
                 if let Some(model) = chunk.model.clone() {
                     if last_routed_model.as_deref() != Some(model.as_str()) {
                         last_routed_model = Some(model.clone());
@@ -522,10 +535,18 @@ pub fn run_agent_loop_streaming<'a>(
                     finish_reasons.push(reason);
                 }
                 if let Some(text) = choice.delta.content.clone() {
+                    time_to_first_output_ms.get_or_insert_with(|| {
+                        provider_call_started.elapsed().as_millis() as u64
+                    });
                     yield AgentEvent::ContentDelta { text: text.clone() };
                     content_parts.push_str(&text);
                 }
                 if let Some(tcs) = choice.delta.tool_calls {
+                    if !tcs.is_empty() {
+                        time_to_first_output_ms.get_or_insert_with(|| {
+                            provider_call_started.elapsed().as_millis() as u64
+                        });
+                    }
                     for tc in tcs {
                         let entry = assembled.entry(tc.index).or_insert_with(|| (String::new(), String::new(), String::new()));
                         if let Some(id) = tc.id {
@@ -614,6 +635,11 @@ pub fn run_agent_loop_streaming<'a>(
                 yield AgentEvent::Usage {
                     usage: u,
                     generation_id: usage_generation_id.clone(),
+                    timing: crate::agent::types::ProviderCallTiming {
+                        time_to_first_chunk_ms,
+                        time_to_first_output_ms,
+                        total_duration_ms: provider_call_started.elapsed().as_millis() as u64,
+                    },
                 };
             }
             messages.push(Message::Assistant(assistant_msg.clone()));

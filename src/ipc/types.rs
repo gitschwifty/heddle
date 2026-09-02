@@ -85,6 +85,10 @@ pub struct RoutingMetadata {
 /// [`RoutingMetadata`], these are never copied from caller-provided input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EffectiveRoutingMetadata {
+    /// Configured request router, known as soon as the headless runtime is
+    /// initialized (unlike a response-reported upstream provider).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,6 +251,16 @@ pub enum WorkerEvent {
         reasoning_tokens: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         generation_id: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        router: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time_to_first_chunk_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time_to_first_output_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_duration_ms: Option<u64>,
     },
     RoutedModel {
         model: String,
@@ -304,6 +318,16 @@ pub struct UsageSummary {
     pub reasoning_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub router: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_first_chunk_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_first_output_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

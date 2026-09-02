@@ -427,5 +427,10 @@ async fn repeated_identical_send_persists_only_new_messages() {
         .filter(|line| line.contains(r#""content":"Repeat""#))
         .count();
     assert_eq!(repeat_user_lines, 2, "session jsonl:\n{raw}");
-    assert_eq!(raw.lines().count(), 6, "session jsonl:\n{raw}");
+    let usage_markers = raw
+        .lines()
+        .filter(|line| line.contains(r#""type":"provider_usage""#))
+        .count();
+    assert_eq!(usage_markers, 2, "session jsonl:\n{raw}");
+    assert_eq!(raw.lines().count(), 9, "session jsonl:\n{raw}");
 }

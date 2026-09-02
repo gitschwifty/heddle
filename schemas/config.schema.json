@@ -135,9 +135,10 @@
       ]
     },
     "providers": {
+      "description": "Deprecated compatibility alias for `routers`.",
       "anyOf": [
         {
-          "$ref": "#/definitions/ProvidersConfigSchema"
+          "$ref": "#/definitions/RoutersConfigSchema"
         },
         {
           "type": "null"
@@ -157,6 +158,17 @@
         "null"
       ],
       "format": "double"
+    },
+    "routers": {
+      "description": "Request routers such as OpenRouter and Straitly.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RoutersConfigSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "sandbox": {
       "anyOf": [
@@ -441,20 +453,20 @@
         }
       }
     },
-    "ProviderKindWire": {
+    "RouterKindWire": {
       "type": "string",
       "enum": [
         "open-router",
         "straitly"
       ]
     },
-    "ProvidersConfigSchema": {
+    "RoutersConfigSchema": {
       "type": "object",
       "properties": {
         "active": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ProviderKindWire"
+              "$ref": "#/definitions/RouterKindWire"
             },
             {
               "type": "null"

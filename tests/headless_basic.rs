@@ -280,7 +280,7 @@ fn routing_metadata_is_reported_through_init_and_status() {
     assert_eq!(init["routing"]["gateway"], "openrouter");
     assert_eq!(init["routing"]["upstream_provider"], "anthropic");
     assert_eq!(init["requested_routing"]["gateway"], "openrouter");
-    assert!(init.get("effective_routing").is_none());
+    assert_eq!(init["effective_routing"]["router"], "openrouter");
 
     h.send_line(&serde_json::json!({"type":"status","id":"s1"}).to_string());
     let lines = h.wait_for_lines(2, T);

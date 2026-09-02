@@ -196,7 +196,15 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
     if let Some(metadata) = &mut runtime_metadata {
         metadata.transcript_path = session.session_file.to_string_lossy().into_owned();
     }
+    let router = match session.config.provider {
+        crate::config::loader::ProviderKind::OpenRouter => "openrouter",
+        crate::config::loader::ProviderKind::Straitly => "straitly",
+    };
     let runtime = HeddleRuntime::from_session(session);
+    let effective_routing = Some(EffectiveRoutingMetadata {
+        router: Some(router.to_string()),
+        ..EffectiveRoutingMetadata::default()
+    });
     {
         let mut s = state.lock();
         s.correlation = CorrelationContext {
@@ -217,7 +225,7 @@ async fn handle_init(state: &Arc<Mutex<State>>, request: IpcRequest) {
         runtime: runtime_metadata,
         routing: config.routing.clone(),
         requested_routing: config.routing.clone(),
-        effective_routing: None,
+        effective_routing,
         capabilities: Some(capabilities),
         profile: Some(profile),
     });
@@ -665,11 +673,13 @@ fn provider_failure_details(error: &RuntimeError) -> Option<ProviderFailureDetai
 
 fn effective_routing(status: &crate::runtime::RuntimeStatus) -> Option<EffectiveRoutingMetadata> {
     let metadata = EffectiveRoutingMetadata {
+        router: Some(status.router.clone()),
         routed_model: status.last_routed_model.clone(),
         upstream_provider: status.last_upstream_provider.clone(),
         upstream_provider_history: status.upstream_provider_history.clone(),
     };
-    (metadata.routed_model.is_some()
+    (metadata.router.is_some()
+        || metadata.routed_model.is_some()
         || metadata.upstream_provider.is_some()
         || !metadata.upstream_provider_history.is_empty())
     .then_some(metadata)
@@ -694,6 +704,11 @@ fn usage_summary(usage: RuntimeUsage) -> UsageSummary {
         cache_write_tokens: usage.cache_write_tokens,
         reasoning_tokens: usage.reasoning_tokens,
         generation_id: usage.generation_id,
+        router: usage.router,
+        model: usage.model,
+        time_to_first_chunk_ms: usage.time_to_first_chunk_ms,
+        time_to_first_output_ms: usage.time_to_first_output_ms,
+        total_duration_ms: (usage.total_duration_ms > 0).then_some(usage.total_duration_ms),
     }
 }
 
@@ -732,6 +747,11 @@ fn map_runtime_event(event: &RuntimeEvent) -> Option<WorkerEvent> {
             cache_write_tokens: usage.cache_write_tokens,
             reasoning_tokens: usage.reasoning_tokens,
             generation_id: usage.generation_id.clone(),
+            router: usage.router.clone(),
+            model: usage.model.clone(),
+            time_to_first_chunk_ms: usage.time_to_first_chunk_ms,
+            time_to_first_output_ms: usage.time_to_first_output_ms,
+            total_duration_ms: (usage.total_duration_ms > 0).then_some(usage.total_duration_ms),
         }),
         RuntimeEvent::RoutedModel { model } => Some(WorkerEvent::RoutedModel {
             model: model.clone(),

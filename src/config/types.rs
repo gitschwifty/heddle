@@ -47,14 +47,14 @@ pub struct StraitlyCredentialsSchema {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub enum ProviderKindWire {
+pub enum RouterKindWire {
     OpenRouter,
     Straitly,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct ProvidersConfigSchema {
-    pub active: Option<ProviderKindWire>,
+pub struct RoutersConfigSchema {
+    pub active: Option<RouterKindWire>,
     pub openrouter: Option<OpenRouterCredentialsSchema>,
     pub straitly: Option<StraitlyCredentialsSchema>,
 }
@@ -125,7 +125,10 @@ pub struct SandboxConfigSchema {
 pub struct HeddleConfigSchema {
     /// Legacy plaintext credential. Prefer the default Keychain item or an override.
     pub api_key: Option<String>,
-    pub providers: Option<ProvidersConfigSchema>,
+    /// Request routers such as OpenRouter and Straitly.
+    pub routers: Option<RoutersConfigSchema>,
+    /// Deprecated compatibility alias for `routers`.
+    pub providers: Option<RoutersConfigSchema>,
     pub model: Option<String>,
     pub weak_model: Option<String>,
     pub editor_model: Option<String>,

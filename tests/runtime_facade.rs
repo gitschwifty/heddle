@@ -60,6 +60,7 @@ fn detailed_usage_chunk() -> StreamChunk {
             completion_tokens_details: Some(CompletionTokenDetails {
                 reasoning_tokens: Some(7),
             }),
+            ..Usage::default()
         }),
     }
 }
@@ -108,6 +109,9 @@ async fn runtime_send_emits_events_and_returns_outcome() {
     assert_eq!(usage.cache_write_tokens, Some(6));
     assert_eq!(usage.reasoning_tokens, Some(7));
     assert_eq!(usage.generation_id.as_deref(), Some("gen-runtime-usage"));
+    assert_eq!(usage.router, "openrouter");
+    assert!(usage.time_to_first_chunk_ms.is_some());
+    assert!(usage.time_to_first_output_ms.is_some());
     assert!(events
         .iter()
         .any(|e| matches!(e, RuntimeEvent::ContentDelta { text } if text == "Hello")));
@@ -118,6 +122,10 @@ async fn runtime_send_emits_events_and_returns_outcome() {
     assert_eq!(status.messages_count, 2);
     assert_eq!(status.total_input_tokens, 11);
     assert_eq!(status.total_output_tokens, 7);
+
+    let transcript = std::fs::read_to_string(&runtime.session().session_file).unwrap();
+    assert!(transcript.contains("\"type\":\"provider_usage\""));
+    assert!(transcript.contains("\"total_duration_ms\":"));
 }
 
 #[tokio::test]

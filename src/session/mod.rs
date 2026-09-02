@@ -7,8 +7,9 @@ pub mod setup;
 
 pub use fork::{fork_session, ForkResult};
 pub use jsonl::{
-    append_context_marker, append_message, append_routed_model_marker, load_all_session_metas,
-    load_session, load_session_meta, write_session_meta, SessionMeta,
+    append_context_marker, append_message, append_provider_usage_marker,
+    append_routed_model_marker, load_all_session_metas, load_session, load_session_meta,
+    write_session_meta, SessionMeta,
 };
 pub use list::{find_session, list_sessions, SessionInfo};
 pub use setup::{create_session, SessionContext, SessionOptions};

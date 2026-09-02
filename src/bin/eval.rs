@@ -2026,6 +2026,7 @@ async fn run_one(
                 AgentEvent::Usage {
                     usage,
                     generation_id,
+                    ..
                 } => {
                     let call =
                         current_call.get_or_insert_with(|| CallTelemetry::new(task, prompt, model));
@@ -2036,14 +2037,8 @@ async fn run_one(
                     call.prompt_tokens = Some(usage.prompt_tokens);
                     call.completion_tokens = Some(usage.completion_tokens);
                     call.total_tokens = Some(usage.total_tokens);
-                    call.cached_tokens = usage
-                        .prompt_tokens_details
-                        .as_ref()
-                        .and_then(|d| d.cached_tokens);
-                    call.cache_write_tokens = usage
-                        .prompt_tokens_details
-                        .as_ref()
-                        .and_then(|d| d.cache_write_tokens);
+                    call.cached_tokens = usage.cached_tokens();
+                    call.cache_write_tokens = usage.cache_write_tokens();
                     call.reasoning_tokens = usage
                         .completion_tokens_details
                         .as_ref()

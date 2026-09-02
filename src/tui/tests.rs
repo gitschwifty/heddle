@@ -15,6 +15,7 @@ fn runtime_status(
 ) -> RuntimeStatus {
     RuntimeStatus {
         session_id: "session".to_string(),
+        router: "openrouter".to_string(),
         model: "anthropic/claude-sonnet-4".to_string(),
         last_routed_model: None,
         last_upstream_provider: None,
@@ -605,6 +606,11 @@ fn usage_stays_out_of_transcript_and_errors_become_rows() {
             cache_write_tokens: None,
             reasoning_tokens: None,
             generation_id: None,
+            router: "openrouter".to_string(),
+            model: None,
+            time_to_first_chunk_ms: None,
+            time_to_first_output_ms: None,
+            total_duration_ms: 0,
         },
     });
     app.apply_runtime_event(RuntimeEvent::Error {
@@ -1118,6 +1124,7 @@ fn render_narrow_terminals_keep_prompt_and_status_readable() {
         let mut app = TuiApp::new();
         app.status = Some(RuntimeStatus {
             session_id: "session".to_string(),
+            router: "openrouter".to_string(),
             model: "provider/super-long-model-name-for-narrow-terminal".to_string(),
             last_routed_model: None,
             last_upstream_provider: None,
@@ -1493,6 +1500,7 @@ async fn clear_slash_command_resets_view_and_requests_runtime_context_clear() {
     let mut app = TuiApp::new();
     app.status = Some(RuntimeStatus {
         session_id: "session-1".to_string(),
+        router: "openrouter".to_string(),
         model: "model-a".to_string(),
         last_routed_model: None,
         last_upstream_provider: None,
@@ -1533,6 +1541,7 @@ async fn status_slash_command_adds_runtime_status_row() {
     let mut app = TuiApp::new();
     app.status = Some(RuntimeStatus {
         session_id: "session-1".to_string(),
+        router: "openrouter".to_string(),
         model: "model-a".to_string(),
         last_routed_model: None,
         last_upstream_provider: None,
@@ -1564,6 +1573,7 @@ async fn status_slash_command_shows_last_routed_model_when_present() {
     let mut app = TuiApp::new();
     app.status = Some(RuntimeStatus {
         session_id: "session-1".to_string(),
+        router: "openrouter".to_string(),
         model: "openrouter/free".to_string(),
         last_routed_model: Some("openai/gpt-oss-120b".to_string()),
         last_upstream_provider: None,

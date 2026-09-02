@@ -191,6 +191,7 @@ async fn cost_runs_with_populated_tracker() {
         cost: Some(0.0025),
         prompt_tokens_details: None,
         completion_tokens_details: None,
+        ..Usage::default()
     });
     let cmds = create_builtin_commands();
     let cost = find(&cmds, "cost");

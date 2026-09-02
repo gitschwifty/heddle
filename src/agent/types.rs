@@ -3,6 +3,15 @@
 use crate::provider::types::ProviderTelemetry;
 use crate::types::{AssistantMessage, ToolCall, Usage};
 
+/// Monotonic timing for one provider call. The call may be one iteration of a
+/// tool-use loop, so this is intentionally separate from whole-turn latency.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderCallTiming {
+    pub time_to_first_chunk_ms: Option<u64>,
+    pub time_to_first_output_ms: Option<u64>,
+    pub total_duration_ms: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     AssistantMessage {
@@ -24,6 +33,7 @@ pub enum AgentEvent {
     Usage {
         usage: Usage,
         generation_id: Option<String>,
+        timing: ProviderCallTiming,
     },
     RoutedModel {
         model: String,

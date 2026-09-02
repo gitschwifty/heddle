@@ -52,7 +52,7 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
     let api_key = credential
         .and_then(|reference| resolve_credential(reference).ok())
         .or_else(|| config.api_key.clone())
-        .ok_or_else(|| anyhow!("{} credential is required", provider_name(config.provider)))?;
+        .ok_or_else(|| anyhow!("{} credential is required", router_name(config.provider)))?;
     let params = base_request_params(config);
 
     let build = |model: &str| -> Arc<dyn Provider> {
@@ -87,9 +87,9 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
     Ok(Providers { main, weak, editor })
 }
 
-fn provider_name(provider: ProviderKind) -> &'static str {
+fn router_name(provider: ProviderKind) -> &'static str {
     match provider {
-        ProviderKind::OpenRouter => "OpenRouter",
-        ProviderKind::Straitly => "Straitly",
+        ProviderKind::OpenRouter => "OpenRouter router",
+        ProviderKind::Straitly => "Straitly router",
     }
 }

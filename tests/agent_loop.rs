@@ -346,6 +346,7 @@ async fn usage_event_yields_token_counts() {
     if let AgentEvent::Usage {
         usage,
         generation_id,
+        ..
     } = usages[0]
     {
         assert_eq!(usage.prompt_tokens, 10);

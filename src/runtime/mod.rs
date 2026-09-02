@@ -19,7 +19,8 @@ use crate::agent::loop_::{
 use crate::agent::types::AgentEvent;
 use crate::ipc::errors::normalize_error;
 use crate::session::jsonl::{
-    append_context_marker, append_message, append_routed_model_marker, CONTEXT_RESET_MARKER_TYPE,
+    append_context_marker, append_message, append_provider_usage_marker,
+    append_routed_model_marker, CONTEXT_RESET_MARKER_TYPE,
 };
 use crate::session::setup::{create_session, fresh_system_message, SessionContext, SessionOptions};
 use crate::types::{AssistantMessage, Message, ToolCall, Usage, UserMessage};
@@ -32,6 +33,7 @@ pub struct RuntimeConfig {
 #[derive(Debug, Clone)]
 pub struct RuntimeStatus {
     pub session_id: String,
+    pub router: String,
     pub model: String,
     pub last_routed_model: Option<String>,
     pub last_upstream_provider: Option<String>,
@@ -43,7 +45,7 @@ pub struct RuntimeStatus {
     pub cost_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RuntimeUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -54,11 +56,17 @@ pub struct RuntimeUsage {
     pub cache_write_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub generation_id: Option<String>,
+    pub router: String,
+    pub model: Option<String>,
+    pub time_to_first_chunk_ms: Option<u64>,
+    pub time_to_first_output_ms: Option<u64>,
+    pub total_duration_ms: u64,
 }
 
 impl From<Usage> for RuntimeUsage {
     fn from(value: Usage) -> Self {
-        let prompt_tokens_details = value.prompt_tokens_details;
+        let cached_tokens = value.cached_tokens();
+        let cache_write_tokens = value.cache_write_tokens();
         let completion_tokens_details = value.completion_tokens_details;
         Self {
             prompt_tokens: value.prompt_tokens,
@@ -66,14 +74,17 @@ impl From<Usage> for RuntimeUsage {
             total_tokens: value.total_tokens,
             cost_micros: value.cost.map(cost_usd_to_micros),
             cost_currency: value.cost.map(|_| "USD".to_string()),
-            cached_tokens: prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens),
-            cache_write_tokens: prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cache_write_tokens),
+            cached_tokens,
+            cache_write_tokens,
             reasoning_tokens: completion_tokens_details
                 .as_ref()
                 .and_then(|d| d.reasoning_tokens),
             generation_id: None,
+            router: String::new(),
+            model: None,
+            time_to_first_chunk_ms: None,
+            time_to_first_output_ms: None,
+            total_duration_ms: 0,
         }
     }
 }
@@ -269,6 +280,10 @@ impl HeddleRuntime {
         let tracker = self.session.cost_tracker.lock();
         RuntimeStatus {
             session_id: self.session.session_id.clone(),
+            router: match self.session.config.provider {
+                crate::config::loader::ProviderKind::OpenRouter => "openrouter".to_string(),
+                crate::config::loader::ProviderKind::Straitly => "straitly".to_string(),
+            },
             model: self.session.config.model.clone(),
             last_routed_model: self.last_routed_model.clone(),
             last_upstream_provider: self.last_upstream_provider.clone(),
@@ -283,6 +298,13 @@ impl HeddleRuntime {
             total_input_tokens: tracker.total_input_tokens(),
             total_output_tokens: tracker.total_output_tokens(),
             cost_usd: tracker.total_cost(),
+        }
+    }
+
+    fn router_name(&self) -> &'static str {
+        match self.session.config.provider {
+            crate::config::loader::ProviderKind::OpenRouter => "openrouter",
+            crate::config::loader::ProviderKind::Straitly => "straitly",
         }
     }
 
@@ -411,10 +433,24 @@ impl HeddleRuntime {
                 AgentEvent::Usage {
                     usage,
                     generation_id,
+                    timing,
                 } => {
                     self.session.cost_tracker.lock().add_usage(&usage);
                     let mut runtime_usage: RuntimeUsage = usage.into();
                     runtime_usage.generation_id = generation_id;
+                    runtime_usage.router = self.router_name().to_string();
+                    runtime_usage.model = self
+                        .last_routed_model
+                        .clone()
+                        .or_else(|| Some(self.session.config.model.clone()));
+                    runtime_usage.time_to_first_chunk_ms = timing.time_to_first_chunk_ms;
+                    runtime_usage.time_to_first_output_ms = timing.time_to_first_output_ms;
+                    runtime_usage.total_duration_ms = timing.total_duration_ms;
+                    let _ =
+                        append_provider_usage_marker(&self.session.session_file, &runtime_usage);
+                    on_event(RuntimeEvent::UsageUpdated {
+                        usage: runtime_usage.clone(),
+                    });
                     total_usage = Some(runtime_usage);
                 }
                 AgentEvent::RoutedModel { model } => {
@@ -594,16 +630,7 @@ fn map_agent_event(event: &AgentEvent) -> Option<RuntimeEvent> {
             result: result.clone(),
             call: call.clone(),
         }),
-        AgentEvent::Usage {
-            usage,
-            generation_id,
-        } => {
-            let mut runtime_usage: RuntimeUsage = usage.clone().into();
-            runtime_usage.generation_id = generation_id.clone();
-            Some(RuntimeEvent::UsageUpdated {
-                usage: runtime_usage,
-            })
-        }
+        AgentEvent::Usage { .. } => None,
         AgentEvent::RoutedModel { model } => Some(RuntimeEvent::RoutedModel {
             model: model.clone(),
         }),

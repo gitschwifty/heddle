@@ -1,4 +1,4 @@
-//! Integration tests — gated on `HEDDLE_INTEGRATION_TESTS=1` and
+//! Integration tests — gated on `HEDDLE_LIVE_PROVIDER_TESTS=1` and
 //! `OPENROUTER_API_KEY` being set. Hits the real OpenRouter API with free
 //! models.
 
@@ -26,7 +26,7 @@ const REASONING_MODELS: &[&str] = &[
 
 fn enabled() -> Option<String> {
     common::env::init();
-    if std::env::var("HEDDLE_INTEGRATION_TESTS").ok().as_deref() != Some("1") {
+    if std::env::var("HEDDLE_LIVE_PROVIDER_TESTS").ok().as_deref() != Some("1") {
         return None;
     }
     std::env::var("OPENROUTER_API_KEY").ok()
@@ -41,7 +41,7 @@ fn user_msg() -> Vec<Message> {
 #[tokio::test]
 async fn send_returns_text_response() {
     let Some(api_key) = enabled() else {
-        eprintln!("skip: HEDDLE_INTEGRATION_TESTS != 1 or OPENROUTER_API_KEY unset");
+        eprintln!("skip: HEDDLE_LIVE_PROVIDER_TESTS != 1 or OPENROUTER_API_KEY unset");
         return;
     };
     let fallback: Vec<&str> = FREE_MODELS.iter().skip(1).copied().collect();
@@ -71,7 +71,7 @@ async fn send_returns_text_response() {
 #[tokio::test]
 async fn stream_yields_chunks_and_assembles_content() {
     let Some(api_key) = enabled() else {
-        eprintln!("skip: HEDDLE_INTEGRATION_TESTS != 1 or OPENROUTER_API_KEY unset");
+        eprintln!("skip: HEDDLE_LIVE_PROVIDER_TESTS != 1 or OPENROUTER_API_KEY unset");
         return;
     };
     let fallback: Vec<&str> = FREE_MODELS.iter().skip(1).copied().collect();
@@ -117,7 +117,7 @@ async fn stream_yields_chunks_and_assembles_content() {
 #[tokio::test]
 async fn send_with_reasoning_returns_response() {
     let Some(api_key) = enabled() else {
-        eprintln!("skip: HEDDLE_INTEGRATION_TESTS != 1 or OPENROUTER_API_KEY unset");
+        eprintln!("skip: HEDDLE_LIVE_PROVIDER_TESTS != 1 or OPENROUTER_API_KEY unset");
         return;
     };
     let fallback: Vec<&str> = REASONING_MODELS.iter().skip(1).copied().collect();

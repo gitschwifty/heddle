@@ -1,6 +1,6 @@
-//! Session setup: load config, build providers, register tools, prepare context.
+//! Session setup: load config, build routers, register tools, prepare context.
 //!
-//! This is the central wiring point — it ties config, providers, tools, hooks,
+//! This is the central wiring point — it ties config, routers, tools, hooks,
 //! permissions, and metrics together. The TS module is 283 LOC; this Rust port
 //! keeps the same flow but uses owned types and `Arc<Mutex<…>>` to share state
 //! across the agent loop and the CLI.
@@ -302,7 +302,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     };
     if config.api_key.is_none() && credential.is_none() {
         return Err(anyhow!(
-            "a provider credential is required: configure the selected provider's Keychain item, environment variable, or legacy api_key"
+            "a router credential is required: configure the selected router's Keychain item, environment variable, or legacy api_key"
         ));
     }
     if let Some(model) = &options.model {

@@ -238,29 +238,30 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     if let Some(s) = table.get("api_key").and_then(as_str) {
         config.api_key = Some(s.to_string());
     }
-    if let Some(provider) = table
-        .get("providers")
-        .and_then(|value| value.as_table())
-        .and_then(|providers| providers.get("active"))
+    // `routers` is the public term: OpenRouter and Straitly route a request
+    // to a model/upstream. Keep `providers` as a migration alias for existing
+    // configurations.
+    let routers = table
+        .get("routers")
+        .or_else(|| table.get("providers"))
+        .and_then(|value| value.as_table());
+    if let Some(provider) = routers
+        .and_then(|routers| routers.get("active"))
         .and_then(as_str)
         .and_then(|value| value.parse::<ProviderKind>().ok())
     {
         config.provider = provider;
     }
-    if let Some(s) = table
-        .get("providers")
-        .and_then(|value| value.as_table())
-        .and_then(|providers| providers.get("openrouter"))
+    if let Some(s) = routers
+        .and_then(|routers| routers.get("openrouter"))
         .and_then(|value| value.as_table())
         .and_then(|openrouter| openrouter.get("credential"))
         .and_then(as_str)
     {
         config.openrouter_credential = Some(s.to_string());
     }
-    if let Some(s) = table
-        .get("providers")
-        .and_then(|value| value.as_table())
-        .and_then(|providers| providers.get("straitly"))
+    if let Some(s) = routers
+        .and_then(|routers| routers.get("straitly"))
         .and_then(|value| value.as_table())
         .and_then(|straitly| straitly.get("credential"))
         .and_then(as_str)

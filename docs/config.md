@@ -25,10 +25,10 @@ HEDDLE_HOME=.heddle-dev cargo run --bin heddle   # use a dev config
 # overrides Keychain/config (useful for CI and headless).
 # `api_key = "sk-or-..."` remains supported as a legacy plaintext fallback.
 
-# Select Straitly instead of the default OpenRouter provider when needed.
+# Select Straitly instead of the default OpenRouter router when needed.
 # Its default endpoint is https://api.straitly.ai/v1.
 
-# ── Provider endpoint ───────────────────────────────
+# ── Router endpoint ─────────────────────────────────
 base_url = "https://..."       # Custom API base URL (or HEDDLE_BASE_URL)
 
 # ── Model Selection ─────────────────────────────────
@@ -103,17 +103,17 @@ deny_paths = ["/Users/me/private", "/Volumes/work-secrets"]
 command = "my-guardrail"
 matchers = { tool = "bash" }
 
-# ── Provider credentials (optional override) ─────────
+# ── Router credentials (optional override) ───────────
 # Heddle defaults to keychain:heddle/openrouter. Keep this table at the end:
 # TOML fields after a table header belong to it.
-[providers]
+[routers]
 active = "straitly" # "openrouter" | "straitly"
 
-[providers.straitly]
+[routers.straitly]
 credential = "keychain:heddle/straitly"
 
 # To use OpenRouter (the default) with a non-default Keychain item instead:
-# [providers.openrouter]
+# [routers.openrouter]
 # credential = "keychain:work/openrouter"
 ```
 
@@ -122,7 +122,7 @@ credential = "keychain:heddle/straitly"
 | Env Var | Overrides |
 |---|---|
 | `OPENROUTER_API_KEY` | OpenRouter credential (overrides Keychain/config; useful for CI/headless) |
-| `STRAITLY_API_KEY` | Straitly credential when `providers.active = "straitly"` |
+| `STRAITLY_API_KEY` | Straitly credential when `routers.active = "straitly"` |
 | `HEDDLE_MODEL` | `model` |
 | `HEDDLE_WEAK_MODEL` | `weak_model` |
 | `HEDDLE_BASE_URL` | `base_url` |

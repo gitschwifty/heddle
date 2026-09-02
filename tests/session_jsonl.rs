@@ -1,7 +1,7 @@
 use heddle::session::jsonl::{
-    append_context_marker, append_message, append_routed_model_marker, load_session,
-    load_session_meta, write_session_meta, SessionMeta, CONTEXT_RESET_MARKER_TYPE,
-    ROUTED_MODEL_MARKER_TYPE,
+    append_context_marker, append_message, append_provider_usage_marker,
+    append_routed_model_marker, load_session, load_session_meta, write_session_meta, SessionMeta,
+    CONTEXT_RESET_MARKER_TYPE, PROVIDER_USAGE_MARKER_TYPE, ROUTED_MODEL_MARKER_TYPE,
 };
 use heddle::types::{
     AssistantMessage, FunctionCall, Message, ToolCall, ToolCallKind, ToolMessage, UserMessage,
@@ -88,6 +88,29 @@ fn routed_model_marker_is_jsonl_metadata() {
         serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
     assert_eq!(value["type"], ROUTED_MODEL_MARKER_TYPE);
     assert_eq!(value["model"], "openai/gpt-oss-120b");
+}
+
+#[test]
+fn provider_usage_marker_is_metadata_and_never_becomes_a_message() {
+    let dir = tmp();
+    let path = dir.path().join("provider-usage.jsonl");
+    append_provider_usage_marker(
+        &path,
+        &json!({
+            "router": "straitly",
+            "model": "deepseek/test",
+            "prompt_tokens": 12,
+            "total_duration_ms": 345,
+        }),
+    )
+    .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+    assert_eq!(value["type"], PROVIDER_USAGE_MARKER_TYPE);
+    assert_eq!(value["router"], "straitly");
+    assert_eq!(value["total_duration_ms"], 345);
+    assert!(value.get("timestamp").is_some());
+    assert!(load_session(&path).is_empty());
 }
 
 #[test]

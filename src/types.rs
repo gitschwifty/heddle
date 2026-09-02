@@ -151,6 +151,40 @@ pub struct Usage {
     pub prompt_tokens_details: Option<PromptTokenDetails>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_tokens_details: Option<CompletionTokenDetails>,
+    /// Straitly reports cache creation at the top level rather than under
+    /// `prompt_tokens_details`. Keep these provider aliases here so all
+    /// callers consume one normalized usage shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_5m_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_1h_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+}
+
+impl Usage {
+    pub fn cached_tokens(&self) -> Option<u64> {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens)
+            .or(self.cache_read_input_tokens)
+    }
+
+    /// Normalized cache writes across OpenAI-compatible provider schemas.
+    pub fn cache_write_tokens(&self) -> Option<u64> {
+        let nested = self
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cache_write_tokens)
+            .unwrap_or(0);
+        let straitly = self.cache_creation_input_tokens.unwrap_or(0)
+            + self.cache_creation_5m_input_tokens.unwrap_or(0)
+            + self.cache_creation_1h_input_tokens.unwrap_or(0);
+        let total = nested + straitly;
+        (total > 0).then_some(total)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

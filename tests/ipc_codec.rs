@@ -195,6 +195,11 @@ fn build_result_ok() {
                 cache_write_tokens: None,
                 reasoning_tokens: None,
                 generation_id: None,
+                router: String::new(),
+                model: None,
+                time_to_first_chunk_ms: None,
+                time_to_first_output_ms: None,
+                total_duration_ms: None,
             }),
             iterations: 1,
             ..Default::default()
@@ -222,6 +227,11 @@ fn usage_summary_serializes_optional_cost_and_detail_fields() {
         cache_write_tokens: Some(3),
         reasoning_tokens: Some(2),
         generation_id: Some("gen-123".into()),
+        router: "openrouter".into(),
+        model: Some("openrouter/free".into()),
+        time_to_first_chunk_ms: Some(50),
+        time_to_first_output_ms: Some(75),
+        total_duration_ms: Some(100),
     };
     let v = serde_json::to_value(usage).unwrap();
     assert_eq!(v["cost_micros"], 123);
@@ -230,6 +240,8 @@ fn usage_summary_serializes_optional_cost_and_detail_fields() {
     assert_eq!(v["cache_write_tokens"], 3);
     assert_eq!(v["reasoning_tokens"], 2);
     assert_eq!(v["generation_id"], "gen-123");
+    assert_eq!(v["router"], "openrouter");
+    assert_eq!(v["total_duration_ms"], 100);
 }
 
 #[test]

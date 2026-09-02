@@ -127,10 +127,10 @@ fn env_overrides_config() {
 }
 
 #[test]
-fn straitly_provider_uses_its_credential_default_and_environment_override() {
+fn straitly_router_uses_its_credential_default_and_environment_override() {
     let sb = Sandbox::new("loader-straitly");
     clear_env();
-    write_global(&sb, "[providers]\nactive = \"straitly\"\n");
+    write_global(&sb, "[routers]\nactive = \"straitly\"\n");
 
     let cfg = load_config(None);
     assert_eq!(cfg.provider, heddle::config::loader::ProviderKind::Straitly);
@@ -143,6 +143,19 @@ fn straitly_provider_uses_its_credential_default_and_environment_override() {
     let cfg = load_config(None);
     assert_eq!(cfg.api_key.as_deref(), Some("straitly-env-key"));
     assert!(cfg.straitly_credential.is_none());
+    clear_env();
+}
+
+#[test]
+fn routers_table_supersedes_legacy_providers_alias_in_one_layer() {
+    let sb = Sandbox::new("loader-router-precedence");
+    clear_env();
+    write_global(
+        &sb,
+        "[providers]\nactive = \"openrouter\"\n[routers]\nactive = \"straitly\"\n",
+    );
+    let cfg = load_config(None);
+    assert_eq!(cfg.provider, heddle::config::loader::ProviderKind::Straitly);
     clear_env();
 }
 

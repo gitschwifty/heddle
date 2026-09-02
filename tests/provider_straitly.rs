@@ -70,6 +70,7 @@ async fn straitly_streams_openai_tool_call_chunks() {
     let server = MockServer::start().await;
     let body = concat!(
         "data: {\"id\":\"chatcmpl-test\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-test\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":3,\"cache_creation_5m_input_tokens\":5}}\n\n",
         "data: [DONE]\n\n"
     );
     Mock::given(method("POST"))
@@ -83,13 +84,21 @@ async fn straitly_streams_openai_tool_call_chunks() {
         .stream(messages(), Some(vec![tool()]), Value::Null)
         .collect()
         .await;
-    assert!(chunks.into_iter().any(|chunk| {
+    assert!(chunks.iter().any(|chunk| {
         chunk
+            .as_ref()
             .unwrap()
             .choices
             .iter()
             .any(|choice| choice.delta.tool_calls.is_some())
     }));
+    let usage = chunks
+        .iter()
+        .filter_map(|chunk| chunk.as_ref().unwrap().usage.as_ref())
+        .next()
+        .expect("usage chunk");
+    assert_eq!(usage.cached_tokens(), Some(4));
+    assert_eq!(usage.cache_write_tokens(), Some(8));
     let request = server.received_requests().await.unwrap().remove(0);
     let body: Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(body["stream_options"]["include_usage"], true);

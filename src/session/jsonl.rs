@@ -14,6 +14,7 @@ use crate::types::Message;
 
 pub const CONTEXT_RESET_MARKER_TYPE: &str = "context_reset";
 pub const ROUTED_MODEL_MARKER_TYPE: &str = "routed_model";
+pub const PROVIDER_USAGE_MARKER_TYPE: &str = "provider_usage";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -72,6 +73,21 @@ pub fn append_routed_model_marker(path: &Path, model: &str) -> Result<()> {
             "timestamp": Utc::now().to_rfc3339(),
         }),
     )
+}
+
+/// Persist only normalized, safe provider-call facts.  The caller supplies a
+/// typed record; raw responses, request payloads, and credentials never enter
+/// the transcript.
+pub fn append_provider_usage_marker<T: Serialize>(path: &Path, usage: &T) -> Result<()> {
+    let mut marker = serde_json::to_value(usage)?;
+    if let Value::Object(ref mut fields) = marker {
+        fields.insert(
+            "type".into(),
+            Value::String(PROVIDER_USAGE_MARKER_TYPE.into()),
+        );
+        fields.insert("timestamp".into(), Value::String(Utc::now().to_rfc3339()));
+    }
+    append_context_marker(path, &marker)
 }
 
 pub fn load_session(path: &Path) -> Vec<Message> {

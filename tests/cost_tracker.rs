@@ -126,6 +126,7 @@ fn cached_and_reasoning_tokens_passed_through() {
         completion_tokens_details: Some(CompletionTokenDetails {
             reasoning_tokens: Some(20),
         }),
+        ..Usage::default()
     });
     let turn = &t.breakdown()[0];
     assert_eq!(turn.cached_tokens, Some(50));
