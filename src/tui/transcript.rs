@@ -91,10 +91,10 @@ pub(super) fn divider_line(label: &str, width: u16) -> String {
 }
 
 pub(super) fn display_model(status: &RuntimeStatus) -> String {
-    match status.last_routed_model.as_deref() {
-        Some(routed) if routed != status.model => format!("{}:{routed}", status.model),
-        _ => status.model.clone(),
-    }
+    status
+        .last_routed_model
+        .clone()
+        .unwrap_or_else(|| status.model.clone())
 }
 
 pub(super) fn flatten_transcript_turns(turns: &[TranscriptTurn]) -> Vec<TranscriptItem> {
