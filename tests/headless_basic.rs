@@ -106,6 +106,58 @@ fn protocol_version_included_in_init_ok() {
 }
 
 #[test]
+fn headless_rejects_invalid_keychain_reference_without_accessing_keychain() {
+    let mut h = Headless::spawn(HashMap::new());
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.5.0",
+            "config": {
+                "model": "openrouter/auto", "system_prompt": "x", "tools": [],
+                "credential_source": {
+                    "source": "keychain", "reference": "not-a-keychain-reference"
+                }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let result = parse_line(&lines[0]);
+    assert_eq!(result["error"]["code"], "protocol_error");
+    assert_eq!(
+        result["error"]["message"],
+        "credential must use keychain:<service>/<account>"
+    );
+}
+
+#[test]
+fn headless_default_ignores_configured_keychain_credentials() {
+    let mut h = Headless::spawn(HashMap::from([("STRAITLY_API_KEY".into(), String::new())]));
+    let config_path = h.heddle_home().join("straitly.toml");
+    std::fs::write(
+        &config_path,
+        "[routers]\nactive = \"straitly\"\n\n[routers.straitly]\ncredential = \"keychain:heddle/straitly\"\n",
+    )
+    .unwrap();
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.5.0",
+            "config": {
+                "model": "anthropic/claude-sonnet-5", "system_prompt": "x", "tools": [],
+                "runtime": { "config_path": config_path }
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let result = parse_line(&lines[0]);
+    assert_eq!(result["error"]["code"], "protocol_error");
+    assert_eq!(
+        result["error"]["message"],
+        "a router credential is required: configure the selected router's Keychain item, environment variable, or legacy api_key"
+    );
+}
+
+#[test]
 fn version_mismatch_returns_structured_error_and_exits() {
     let mut h = Headless::spawn(HashMap::new());
     h.send_line(

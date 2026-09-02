@@ -134,6 +134,11 @@ pub struct SessionOptions {
     pub permission_overrides: Option<PermissionOverrides>,
     pub app_attribution: Option<AppAttribution>,
     pub runtime_placement: Option<RuntimePlacement>,
+    /// Headless defaults to environment-only credentials so ambient user
+    /// Keychain references cannot trigger an OS prompt in worker processes.
+    pub headless_environment_credentials_only: bool,
+    /// An explicit headless Keychain reference. This is non-secret metadata.
+    pub headless_credential_reference: Option<String>,
 }
 
 fn default_tools(
@@ -261,6 +266,30 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     } else {
         load_config(None)
     };
+    if options.headless_environment_credentials_only {
+        let environment_key = match config.provider {
+            crate::config::loader::ProviderKind::OpenRouter => {
+                std::env::var("OPENROUTER_API_KEY").ok()
+            }
+            crate::config::loader::ProviderKind::Straitly => std::env::var("STRAITLY_API_KEY").ok(),
+        };
+        config.api_key = environment_key.filter(|value| !value.is_empty());
+        match config.provider {
+            crate::config::loader::ProviderKind::OpenRouter => config.openrouter_credential = None,
+            crate::config::loader::ProviderKind::Straitly => config.straitly_credential = None,
+        }
+    }
+    if let Some(reference) = &options.headless_credential_reference {
+        config.api_key = None;
+        match config.provider {
+            crate::config::loader::ProviderKind::OpenRouter => {
+                config.openrouter_credential = Some(reference.clone())
+            }
+            crate::config::loader::ProviderKind::Straitly => {
+                config.straitly_credential = Some(reference.clone())
+            }
+        }
+    }
     if let Some(path) = config
         .sandbox_deny_paths
         .iter()

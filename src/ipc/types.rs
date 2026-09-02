@@ -159,6 +159,16 @@ pub enum CancellationSource {
     User,
 }
 
+/// Headless credentials are deliberately a source selection, never a secret
+/// value carried over JSON IPC.  The default is `Environment` so supervisors
+/// such as Orboros retain ownership of their own secret store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum HeadlessCredentialSource {
+    Environment,
+    Keychain { reference: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {
     pub model: String,
@@ -177,6 +187,8 @@ pub struct InitConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
     pub runtime: Option<RuntimePlacementConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_source: Option<HeadlessCredentialSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<RoutingMetadata>,
 }

@@ -30,9 +30,9 @@ use crate::ipc::errors::ErrorEnvelope;
 use crate::ipc::protocol::{check_compatibility, PROTOCOL_VERSION};
 use crate::ipc::types::{
     CancellationSource, EffectiveRoutingMetadata, EffectiveRuntimeMetadata, FailureDetails,
-    InitConfig, IpcCapabilities, IpcRequest, IpcResponse, PermissionFailureDetails,
-    ProfileIdentity, ProviderFailureDetails, RoutingMetadata, RuntimeMode, ToolCallSummary,
-    TurnStateEvent, UsageSummary, WorkerEvent,
+    HeadlessCredentialSource, InitConfig, IpcCapabilities, IpcRequest, IpcResponse,
+    PermissionFailureDetails, ProfileIdentity, ProviderFailureDetails, RoutingMetadata,
+    RuntimeMode, ToolCallSummary, TurnStateEvent, UsageSummary, WorkerEvent,
 };
 use crate::runtime::{
     HeddleRuntime, RuntimeError, RuntimeEvent, RuntimeToolCall, RuntimeUsage, TurnOptions,
@@ -320,6 +320,15 @@ fn build_session_options(
         state_root: state_root.map(|path| path.to_string_lossy().into_owned()),
         transcript_path: String::new(),
     });
+    let (headless_environment_credentials_only, headless_credential_reference) =
+        match config.credential_source.as_ref() {
+            None | Some(HeadlessCredentialSource::Environment) => (true, None),
+            Some(HeadlessCredentialSource::Keychain { reference }) => {
+                crate::credentials::validate_credential_reference(reference)
+                    .map_err(|error| error.to_string())?;
+                (false, Some(reference.clone()))
+            }
+        };
     Ok((
         SessionOptions {
             mode: Some(Mode::Headless),
@@ -333,6 +342,8 @@ fn build_session_options(
             }),
             app_attribution: config.app_attribution.clone(),
             runtime_placement: placement,
+            headless_environment_credentials_only,
+            headless_credential_reference,
             ..Default::default()
         },
         runtime_metadata,

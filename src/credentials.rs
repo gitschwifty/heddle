@@ -35,6 +35,12 @@ impl CredentialReference {
     }
 }
 
+/// Validate non-secret credential-reference metadata without accessing a
+/// credential store. This is suitable for validating headless IPC input.
+pub fn validate_credential_reference(reference: &str) -> Result<()> {
+    CredentialReference::parse(reference).map(|_| ())
+}
+
 /// Resolve a configured credential reference without exposing it to the agent.
 pub fn resolve_credential(reference: &str) -> Result<String> {
     match CredentialReference::parse(reference)? {

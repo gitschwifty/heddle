@@ -96,6 +96,8 @@ deny_paths = ["/Users/me/private", "/Volumes/work-secrets"]
 # config.runtime.config_path in their init request. This is particularly useful
 # with isolated headless mode, which otherwise intentionally avoids ambient
 # global and project config discovery.
+# By default, headless ignores every TOML credential reference (including this
+# one) and uses only the selected router's inherited environment variable.
 
 # ── Hooks ───────────────────────────────────────────
 # See docs/hooks.md for full reference
@@ -141,6 +143,33 @@ credential reference (default: `keychain:heddle/openrouter`) → legacy
 `api_key`. If the default or configured reference cannot be read, Heddle keeps
 checking the remaining sources and reports no credential only when none is
 available. Env vars always win over file config.
+
+## Headless Router Credentials
+
+Headless workers deliberately do **not** read ambient Keychain references by
+default. Their `init.config.credential_source` is optional and defaults to:
+
+```json
+{ "source": "environment" }
+```
+
+In that mode, Heddle uses only `OPENROUTER_API_KEY` or `STRAITLY_API_KEY` for
+the selected router. A supervisor such as Orboros should resolve its own
+credential and pass it to the worker through that environment variable; raw
+credentials must never be included in the JSONL protocol.
+
+Keychain use is an explicit opt-in per worker:
+
+```json
+{
+  "source": "keychain",
+  "reference": "keychain:heddle/straitly"
+}
+```
+
+The reference is non-secret metadata. With this choice, Heddle resolves only
+that Keychain item for the selected router. An unavailable opted-in reference
+causes initialization to fail; it never falls back to ambient TOML credentials.
 
 `balanced` leaves OpenRouter's default provider routing intact. `nitro` prefers
 highest-throughput providers. `exacto` requests OpenRouter's quality-first

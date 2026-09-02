@@ -4,7 +4,8 @@ use heddle::ipc::codec::{
 };
 use heddle::ipc::errors::ErrorEnvelope;
 use heddle::ipc::types::{
-    FailureDetails, InitConfig, IpcRequest, IpcResponse, ToolCallSummary, UsageSummary, WorkerEvent,
+    FailureDetails, HeadlessCredentialSource, InitConfig, IpcRequest, IpcResponse, ToolCallSummary,
+    UsageSummary, WorkerEvent,
 };
 use serde_json::{json, Value};
 
@@ -34,6 +35,7 @@ fn decode_valid_init_request() {
             permissions: None,
             hooks: None,
             runtime: None,
+            credential_source: None,
             routing: None,
         }),
     })
@@ -42,6 +44,30 @@ fn decode_valid_init_request() {
         DecodeResult::Ok(IpcRequest::Init { .. }) => {}
         _ => panic!("expected init"),
     }
+}
+
+#[test]
+fn init_credential_source_is_non_secret_selection_metadata() {
+    let line = r#"{
+        "type":"init", "id":"1",
+        "config": {
+            "model":"m", "system_prompt":"s", "tools":[],
+            "credential_source": {
+                "source":"keychain", "reference":"keychain:orboros/straitly"
+            }
+        }
+    }"#;
+    let DecodeResult::Ok(IpcRequest::Init { config, .. }) = decode_request(line) else {
+        panic!("expected init request");
+    };
+    assert!(matches!(
+        config.credential_source,
+        Some(HeadlessCredentialSource::Keychain { reference })
+            if reference == "keychain:orboros/straitly"
+    ));
+
+    let encoded = serde_json::to_value(HeadlessCredentialSource::Environment).unwrap();
+    assert_eq!(encoded, json!({"source":"environment"}));
 }
 
 #[test]
