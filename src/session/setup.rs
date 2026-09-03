@@ -285,14 +285,13 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         }
     }
     if let Some(reference) = &options.headless_credential_reference {
-        config.api_key = None;
+        // Explicit headless Keychain use is deliberately strict: unlike the
+        // interactive fallback chain, report the safe resolver error instead
+        // of silently trying an ambient credential source.
+        config.api_key = Some(crate::credentials::resolve_credential(reference)?);
         match config.provider {
-            crate::config::loader::ProviderKind::OpenRouter => {
-                config.openrouter_credential = Some(reference.clone())
-            }
-            crate::config::loader::ProviderKind::Straitly => {
-                config.straitly_credential = Some(reference.clone())
-            }
+            crate::config::loader::ProviderKind::OpenRouter => config.openrouter_credential = None,
+            crate::config::loader::ProviderKind::Straitly => config.straitly_credential = None,
         }
     }
     if let Some(path) = config

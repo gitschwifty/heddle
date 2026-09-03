@@ -180,7 +180,8 @@ Keychain use is an explicit opt-in per worker:
 
 The reference is non-secret metadata. With this choice, Heddle resolves only
 that Keychain item for the selected router. An unavailable opted-in reference
-causes initialization to fail; it never falls back to ambient TOML credentials.
+causes initialization to fail with its service/account diagnostic; it never
+falls back to ambient TOML credentials.
 
 `balanced` leaves OpenRouter's default provider routing intact. `nitro` prefers
 highest-throughput providers. `exacto` requests OpenRouter's quality-first
