@@ -26,13 +26,24 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_BASE_DELAY_MS: u64 = 1000;
 const DEFAULT_MAX_DELAY_MS: u64 = 15_000;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 10 * 60;
+// reqwest 0.12 requires a finite client timeout. The stream loop enforces the
+// meaningful timeout; this merely prevents reqwest's 30-second default total
+// request deadline from applying to a healthy long-running stream.
+const STREAMING_TOTAL_TIMEOUT_SECS: u64 = 100 * 365 * 24 * 60 * 60;
 const DEFAULT_REFERER: &str = "https://github.com/gitschwifty/heddle";
 const DEFAULT_TITLE: &str = "Heddle";
 const STRAITLY_DEBUG_LOG_ENV: &str = "HEDDLE_STRAITLY_DEBUG_LOG";
 
 pub struct OpenRouterProvider {
     config: ProviderConfig,
+    /// Non-streaming requests have a bounded whole-response deadline.
     client: reqwest::Client,
+    /// Streaming requests deliberately have no whole-response deadline. The
+    /// stream loop applies an idle-byte deadline instead.
+    streaming_client: reqwest::Client,
     openrouter_headers: bool,
 }
 
@@ -52,15 +63,30 @@ fn create_openai_compatible_provider(
 ) -> Arc<dyn Provider> {
     Arc::new(OpenRouterProvider {
         config,
-        client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new()),
+        client: regular_client(),
+        streaming_client: streaming_client(),
         openrouter_headers,
     })
 }
 
 impl OpenRouterProvider {
+    fn router_name(&self) -> &'static str {
+        if self.openrouter_headers {
+            "openrouter"
+        } else {
+            "straitly"
+        }
+    }
+
+    fn stream_idle_timeout(&self) -> Duration {
+        Duration::from_secs(
+            self.config
+                .stream_idle_timeout_secs
+                .filter(|seconds| *seconds > 0)
+                .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
+        )
+    }
+
     fn base_url(&self) -> &str {
         self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
@@ -150,6 +176,7 @@ impl OpenRouterProvider {
 
     async fn fetch_with_retry(
         &self,
+        client: &reqwest::Client,
         url: &str,
         headers: HeaderMap,
         body: &Value,
@@ -187,18 +214,56 @@ impl OpenRouterProvider {
             .unwrap_or(DEFAULT_MAX_DELAY_MS);
 
         for attempt in 0..=max_retries {
-            let resp = self
-                .client
-                .post(url)
-                .headers(headers.clone())
-                .json(body)
-                .send()
-                .await
-                .map_err(|err| {
-                    let detail = format!("{err:#}");
-                    debug("provider", &format!("transport error: {detail}"));
-                    anyhow!("OpenRouter transport error: {detail}")
-                })?;
+            let request = client.post(url).headers(headers.clone()).json(body).send();
+            let resp = tokio::time::timeout(
+                Duration::from_secs(DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS),
+                request,
+            )
+            .await
+            .map_err(|_| {
+                let failure = transport_failure(
+                    ProviderFailureKind::ResponseHeadersTimeout,
+                    format!(
+                        "provider response headers timed out after {}s",
+                        DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS
+                    ),
+                    format!(
+                        "phase=headers router={} model={} timeout_secs={}",
+                        self.router_name(),
+                        self.config.model,
+                        DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS
+                    ),
+                );
+                debug(
+                    "provider",
+                    &failure.debug_detail.clone().unwrap_or_default(),
+                );
+                anyhow::Error::new(failure)
+            })?
+            .map_err(|err| {
+                let detail = format!("{err:#}");
+                let visible_detail: String = err
+                    .to_string()
+                    .chars()
+                    .take(MAX_PROVIDER_DETAIL_CHARS)
+                    .collect();
+                let failure = transport_failure(
+                    ProviderFailureKind::TransportError,
+                    format!(
+                        "provider transport error while awaiting response headers: {visible_detail}"
+                    ),
+                    format!(
+                        "phase=headers router={} model={} error_chain={detail}",
+                        self.router_name(),
+                        self.config.model
+                    ),
+                );
+                debug(
+                    "provider",
+                    failure.debug_detail.as_deref().unwrap_or_default(),
+                );
+                anyhow::Error::new(failure)
+            })?;
 
             if resp.status().as_u16() != 429 || retry_cfg.is_none() || attempt == max_retries {
                 return Ok(resp);
@@ -221,6 +286,22 @@ impl OpenRouterProvider {
     }
 }
 
+fn regular_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn streaming_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(STREAMING_TOTAL_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 const MAX_PROVIDER_DETAIL_CHARS: usize = 500;
 
 fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -240,6 +321,84 @@ fn response_telemetry(headers: &HeaderMap, status: Option<u16>) -> ProviderTelem
         retry_after_ms: retry_after_ms(headers),
         ..ProviderTelemetry::default()
     }
+}
+
+fn transport_failure(
+    failure_kind: ProviderFailureKind,
+    message: impl Into<String>,
+    debug_detail: String,
+) -> ProviderFailure {
+    ProviderFailure {
+        message: message.into(),
+        telemetry: ProviderTelemetry {
+            failure_kind: Some(failure_kind),
+            ..ProviderTelemetry::default()
+        },
+        debug_detail: Some(debug_detail),
+    }
+}
+
+fn stream_body_failure(
+    headers: &HeaderMap,
+    status: u16,
+    provider: &OpenRouterProvider,
+    failure_kind: ProviderFailureKind,
+    message: &str,
+    error: &reqwest::Error,
+) -> ProviderFailure {
+    let detail = format!("{error:#}");
+    let visible_detail: String = error
+        .to_string()
+        .chars()
+        .take(MAX_PROVIDER_DETAIL_CHARS)
+        .collect();
+    let mut failure = provider_failure(
+        headers,
+        Some(status),
+        &[],
+        format!("{message}: {visible_detail}"),
+    );
+    failure.telemetry.failure_kind = Some(failure_kind);
+    failure.telemetry.detail = Some(format!("{}: {detail}", message));
+    failure.debug_detail = Some(format!(
+        "phase=stream_body router={} model={} status={} request_id={:?} generation_id={:?} error_chain={detail}",
+        provider.router_name(),
+        provider.config.model,
+        status,
+        failure.telemetry.request_id,
+        failure.telemetry.generation_id,
+    ));
+    debug(
+        "provider",
+        failure.debug_detail.as_deref().unwrap_or_default(),
+    );
+    failure
+}
+
+fn stream_idle_timeout_failure(
+    headers: &HeaderMap,
+    status: u16,
+    provider: &OpenRouterProvider,
+) -> ProviderFailure {
+    let timeout_secs = provider.stream_idle_timeout().as_secs();
+    let message =
+        format!("provider stream idle timeout after {timeout_secs}s without response bytes");
+    let mut failure = provider_failure(headers, Some(status), &[], message);
+    failure.telemetry.failure_kind = Some(ProviderFailureKind::StreamIdleTimeout);
+    failure.telemetry.detail = Some(format!("idle timeout after {timeout_secs}s"));
+    failure.debug_detail = Some(format!(
+        "phase=stream_body router={} model={} status={} request_id={:?} generation_id={:?} idle_timeout_secs={timeout_secs}",
+        provider.router_name(),
+        provider.config.model,
+        status,
+        failure.telemetry.request_id,
+        failure.telemetry.generation_id,
+    ));
+    debug(
+        "provider",
+        failure.debug_detail.as_deref().unwrap_or_default(),
+    );
+    failure
 }
 
 fn bounded_preview(body: &[u8]) -> String {
@@ -419,7 +578,9 @@ impl Provider for OpenRouterProvider {
         let body = self.build_body(messages, tools, false, overrides);
         let url = format!("{}/chat/completions", self.base_url());
         let headers = self.build_headers()?;
-        let resp = self.fetch_with_retry(&url, headers, &body).await?;
+        let resp = self
+            .fetch_with_retry(&self.client, &url, headers, &body)
+            .await?;
         let status = resp.status();
         let response_headers = resp.headers().clone();
         let response_body = resp.bytes().await.unwrap_or_default();
@@ -491,7 +652,8 @@ impl Provider for OpenRouterProvider {
         let app_attribution = self.config.app_attribution.clone();
         let model = self.config.model.clone();
         let retry = self.config.retry.clone();
-        let client = self.client.clone();
+        let stream_idle_timeout_secs = self.config.stream_idle_timeout_secs;
+        let streaming_client = self.streaming_client.clone();
         let openrouter_headers = self.openrouter_headers;
 
         let stream = try_stream! {
@@ -503,13 +665,17 @@ impl Provider for OpenRouterProvider {
                     request_params,
                     app_attribution,
                     retry,
+                    stream_idle_timeout_secs,
                 },
-                client,
+                client: regular_client(),
+                streaming_client,
                 openrouter_headers,
             };
             let body = provider.build_body(&messages, tools.as_deref(), true, &overrides);
             let headers = provider.build_headers().map_err(|e| anyhow!(e))?;
-            let resp = provider.fetch_with_retry(&url, headers, &body).await?;
+            let resp = provider
+                .fetch_with_retry(&provider.streaming_client, &url, headers, &body)
+                .await?;
             let status = resp.status();
             let response_headers = resp.headers().clone();
             let mut byte_stream = if status.is_success() {
@@ -530,9 +696,32 @@ impl Provider for OpenRouterProvider {
                     .bytes_stream()
             };
             let mut buffer = String::new();
-            while let Some(chunk) = byte_stream.next().await {
-                let chunk = chunk
-                    .map_err(|e| anyhow!("error reading streaming response body: {e}"))?;
+            loop {
+                let chunk = match tokio::time::timeout(provider.stream_idle_timeout(), byte_stream.next()).await {
+                    Ok(Some(Ok(chunk))) => chunk,
+                    Ok(Some(Err(error))) => {
+                        let failure = stream_body_failure(
+                            &response_headers,
+                            status.as_u16(),
+                            &provider,
+                            ProviderFailureKind::StreamBodyDecode,
+                            "provider stream body read failed",
+                            &error,
+                        );
+                        Err::<(), _>(anyhow::Error::new(failure))?;
+                        unreachable!()
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        let failure = stream_idle_timeout_failure(
+                            &response_headers,
+                            status.as_u16(),
+                            &provider,
+                        );
+                        Err::<(), _>(anyhow::Error::new(failure))?;
+                        unreachable!()
+                    }
+                };
                 buffer.push_str(std::str::from_utf8(&chunk).unwrap_or(""));
 
                 while let Some(nl_idx) = buffer.find('\n') {

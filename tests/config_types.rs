@@ -43,6 +43,7 @@ fn provider_config_accepts_full() {
         "editor_model": "anthropic/claude-opus",
         "max_tokens": 4096,
         "temperature": 0.7,
+        "stream_idle_timeout_secs": 600,
         "base_url": "http://localhost:8080",
         "app_attribution": {
             "referer": "https://github.com/gitschwifty/orboros",
@@ -53,6 +54,7 @@ fn provider_config_accepts_full() {
     assert!(v.is_ok());
     let v = v.unwrap();
     assert_eq!(v.model.as_deref(), Some("anthropic/claude-sonnet"));
+    assert_eq!(v.stream_idle_timeout_secs, Some(600));
 }
 
 #[test]

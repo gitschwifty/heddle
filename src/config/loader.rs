@@ -121,6 +121,8 @@ pub struct HeddleConfig {
     pub base_url: Option<String>,
     pub app_attribution: Option<AppAttribution>,
     pub openrouter_routing: OpenRouterRoutingMode,
+    /// Maximum time a provider stream may go without receiving response bytes.
+    pub stream_idle_timeout_secs: Option<u64>,
     /// Upstream provider slugs excluded from every OpenRouter request.
     pub openrouter_provider_ignore: Vec<String>,
     /// Additional OpenRouter provider exclusions, keyed by model id.
@@ -165,6 +167,7 @@ impl Default for HeddleConfig {
             base_url: None,
             app_attribution: None,
             openrouter_routing: OpenRouterRoutingMode::Balanced,
+            stream_idle_timeout_secs: None,
             openrouter_provider_ignore: Vec::new(),
             openrouter_model_provider_ignore: BTreeMap::new(),
             system_prompt: None,
@@ -334,6 +337,9 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(n) = table.get("temperature").and_then(as_float) {
         config.temperature = Some(n);
+    }
+    if let Some(n) = table.get("stream_idle_timeout_secs").and_then(as_int) {
+        config.stream_idle_timeout_secs = Some(n as u64);
     }
     if let Some(n) = table.get("doom_loop_threshold").and_then(as_int) {
         config.doom_loop_threshold = Some(n as u32);
@@ -575,6 +581,11 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
             merged.temperature = Some(n);
         }
     }
+    if let Ok(v) = std::env::var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS") {
+        if let Ok(n) = v.parse::<u64>() {
+            merged.stream_idle_timeout_secs = Some(n);
+        }
+    }
     if let Ok(v) = std::env::var("HEDDLE_WEAK_MODEL") {
         merged.weak_model = Some(v);
     }
@@ -648,6 +659,11 @@ pub fn load_config_without_files() -> HeddleConfig {
     if let Ok(v) = std::env::var("HEDDLE_TEMPERATURE") {
         if let Ok(n) = v.parse::<f64>() {
             merged.temperature = Some(n);
+        }
+    }
+    if let Ok(v) = std::env::var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS") {
+        if let Ok(n) = v.parse::<u64>() {
+            merged.stream_idle_timeout_secs = Some(n);
         }
     }
     if let Ok(v) = std::env::var("HEDDLE_WEAK_MODEL") {

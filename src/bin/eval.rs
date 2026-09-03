@@ -1782,6 +1782,7 @@ fn make_provider(
             // REPL/headless clients retain the shorter provider default.
             max_delay_ms: 90_000,
         }),
+        stream_idle_timeout_secs: None,
     });
     if is_free_model(model) {
         Arc::new(PacedProvider {
@@ -2138,6 +2139,12 @@ async fn run_one(
                         Some(ProviderFailureKind::EmptySuccessBody) => {
                             FailureCause::ProviderMalformedSuccess
                         }
+                        Some(
+                            ProviderFailureKind::TransportError
+                            | ProviderFailureKind::ResponseHeadersTimeout
+                            | ProviderFailureKind::StreamIdleTimeout
+                            | ProviderFailureKind::StreamBodyDecode,
+                        ) => FailureCause::ProviderApi,
                         None => FailureCause::ProviderApi,
                     });
                     error = Some(message);

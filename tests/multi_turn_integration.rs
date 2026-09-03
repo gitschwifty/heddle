@@ -53,6 +53,7 @@ fn make_provider(api_key: String) -> Arc<dyn Provider> {
         request_params: Some(json!({ "models": fallback, "route": "fallback" })),
         app_attribution: None,
         retry: None,
+        stream_idle_timeout_secs: None,
     })
 }
 

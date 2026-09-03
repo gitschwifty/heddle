@@ -43,6 +43,9 @@ editor_model = "..."           # Model for edit operations
 max_tokens = 128000            # Max context window (or HEDDLE_MAX_TOKENS)
 temperature = 0.7              # Sampling temperature (or HEDDLE_TEMPERATURE)
 openrouter_routing = "balanced" # "balanced" | "nitro" | "exacto"
+# A stream can run indefinitely while it remains active. This is the maximum
+# idle time between received response bytes; default: 600 seconds (10 minutes).
+stream_idle_timeout_secs = 600 # Or HEDDLE_STREAM_IDLE_TIMEOUT_SECS
 
 [app_attribution]              # Optional OpenRouter dashboard attribution
 referer = "https://github.com/gitschwifty/heddle"
@@ -139,6 +142,7 @@ credential = "keychain:heddle/straitly"
 | `HEDDLE_BASE_URL` | `base_url` |
 | `HEDDLE_MAX_TOKENS` | `max_tokens` |
 | `HEDDLE_TEMPERATURE` | `temperature` |
+| `HEDDLE_STREAM_IDLE_TIMEOUT_SECS` | `stream_idle_timeout_secs` |
 | `HEDDLE_OPENROUTER_ROUTING` | `openrouter_routing` |
 | `HEDDLE_APP_REFERER` + `HEDDLE_APP_TITLE` | `app_attribution.referer` + `app_attribution.title` |
 | `HEDDLE_APP_CATEGORIES` | `app_attribution.categories` |

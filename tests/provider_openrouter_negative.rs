@@ -3,10 +3,18 @@ use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::{ProviderConfig, ProviderFailure, ProviderFailureKind};
 use heddle::types::{Message, UserMessage};
 use serde_json::json;
+use tokio::io::AsyncWriteExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn provider(base_url: String) -> std::sync::Arc<dyn heddle::provider::types::Provider> {
+    provider_with_idle_timeout(base_url, None)
+}
+
+fn provider_with_idle_timeout(
+    base_url: String,
+    stream_idle_timeout_secs: Option<u64>,
+) -> std::sync::Arc<dyn heddle::provider::types::Provider> {
     create_openrouter_provider(ProviderConfig {
         api_key: "sk-test".to_string(),
         model: "test-model".to_string(),
@@ -14,7 +22,41 @@ fn provider(base_url: String) -> std::sync::Arc<dyn heddle::provider::types::Pro
         request_params: None,
         app_attribution: None,
         retry: None,
+        stream_idle_timeout_secs,
     })
+}
+
+#[tokio::test]
+async fn stream_idle_timeout_is_typed_and_configurable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    });
+
+    let p = provider_with_idle_timeout(format!("http://{address}"), Some(1));
+    let (_chunks, err) = drain_stream(p).await;
+    let failure = err
+        .expect("idle stream should time out")
+        .downcast::<ProviderFailure>()
+        .expect("idle timeout should retain typed provider telemetry");
+    assert_eq!(
+        failure.telemetry.failure_kind,
+        Some(ProviderFailureKind::StreamIdleTimeout)
+    );
+    assert!(failure.message.contains("after 1s"));
+    assert!(failure
+        .debug_detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("phase=stream_body")));
 }
 
 fn user_msgs() -> Vec<Message> {
@@ -38,6 +80,17 @@ async fn send_errors_on_network_failure() {
         msg.contains("connection") || msg.contains("refused") || msg.contains("error"),
         "unexpected error: {msg}"
     );
+    let failure = err
+        .downcast_ref::<ProviderFailure>()
+        .expect("network failure should retain structured provider diagnostics");
+    assert_eq!(
+        failure.telemetry.failure_kind,
+        Some(ProviderFailureKind::TransportError)
+    );
+    assert!(failure
+        .debug_detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("phase=headers")));
 }
 
 #[tokio::test]
@@ -157,7 +210,14 @@ async fn stream_errors_on_network_failure() {
     let p = provider("http://127.0.0.1:1".to_string());
     let (chunks, err) = drain_stream(p).await;
     assert!(chunks.is_empty());
-    assert!(err.is_some(), "expected an error");
+    let err = err.expect("expected an error");
+    let failure = err
+        .downcast_ref::<ProviderFailure>()
+        .expect("network failure should retain structured provider diagnostics");
+    assert_eq!(
+        failure.telemetry.failure_kind,
+        Some(ProviderFailureKind::TransportError)
+    );
 }
 
 #[tokio::test]

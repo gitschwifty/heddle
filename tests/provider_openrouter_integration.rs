@@ -52,6 +52,7 @@ async fn send_returns_text_response() {
         request_params: Some(json!({ "models": fallback, "route": "fallback" })),
         app_attribution: None,
         retry: None,
+        stream_idle_timeout_secs: None,
     });
 
     let resp = p
@@ -82,6 +83,7 @@ async fn stream_yields_chunks_and_assembles_content() {
         request_params: Some(json!({ "models": fallback, "route": "fallback" })),
         app_attribution: None,
         retry: None,
+        stream_idle_timeout_secs: None,
     });
 
     let mut stream = p.stream(user_msg(), None, json!({}));
@@ -132,6 +134,7 @@ async fn send_with_reasoning_returns_response() {
         })),
         app_attribution: None,
         retry: None,
+        stream_idle_timeout_secs: None,
     });
 
     let resp = p

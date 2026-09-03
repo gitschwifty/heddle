@@ -33,6 +33,8 @@ pub struct ProviderConfigSchema {
     pub base_url: Option<String>,
     pub app_attribution: Option<AppAttributionSchema>,
     pub openrouter_routing: Option<OpenRouterRoutingModeWire>,
+    /// Maximum time a provider stream may be idle before it is aborted.
+    pub stream_idle_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

@@ -22,6 +22,7 @@ fn clear_env() {
         "HEDDLE_BASE_URL",
         "HEDDLE_MAX_TOKENS",
         "HEDDLE_TEMPERATURE",
+        "HEDDLE_STREAM_IDLE_TIMEOUT_SECS",
         "HEDDLE_APP_REFERER",
         "HEDDLE_APP_TITLE",
         "HEDDLE_APP_CATEGORIES",
@@ -300,6 +301,15 @@ fn loads_temperature() {
 }
 
 #[test]
+fn loads_stream_idle_timeout() {
+    let sb = Sandbox::new("loader-stream-idle-timeout");
+    clear_env();
+    write_global(&sb, "stream_idle_timeout_secs = 900\n");
+    let cfg = load_config(None);
+    assert_eq!(cfg.stream_idle_timeout_secs, Some(900));
+}
+
+#[test]
 fn temperature_zero_is_valid() {
     let sb = Sandbox::new("loader-temp-zero");
     clear_env();
@@ -469,6 +479,16 @@ fn heddle_temperature_env_overrides() {
     std::env::set_var("HEDDLE_TEMPERATURE", "0.5");
     let cfg = load_config(None);
     assert_eq!(cfg.temperature, Some(0.5));
+    clear_env();
+}
+
+#[test]
+fn heddle_stream_idle_timeout_env_overrides() {
+    let _sb = Sandbox::new("loader-env-stream-idle-timeout");
+    clear_env();
+    std::env::set_var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS", "900");
+    let cfg = load_config(None);
+    assert_eq!(cfg.stream_idle_timeout_secs, Some(900));
     clear_env();
 }
 

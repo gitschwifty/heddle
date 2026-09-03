@@ -10,13 +10,16 @@ use serde_json::Value;
 
 use crate::types::{ChatCompletionResponse, Message, StreamChunk, ToolDefinition};
 
-/// A narrowly-scoped classification for a provider response that was an HTTP
-/// success but could not be used by the agent. These values deliberately do
-/// not describe arbitrary decoder failures, which remain non-retryable.
+/// A narrowly-scoped classification for provider transport failures and HTTP
+/// successes that could not be used by the agent.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderFailureKind {
     EmptySuccessBody,
+    TransportError,
+    ResponseHeadersTimeout,
+    StreamIdleTimeout,
+    StreamBodyDecode,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -49,6 +52,9 @@ pub struct ProviderConfig {
     pub app_attribution: Option<AppAttribution>,
     /// `None` ⇒ retry disabled; `Some(_)` ⇒ retry on 429.
     pub retry: Option<RetryConfig>,
+    /// Maximum time a streaming response may go without receiving response
+    /// bytes. `None` uses the 10-minute transport default.
+    pub stream_idle_timeout_secs: Option<u64>,
 }
 
 /// Safe, bounded provider-side correlation data. It intentionally excludes
