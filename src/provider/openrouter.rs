@@ -215,55 +215,55 @@ impl OpenRouterProvider {
 
         for attempt in 0..=max_retries {
             let request = client.post(url).headers(headers.clone()).json(body).send();
-            let resp = tokio::time::timeout(
+            let response = tokio::time::timeout(
                 Duration::from_secs(DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS),
                 request,
             )
-            .await
-            .map_err(|_| {
-                let failure = transport_failure(
-                    ProviderFailureKind::ResponseHeadersTimeout,
-                    format!(
-                        "provider response headers timed out after {}s",
-                        DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS
-                    ),
-                    format!(
-                        "phase=headers router={} model={} timeout_secs={}",
-                        self.router_name(),
-                        self.config.model,
-                        DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS
-                    ),
-                );
-                debug(
-                    "provider",
-                    &failure.debug_detail.clone().unwrap_or_default(),
-                );
-                anyhow::Error::new(failure)
-            })?
-            .map_err(|err| {
-                let detail = format!("{err:#}");
-                let visible_detail: String = err
-                    .to_string()
-                    .chars()
-                    .take(MAX_PROVIDER_DETAIL_CHARS)
-                    .collect();
-                let failure = transport_failure(
-                    ProviderFailureKind::TransportError,
-                    format!(
-                        "provider transport error while awaiting response headers: {visible_detail}"
-                    ),
-                    format!(
-                        "phase=headers router={} model={} error_chain={detail}",
-                        self.router_name(),
-                        self.config.model
-                    ),
-                );
-                debug(
-                    "provider",
-                    failure.debug_detail.as_deref().unwrap_or_default(),
-                );
-                anyhow::Error::new(failure)
-            })?;
+            .await;
+            let resp = match response {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    let failure = request_transport_failure(self, &error);
+                    if retry_cfg.is_some()
+                        && attempt < max_retries
+                        && retryable_request_error(&error)
+                    {
+                        retry_transient_request(
+                            attempt,
+                            max_retries,
+                            base_delay_ms,
+                            max_delay_ms,
+                            "transport",
+                        )
+                        .await;
+                        continue;
+                    }
+                    debug(
+                        "provider",
+                        failure.debug_detail.as_deref().unwrap_or_default(),
+                    );
+                    return Err(anyhow::Error::new(failure));
+                }
+                Err(_) => {
+                    let failure = headers_timeout_failure(self);
+                    if retry_cfg.is_some() && attempt < max_retries {
+                        retry_transient_request(
+                            attempt,
+                            max_retries,
+                            base_delay_ms,
+                            max_delay_ms,
+                            "response headers timeout",
+                        )
+                        .await;
+                        continue;
+                    }
+                    debug(
+                        "provider",
+                        failure.debug_detail.as_deref().unwrap_or_default(),
+                    );
+                    return Err(anyhow::Error::new(failure));
+                }
+            };
 
             if resp.status().as_u16() != 429 || retry_cfg.is_none() || attempt == max_retries {
                 return Ok(resp);
@@ -284,6 +284,33 @@ impl OpenRouterProvider {
         }
         Err(anyhow!("Retry loop exited unexpectedly"))
     }
+}
+
+fn retryable_request_error(error: &reqwest::Error) -> bool {
+    // The request has not produced response headers, so retrying cannot replay
+    // assistant output or a tool call. Invalid local request construction is
+    // excluded; this covers connection, TLS, timeout, and peer-reset errors.
+    error.is_connect() || error.is_timeout() || error.is_request()
+}
+
+async fn retry_transient_request(
+    attempt: u32,
+    max_retries: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+    reason: &str,
+) {
+    let exponential_delay_ms = base_delay_ms.saturating_mul(1u64 << attempt);
+    let delay = retry_delay_ms(&HeaderMap::new(), "", exponential_delay_ms, max_delay_ms);
+    debug(
+        "provider",
+        &format!(
+            "{reason}, retry {}/{} after {delay}ms",
+            attempt + 1,
+            max_retries
+        ),
+    );
+    tokio::time::sleep(Duration::from_millis(delay)).await;
 }
 
 fn regular_client() -> reqwest::Client {
@@ -336,6 +363,43 @@ fn transport_failure(
         },
         debug_detail: Some(debug_detail),
     }
+}
+
+fn headers_timeout_failure(provider: &OpenRouterProvider) -> ProviderFailure {
+    transport_failure(
+        ProviderFailureKind::ResponseHeadersTimeout,
+        format!(
+            "provider response headers timed out after {}s",
+            DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS
+        ),
+        format!(
+            "phase=headers router={} model={} timeout_secs={}",
+            provider.router_name(),
+            provider.config.model,
+            DEFAULT_RESPONSE_HEADERS_TIMEOUT_SECS
+        ),
+    )
+}
+
+fn request_transport_failure(
+    provider: &OpenRouterProvider,
+    error: &reqwest::Error,
+) -> ProviderFailure {
+    let detail = format!("{error:#}");
+    let visible_detail: String = error
+        .to_string()
+        .chars()
+        .take(MAX_PROVIDER_DETAIL_CHARS)
+        .collect();
+    transport_failure(
+        ProviderFailureKind::TransportError,
+        format!("provider transport error while awaiting response headers: {visible_detail}"),
+        format!(
+            "phase=headers router={} model={} error_chain={detail}",
+            provider.router_name(),
+            provider.config.model
+        ),
+    )
 }
 
 fn stream_body_failure(

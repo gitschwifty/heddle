@@ -3,7 +3,7 @@ use heddle::provider::openrouter::create_openrouter_provider;
 use heddle::provider::types::{ProviderConfig, ProviderFailure, ProviderFailureKind};
 use heddle::types::{Message, UserMessage};
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -91,6 +91,49 @@ async fn send_errors_on_network_failure() {
         .debug_detail
         .as_deref()
         .is_some_and(|detail| detail.contains("phase=headers")));
+}
+
+#[tokio::test]
+async fn send_retries_transient_pre_header_transport_failure() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (first, _) = listener.accept().await.unwrap();
+        drop(first); // Peer reset before it returns HTTP headers.
+
+        let (mut second, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = second.read(&mut request).await.unwrap();
+        let body = r#"{"id":"retry-test","choices":[{"index":0,"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        second
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let p = create_openrouter_provider(ProviderConfig {
+        api_key: "sk-test".into(),
+        model: "test-model".into(),
+        base_url: Some(format!("http://{address}")),
+        request_params: None,
+        app_attribution: None,
+        retry: Some(heddle::provider::types::RetryConfig {
+            max_retries: 1,
+            base_delay_ms: 1,
+            max_delay_ms: 1,
+        }),
+        stream_idle_timeout_secs: None,
+    });
+
+    let response = p.send(&user_msgs(), None, &json!({})).await.unwrap();
+    assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
 }
 
 #[tokio::test]
