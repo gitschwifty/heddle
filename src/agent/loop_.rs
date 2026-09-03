@@ -527,6 +527,14 @@ pub fn run_agent_loop_streaming<'a>(
                         yield AgentEvent::UpstreamProvider { provider };
                     }
                 }
+                // OpenAI-compatible gateways (including Straitly) commonly
+                // send usage in a final chunk with an empty `choices` array.
+                // Record it before skipping chunks that carry no delta.
+                if let Some(u) = chunk.usage {
+                    debug("agent", "usage chunk received");
+                    usage_generation_id = Some(chunk.id.clone());
+                    stream_usage = Some(u);
+                }
                 let choice = match chunk.choices.into_iter().next() {
                     Some(c) => c,
                     None => continue,
@@ -561,11 +569,6 @@ pub fn run_agent_loop_streaming<'a>(
                             }
                         }
                     }
-                }
-                if let Some(u) = chunk.usage {
-                    debug("agent", "usage chunk received");
-                    usage_generation_id = Some(chunk.id.clone());
-                    stream_usage = Some(u);
                 }
             }
             if aborted(&options.signal) { return; }

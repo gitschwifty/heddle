@@ -174,16 +174,22 @@ impl Usage {
 
     /// Normalized cache writes across OpenAI-compatible provider schemas.
     pub fn cache_write_tokens(&self) -> Option<u64> {
-        let nested = self
+        // Straitly returns `cache_creation_input_tokens` as the total, and
+        // repeats its breakdown in the 5m/1h fields and OpenAI-style nested
+        // details. Prefer that total so aliases never inflate usage.
+        if let Some(total) = self.cache_creation_input_tokens {
+            return Some(total);
+        }
+        if let Some(nested) = self
             .prompt_tokens_details
             .as_ref()
             .and_then(|details| details.cache_write_tokens)
-            .unwrap_or(0);
-        let straitly = self.cache_creation_input_tokens.unwrap_or(0)
-            + self.cache_creation_5m_input_tokens.unwrap_or(0)
+        {
+            return Some(nested);
+        }
+        let tiers = self.cache_creation_5m_input_tokens.unwrap_or(0)
             + self.cache_creation_1h_input_tokens.unwrap_or(0);
-        let total = nested + straitly;
-        (total > 0).then_some(total)
+        (tiers > 0).then_some(tiers)
     }
 }
 

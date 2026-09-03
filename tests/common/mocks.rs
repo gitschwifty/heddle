@@ -153,11 +153,8 @@ pub fn usage_chunk(prompt: u64, completion: u64, total: u64, cost: Option<f64>) 
         provider: None,
         openrouter_metadata: None,
         id: "chatcmpl-test".to_string(),
-        choices: vec![StreamChoice {
-            index: 0,
-            delta: Delta::default(),
-            finish_reason: Some("stop".to_string()),
-        }],
+        // Providers emit final usage separately from the terminal choice.
+        choices: vec![],
         usage: Some(Usage {
             prompt_tokens: prompt,
             completion_tokens: completion,
