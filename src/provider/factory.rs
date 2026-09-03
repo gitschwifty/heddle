@@ -1,5 +1,6 @@
 //! Build the bundle of `(main, weak, editor)` providers from `HeddleConfig`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -19,7 +20,7 @@ pub struct Providers {
     pub editor: Option<Arc<dyn Provider>>,
 }
 
-fn base_request_params(config: &HeddleConfig) -> Option<Value> {
+fn request_params(config: &HeddleConfig, model: &str) -> Option<Value> {
     let mut map = Map::new();
     if let Some(mt) = config.max_tokens {
         map.insert("max_tokens".into(), Value::Number(mt.into()));
@@ -29,13 +30,38 @@ fn base_request_params(config: &HeddleConfig) -> Option<Value> {
             map.insert("temperature".into(), Value::Number(n));
         }
     }
-    if config.provider == ProviderKind::OpenRouter
-        && config.openrouter_routing == OpenRouterRoutingMode::Nitro
-    {
-        map.insert(
-            "provider".into(),
-            serde_json::json!({ "sort": "throughput" }),
-        );
+    if config.provider == ProviderKind::OpenRouter {
+        let mut provider = Map::new();
+        if config.openrouter_routing == OpenRouterRoutingMode::Nitro {
+            provider.insert("sort".into(), Value::String("throughput".into()));
+        }
+        let ignored: BTreeSet<_> = config
+            .openrouter_provider_ignore
+            .iter()
+            .chain(
+                config
+                    .openrouter_model_provider_ignore
+                    .get(model)
+                    .into_iter()
+                    .flatten(),
+            )
+            .map(|provider| provider.trim())
+            .filter(|provider| !provider.is_empty())
+            .collect();
+        if !ignored.is_empty() {
+            provider.insert(
+                "ignore".into(),
+                Value::Array(
+                    ignored
+                        .into_iter()
+                        .map(|value| Value::String(value.into()))
+                        .collect(),
+                ),
+            );
+        }
+        if !provider.is_empty() {
+            map.insert("provider".into(), Value::Object(provider));
+        }
     }
     if map.is_empty() {
         None
@@ -53,9 +79,8 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
         .and_then(|reference| resolve_credential(reference).ok())
         .or_else(|| config.api_key.clone())
         .ok_or_else(|| anyhow!("{} credential is required", router_name(config.provider)))?;
-    let params = base_request_params(config);
-
     let build = |model: &str| -> Arc<dyn Provider> {
+        let params = request_params(config, model);
         let model = if config.provider == ProviderKind::OpenRouter
             && config.openrouter_routing == OpenRouterRoutingMode::Exacto
             && !model.ends_with(":exacto")
@@ -70,7 +95,7 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
             base_url: config.base_url.clone().or_else(|| {
                 (config.provider == ProviderKind::Straitly).then(|| STRAITLY_BASE_URL.to_string())
             }),
-            request_params: params.clone(),
+            request_params: params,
             app_attribution: config.app_attribution.clone(),
             retry: Some(RetryConfig::default()),
         };
@@ -91,5 +116,29 @@ fn router_name(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::OpenRouter => "OpenRouter router",
         ProviderKind::Straitly => "Straitly router",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_params;
+    use crate::config::loader::{HeddleConfig, ProviderKind};
+
+    #[test]
+    fn openrouter_provider_ignores_merge_global_and_model_values() {
+        let mut config = HeddleConfig {
+            provider: ProviderKind::OpenRouter,
+            openrouter_provider_ignore: vec!["relace".into(), "deepinfra".into()],
+            ..HeddleConfig::default()
+        };
+        config.openrouter_model_provider_ignore.insert(
+            "deepseek/deepseek-v4-flash".into(),
+            vec!["relace".into(), "novita".into()],
+        );
+        let params = request_params(&config, "deepseek/deepseek-v4-flash").unwrap();
+        assert_eq!(
+            params["provider"]["ignore"],
+            serde_json::json!(["deepinfra", "novita", "relace"])
+        );
     }
 }

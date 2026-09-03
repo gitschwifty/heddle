@@ -1,6 +1,7 @@
 //! Layered TOML config loader (defaults → global → local → env).
 //!
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,10 @@ pub struct HeddleConfig {
     pub base_url: Option<String>,
     pub app_attribution: Option<AppAttribution>,
     pub openrouter_routing: OpenRouterRoutingMode,
+    /// Upstream provider slugs excluded from every OpenRouter request.
+    pub openrouter_provider_ignore: Vec<String>,
+    /// Additional OpenRouter provider exclusions, keyed by model id.
+    pub openrouter_model_provider_ignore: BTreeMap<String, Vec<String>>,
 
     pub system_prompt: Option<String>,
     pub approval_mode: Option<ApprovalMode>,
@@ -160,6 +165,8 @@ impl Default for HeddleConfig {
             base_url: None,
             app_attribution: None,
             openrouter_routing: OpenRouterRoutingMode::Balanced,
+            openrouter_provider_ignore: Vec::new(),
+            openrouter_model_provider_ignore: BTreeMap::new(),
             system_prompt: None,
             approval_mode: None,
             instructions: None,
@@ -252,13 +259,36 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     {
         config.provider = provider;
     }
-    if let Some(s) = routers
+    let openrouter = routers
         .and_then(|routers| routers.get("openrouter"))
-        .and_then(|value| value.as_table())
+        .and_then(|value| value.as_table());
+    if let Some(s) = openrouter
         .and_then(|openrouter| openrouter.get("credential"))
         .and_then(as_str)
     {
         config.openrouter_credential = Some(s.to_string());
+    }
+    if let Some(ignore) = openrouter
+        .and_then(|openrouter| openrouter.get("ignore_providers"))
+        .and_then(as_string_array)
+    {
+        config.openrouter_provider_ignore = ignore;
+    }
+    if let Some(models) = openrouter
+        .and_then(|openrouter| openrouter.get("models"))
+        .and_then(|value| value.as_table())
+    {
+        for (model, routing) in models {
+            if let Some(ignore) = routing
+                .as_table()
+                .and_then(|routing| routing.get("ignore_providers"))
+                .and_then(as_string_array)
+            {
+                config
+                    .openrouter_model_provider_ignore
+                    .insert(model.to_string(), ignore);
+            }
+        }
     }
     if let Some(s) = routers
         .and_then(|routers| routers.get("straitly"))

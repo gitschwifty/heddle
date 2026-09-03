@@ -117,6 +117,15 @@ credential = "keychain:heddle/straitly"
 # To use OpenRouter (the default) with a non-default Keychain item instead:
 # [routers.openrouter]
 # credential = "keychain:work/openrouter"
+
+# Exclude an unreliable OpenRouter upstream provider everywhere:
+# [routers.openrouter]
+# ignore_providers = ["relace"]
+
+# Or limit an exclusion to one model. Values are OpenRouter provider slugs and
+# are sent as `provider: { ignore: [...] }` on matching requests.
+# [routers.openrouter.models."deepseek/deepseek-v4-flash"]
+# ignore_providers = ["relace"]
 ```
 
 ## Environment Variable Overrides

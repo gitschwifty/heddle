@@ -4,6 +4,8 @@
 //! separate module so the loader can produce internal config from these and the
 //! IPC layer can validate inbound payloads against the same shape.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +39,16 @@ pub struct ProviderConfigSchema {
 pub struct OpenRouterCredentialsSchema {
     /// Override the default `keychain:heddle/openrouter` non-secret credential reference.
     pub credential: Option<String>,
+    /// OpenRouter upstream provider slugs to exclude for every model.
+    pub ignore_providers: Option<Vec<String>>,
+    /// Per-model additions to `ignore_providers`, keyed by the normal model id.
+    pub models: Option<BTreeMap<String, OpenRouterModelRoutingSchema>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct OpenRouterModelRoutingSchema {
+    /// OpenRouter upstream provider slugs to exclude for this model.
+    pub ignore_providers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

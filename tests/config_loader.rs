@@ -147,6 +147,24 @@ fn straitly_router_uses_its_credential_default_and_environment_override() {
 }
 
 #[test]
+fn openrouter_provider_ignores_support_global_and_per_model_configuration() {
+    let sb = Sandbox::new("loader-openrouter-provider-ignore");
+    clear_env();
+    write_global(
+        &sb,
+        "[routers.openrouter]\nignore_providers = [\"relace\"]\n\n[routers.openrouter.models.\"deepseek/deepseek-v4-flash\"]\nignore_providers = [\"novita\"]\n",
+    );
+    let cfg = load_config(None);
+    assert_eq!(cfg.openrouter_provider_ignore, vec!["relace"]);
+    assert_eq!(
+        cfg.openrouter_model_provider_ignore
+            .get("deepseek/deepseek-v4-flash"),
+        Some(&vec!["novita".to_string()])
+    );
+    clear_env();
+}
+
+#[test]
 fn routers_table_supersedes_legacy_providers_alias_in_one_layer() {
     let sb = Sandbox::new("loader-router-precedence");
     clear_env();
