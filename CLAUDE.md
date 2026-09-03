@@ -1,12 +1,12 @@
-# Heddle Rust Rewrite
+# Heddle (Rust)
 
-Rust LLM API harness: tool execution, streaming, edits, context management, sessions, and IPC.
+Rust LLM API harness: tool execution, streaming, edits, context management, sessions, IPC, and provider support.
 
 ## Runtime & Tooling
 
 - **Cargo** for Rust build/test/lint/format.
 - **just** for common local command shortcuts when available.
-- Do not use npm, npx, Bun, or Vitest for Rust rewrite work.
+- Do not use npm, npx, Bun, or Vitest for Rust work.
 
 ## Common Commands
 
