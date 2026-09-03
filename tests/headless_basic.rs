@@ -130,6 +130,28 @@ fn headless_rejects_invalid_keychain_reference_without_accessing_keychain() {
 }
 
 #[test]
+fn init_router_selects_straitly_without_a_toml_config_file() {
+    let mut h = Headless::spawn(HashMap::from([(
+        "STRAITLY_API_KEY".into(),
+        "test-straitly-key".into(),
+    )]));
+    h.send_line(
+        &serde_json::json!({
+            "type": "init", "id": "1", "protocol_version": "0.5.0",
+            "config": {
+                "router": "straitly",
+                "model": "anthropic/claude-sonnet-5", "system_prompt": "x", "tools": []
+            }
+        })
+        .to_string(),
+    );
+    let lines = h.wait_for_lines(1, T);
+    let init = parse_line(&lines[0]);
+    assert_eq!(init["type"], "init_ok");
+    assert_eq!(init["effective_routing"]["router"], "straitly");
+}
+
+#[test]
 fn headless_default_ignores_configured_keychain_credentials() {
     let mut h = Headless::spawn(HashMap::from([("STRAITLY_API_KEY".into(), String::new())]));
     let config_path = h.heddle_home().join("straitly.toml");

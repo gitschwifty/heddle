@@ -134,6 +134,8 @@ pub struct SessionOptions {
     pub permission_overrides: Option<PermissionOverrides>,
     pub app_attribution: Option<AppAttribution>,
     pub runtime_placement: Option<RuntimePlacement>,
+    /// Explicit router selection for an embedded/headless caller.
+    pub router: Option<crate::config::loader::ProviderKind>,
     /// Headless defaults to environment-only credentials so ambient user
     /// Keychain references cannot trigger an OS prompt in worker processes.
     pub headless_environment_credentials_only: bool,
@@ -266,6 +268,9 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     } else {
         load_config(None)
     };
+    if let Some(router) = options.router {
+        config.provider = router;
+    }
     if options.headless_environment_credentials_only {
         let environment_key = match config.provider {
             crate::config::loader::ProviderKind::OpenRouter => {

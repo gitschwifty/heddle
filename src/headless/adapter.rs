@@ -30,7 +30,7 @@ use crate::ipc::errors::ErrorEnvelope;
 use crate::ipc::protocol::{check_compatibility, PROTOCOL_VERSION};
 use crate::ipc::types::{
     CancellationSource, EffectiveRoutingMetadata, EffectiveRuntimeMetadata, FailureDetails,
-    HeadlessCredentialSource, InitConfig, IpcCapabilities, IpcRequest, IpcResponse,
+    HeadlessCredentialSource, HeadlessRouter, InitConfig, IpcCapabilities, IpcRequest, IpcResponse,
     PermissionFailureDetails, ProfileIdentity, ProviderFailureDetails, RoutingMetadata,
     RuntimeMode, ToolCallSummary, TurnStateEvent, UsageSummary, WorkerEvent,
 };
@@ -329,6 +329,10 @@ fn build_session_options(
                 (false, Some(reference.clone()))
             }
         };
+    let router = config.router.map(|router| match router {
+        HeadlessRouter::OpenRouter => crate::config::loader::ProviderKind::OpenRouter,
+        HeadlessRouter::Straitly => crate::config::loader::ProviderKind::Straitly,
+    });
     Ok((
         SessionOptions {
             mode: Some(Mode::Headless),
@@ -342,6 +346,7 @@ fn build_session_options(
             }),
             app_attribution: config.app_attribution.clone(),
             runtime_placement: placement,
+            router,
             headless_environment_credentials_only,
             headless_credential_reference,
             ..Default::default()

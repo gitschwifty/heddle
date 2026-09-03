@@ -169,6 +169,16 @@ pub enum HeadlessCredentialSource {
     Keychain { reference: String },
 }
 
+/// The request router. This determines which gateway receives model requests;
+/// it is distinct from optional routing metadata about an upstream provider.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum HeadlessRouter {
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    #[serde(rename = "straitly")]
+    Straitly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitConfig {
     pub model: String,
@@ -187,6 +197,8 @@ pub struct InitConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
     pub runtime: Option<RuntimePlacementConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<HeadlessRouter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_source: Option<HeadlessCredentialSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

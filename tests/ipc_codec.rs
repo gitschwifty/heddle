@@ -4,8 +4,8 @@ use heddle::ipc::codec::{
 };
 use heddle::ipc::errors::ErrorEnvelope;
 use heddle::ipc::types::{
-    FailureDetails, HeadlessCredentialSource, InitConfig, IpcRequest, IpcResponse, ToolCallSummary,
-    UsageSummary, WorkerEvent,
+    FailureDetails, HeadlessCredentialSource, HeadlessRouter, InitConfig, IpcRequest, IpcResponse,
+    ToolCallSummary, UsageSummary, WorkerEvent,
 };
 use serde_json::{json, Value};
 
@@ -35,6 +35,7 @@ fn decode_valid_init_request() {
             permissions: None,
             hooks: None,
             runtime: None,
+            router: None,
             credential_source: None,
             routing: None,
         }),
@@ -68,6 +69,26 @@ fn init_credential_source_is_non_secret_selection_metadata() {
 
     let encoded = serde_json::to_value(HeadlessCredentialSource::Environment).unwrap();
     assert_eq!(encoded, json!({"source":"environment"}));
+}
+
+#[test]
+fn init_router_selects_a_gateway_not_upstream_metadata() {
+    let line = r#"{
+        "type":"init", "id":"1",
+        "config": {
+            "model":"anthropic/claude-sonnet-5", "system_prompt":"s", "tools":[],
+            "router":"straitly",
+            "routing":{"upstream_provider":"anthropic"}
+        }
+    }"#;
+    let DecodeResult::Ok(IpcRequest::Init { config, .. }) = decode_request(line) else {
+        panic!("expected init request");
+    };
+    assert!(matches!(config.router, Some(HeadlessRouter::Straitly)));
+    assert_eq!(
+        config.routing.and_then(|routing| routing.upstream_provider),
+        Some("anthropic".to_string())
+    );
 }
 
 #[test]

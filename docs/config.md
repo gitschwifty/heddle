@@ -158,6 +158,17 @@ the selected router. A supervisor such as Orboros should resolve its own
 credential and pass it to the worker through that environment variable; raw
 credentials must never be included in the JSONL protocol.
 
+Select the actual request router directly in the same `init.config` object:
+
+```json
+{ "router": "straitly" }
+```
+
+The only supported values are `"openrouter"` and `"straitly"`. This takes
+precedence over any TOML router selection, so an isolated worker does not need
+a config file merely to choose its gateway. It is separate from optional
+`routing` metadata such as `upstream_provider` or `grouping_id`.
+
 Keychain use is an explicit opt-in per worker:
 
 ```json
