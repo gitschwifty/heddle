@@ -13,8 +13,13 @@ pub(super) fn draw(frame: &mut Frame, app: &mut TuiApp) {
     app.refresh_pending_work();
 
     let area = frame.area();
-    let input_height = if app.permission_prompt_view.is_some() {
-        8
+    let input_height = if let Some(input) = &app.permission_guidance {
+        input
+            .visual_height(area.width.saturating_sub(4))
+            .saturating_add(6)
+            .clamp(8, 14)
+    } else if app.permission_prompt_view.is_some() {
+        9
     } else {
         app.input
             .visual_height(area.width.saturating_sub(2))
@@ -39,7 +44,38 @@ pub(super) fn draw(frame: &mut Frame, app: &mut TuiApp) {
     frame.render_widget(transcript, chunks[0]);
 
     frame.render_widget(Clear, chunks[1]);
-    if let Some(prompt) = &app.permission_prompt_view {
+    if let Some(input) = &app.permission_guidance {
+        let block = Block::default()
+            .title("Deny with guidance")
+            .borders(Borders::ALL);
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new("Tool will not run; model will receive your note and continue.\nEnter submit; Shift-Enter or \\ then Enter newline; Esc back")
+                .wrap(Wrap { trim: false }),
+            sections[0],
+        );
+        let width = sections[1].width.saturating_sub(2);
+        let height = sections[1].height.saturating_sub(1);
+        let scroll = input.input_scroll(width, height);
+        frame.render_widget(
+            Paragraph::new(input_text(input, width, scroll)),
+            sections[1],
+        );
+        frame.set_cursor_position(input.cursor_position(
+            Position::new(
+                sections[1].x.saturating_add(2),
+                sections[1].y.saturating_add(1),
+            ),
+            width,
+            height,
+            scroll,
+        ));
+    } else if let Some(prompt) = &app.permission_prompt_view {
         let input = Paragraph::new(permission_prompt_text(prompt))
             .block(
                 Block::default()
@@ -159,6 +195,10 @@ fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'static> {
         "Y allow  N deny and continue  A always allow  Esc deny/clear",
         Style::default().fg(Color::Yellow),
     )]));
+    lines.push(Line::styled(
+        "S/G deny with guidance",
+        Style::default().fg(Color::Yellow),
+    ));
 
     Text::from(lines)
 }

@@ -46,10 +46,11 @@ fn bound_tool_result_for_history(result: String) -> String {
 const DEFAULT_EMPTY_RESPONSE_RETRIES: u32 = 1;
 
 /// Returned by the permission resolver callback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionResponse {
     Allow,
     Deny,
+    DenyWithGuidance(String),
     Always,
 }
 
@@ -197,7 +198,14 @@ async fn check_permission(
                     events,
                     tool_message: None,
                 },
-                PermissionResponse::Deny => {
+                PermissionResponse::Deny | PermissionResponse::DenyWithGuidance(_) => {
+                    let mut content = format!("Error: Permission denied — {reason}");
+                    if let PermissionResponse::DenyWithGuidance(guidance) = response {
+                        if !guidance.trim().is_empty() {
+                            content.push_str("\n\nUser guidance:\n");
+                            content.push_str(&guidance);
+                        }
+                    }
                     events.push(AgentEvent::PermissionDenied {
                         name: tool_name.clone(),
                         call: call.clone(),
@@ -207,7 +215,7 @@ async fn check_permission(
                         events,
                         tool_message: Some(ToolMessage {
                             tool_call_id: call.id.clone(),
-                            content: format!("Error: Permission denied — {reason}"),
+                            content,
                         }),
                     }
                 }

@@ -261,6 +261,29 @@ async fn runtime_clear_context_keeps_session_id_and_rebuilds_system_prompt() {
 
 #[tokio::test]
 async fn runtime_permission_resolver_denies_and_turn_continues() {
+    permission_denial_continues(RuntimePermissionResponse::Deny, None).await;
+}
+
+#[tokio::test]
+async fn runtime_permission_guidance_blocks_tool_and_continues() {
+    let guidance = "Do not edit files. Show me the patch instead.\nUse README.md.";
+    permission_denial_continues(
+        RuntimePermissionResponse::DenyWithGuidance(guidance.into()),
+        Some(guidance),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_blank_permission_guidance_is_plain_denial() {
+    permission_denial_continues(
+        RuntimePermissionResponse::DenyWithGuidance(" \n ".into()),
+        None,
+    )
+    .await;
+}
+
+async fn permission_denial_continues(response: RuntimePermissionResponse, guidance: Option<&str>) {
     let _sb = Sandbox::new("runtime-permission-deny");
     std::env::set_var("OPENROUTER_API_KEY", "test-key");
 
@@ -299,12 +322,13 @@ async fn runtime_permission_resolver_denies_and_turn_continues() {
             TurnOptions {
                 id: "turn-permission".to_string(),
                 cancel: CancellationToken::new(),
-                permission_resolver: Some(Arc::new(|request| {
+                permission_resolver: Some(Arc::new(move |request| {
+                    let response = response.clone();
                     Box::pin(async move {
                         assert_eq!(request.name, "write_file");
                         assert_eq!(request.call.id, "call_0");
                         assert!(request.reason.is_some());
-                        RuntimePermissionResponse::Deny
+                        response
                     })
                 })),
             },
@@ -314,6 +338,22 @@ async fn runtime_permission_resolver_denies_and_turn_continues() {
 
     assert_eq!(outcome.status, TurnStatus::Ok);
     assert_eq!(outcome.response.as_deref(), Some("I will not write it."));
+    assert!(!std::path::Path::new("foo.txt").exists());
+    let denied = runtime
+        .session()
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Message::Tool(tool) if tool.tool_call_id == "call_0" => Some(&tool.content),
+            _ => None,
+        })
+        .expect("denied tool result in conversation");
+    assert!(denied.starts_with("Error: Permission denied"));
+    if let Some(guidance) = guidance {
+        assert!(denied.ends_with(&format!("\n\nUser guidance:\n{guidance}")));
+    } else {
+        assert!(!denied.contains("User guidance:"));
+    }
     assert!(events.iter().any(
         |e| matches!(e, RuntimeEvent::PermissionRequested { name, .. } if name == "write_file")
     ));

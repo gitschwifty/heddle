@@ -302,6 +302,7 @@ struct TuiApp {
     active_cancel: Option<CancellationToken>,
     permission_prompt: Option<PermissionPrompt>,
     permission_prompt_view: Option<PermissionPromptView>,
+    permission_guidance: Option<InputBuffer>,
     copy_buffer: Option<String>,
     cwd: String,
 }
@@ -323,7 +324,48 @@ impl TuiApp {
         turn_counter: &mut u64,
     ) -> Result<bool> {
         if self.permission_prompt.is_some() {
+            if let Some(input) = &mut self.permission_guidance {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        if let Some(cancel) = &self.active_cancel {
+                            cancel.cancel();
+                        }
+                        self.answer_permission_prompt(RuntimePermissionResponse::Deny);
+                    }
+                    (KeyCode::Esc, _) => self.permission_guidance = None,
+                    (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::SHIFT) => {
+                        input.insert_newline();
+                    }
+                    (KeyCode::Enter, _) if input.consume_trailing_backslash() => {
+                        input.insert_newline();
+                    }
+                    (KeyCode::Enter, _) => {
+                        let guidance = input.text();
+                        let response = if guidance.trim().is_empty() {
+                            RuntimePermissionResponse::Deny
+                        } else {
+                            RuntimePermissionResponse::DenyWithGuidance(guidance)
+                        };
+                        self.answer_permission_prompt(response);
+                    }
+                    (KeyCode::Left, _) => input.move_left(),
+                    (KeyCode::Right, _) => input.move_right(),
+                    (KeyCode::Up, _) => input.move_up(),
+                    (KeyCode::Down, _) => input.move_down(),
+                    (KeyCode::Home, _) => input.move_line_start(),
+                    (KeyCode::End, _) => input.move_line_end(),
+                    (KeyCode::Backspace, _) => input.backspace(),
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        input.insert_char(c);
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
             match (key.code, key.modifiers) {
+                (KeyCode::Char('s' | 'S' | 'g' | 'G'), _) => {
+                    self.permission_guidance = Some(InputBuffer::default());
+                }
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                     if let Some(cancel) = &self.active_cancel {
                         cancel.cancel();
@@ -612,6 +654,7 @@ impl TuiApp {
         self.clear_pending_work();
         self.permission_prompt = None;
         self.permission_prompt_view = None;
+        self.permission_guidance = None;
         let status = outcome.status;
         self.last_turn_status = Some(status.clone());
         match &status {
@@ -865,6 +908,7 @@ impl TuiApp {
     }
 
     fn set_permission_prompt(&mut self, prompt: PermissionPrompt) {
+        self.permission_guidance = None;
         self.permission_prompt_view = Some(PermissionPromptView::from_request(&prompt.request));
         self.permission_prompt = Some(prompt);
         self.viewport.jump_to_bottom();
@@ -875,6 +919,7 @@ impl TuiApp {
             let _ = prompt.respond_to.send(response);
         }
         self.permission_prompt_view = None;
+        self.permission_guidance = None;
     }
 
     fn clear_pending_work(&mut self) {
@@ -1161,3 +1206,6 @@ fn format_duration(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod permission_tests;

@@ -163,10 +163,12 @@ pub struct RuntimePermissionRequest {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimePermissionResponse {
     Allow,
     Deny,
+    /// Block the tool and include this user correction in its result.
+    DenyWithGuidance(String),
     Always,
 }
 
@@ -712,6 +714,9 @@ fn agent_permission_resolver(resolver: RuntimePermissionResolver) -> PermissionR
             match resolver(RuntimePermissionRequest { name, call, reason }).await {
                 RuntimePermissionResponse::Allow => PermissionResponse::Allow,
                 RuntimePermissionResponse::Deny => PermissionResponse::Deny,
+                RuntimePermissionResponse::DenyWithGuidance(guidance) => {
+                    PermissionResponse::DenyWithGuidance(guidance)
+                }
                 RuntimePermissionResponse::Always => PermissionResponse::Always,
             }
         })
