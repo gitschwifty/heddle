@@ -262,7 +262,7 @@ impl PermissionChecker {
             && self
                 .approved_actions
                 .iter()
-                .any(|(tool, approved)| tool == tool_name && approved.as_ref() == args)
+                .any(|(tool, _)| tool == tool_name)
         {
             result.decision = Decision::Allow;
         }
@@ -273,22 +273,21 @@ impl PermissionChecker {
         if !self
             .approved_actions
             .iter()
-            .any(|(tool, approved)| tool == tool_name && approved.as_ref() == args)
+            .any(|(tool, _)| tool == tool_name)
         {
             self.approved_actions
                 .push((tool_name.to_owned(), args.cloned()));
         }
     }
 
-    pub fn has_action_approval(&self, tool_name: &str, args: Option<&Value>) -> bool {
+    pub fn has_action_approval(&self, tool_name: &str, _args: Option<&Value>) -> bool {
         self.approved_actions
             .iter()
-            .any(|(tool, approved)| tool == tool_name && approved.as_ref() == args)
+            .any(|(tool, _)| tool == tool_name)
     }
 
-    pub fn revoke_action_approval(&mut self, tool_name: &str, args: Option<&Value>) {
-        self.approved_actions
-            .retain(|(tool, approved)| tool != tool_name || approved.as_ref() != args);
+    pub fn revoke_action_approval(&mut self, tool_name: &str, _args: Option<&Value>) {
+        self.approved_actions.retain(|(tool, _)| tool != tool_name);
     }
 
     /// Stable rule reference without persisting patterns that may contain secrets.

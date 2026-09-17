@@ -432,5 +432,10 @@ async fn repeated_identical_send_persists_only_new_messages() {
         .filter(|line| line.contains(r#""type":"provider_usage""#))
         .count();
     assert_eq!(usage_markers, 2, "session jsonl:\n{raw}");
-    assert_eq!(raw.lines().count(), 9, "session jsonl:\n{raw}");
+    let capability_markers = raw
+        .lines()
+        .filter(|line| line.contains(r#""type":"capability_policy_resolved""#))
+        .count();
+    assert_eq!(capability_markers, 1, "session jsonl:\n{raw}");
+    assert_eq!(raw.lines().count(), 10, "session jsonl:\n{raw}");
 }

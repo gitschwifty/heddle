@@ -50,7 +50,7 @@ fn build_permission_resolver() -> PermissionResolver {
                     "  Action: {name} {}",
                     call.function.arguments.escape_debug()
                 );
-                print!("  Allow? [y once / n deny / a identical arguments this session] ");
+                print!("  Allow? [y once / n deny / a allow this tool for the session] ");
                 let _ = std::io::stdout().flush();
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf).is_err() {

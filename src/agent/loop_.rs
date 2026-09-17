@@ -158,7 +158,7 @@ async fn check_permission(
                 "category": crate::permissions::interactive::classify(&call.function.name, args.as_ref()),
                 "policy_decision": format!("{:?}", initial.decision).to_lowercase(),
                 "outcome": if outcome.tool_message.is_some() { "deny" } else { "allow" },
-                "scope": "exact_tool_arguments",
+                "scope": "tool_for_session",
                 "session_approval": guard.has_action_approval(&call.function.name, args.as_ref()),
                 "rule": guard.interactive_rule_id(&call.function.name, args.as_ref()),
             });

@@ -24,36 +24,6 @@ pub struct WebFetchOptions {
 const MAX_LENGTH: usize = 50_000;
 const RENDER_WIDTH: usize = 80;
 
-#[cfg(test)]
-mod capability_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn strict_denies_before_processing_arguments() {
-        let tool = create_web_fetch_tool_with_profile(
-            WebFetchOptions {
-                allow_private_addresses: true,
-            },
-            super::super::bash::SandboxProfile::Strict,
-        );
-        for args in [json!({}), json!({"url": "http://127.0.0.1/"})] {
-            assert_eq!(
-                tool.execute(args, ExecOptions::default()).await,
-                "Error: network capability denied (strict profile; web_fetch)"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn developer_still_validates_urls_without_a_request() {
-        let tool = create_web_fetch_tool_with_options(WebFetchOptions::default());
-        assert_eq!(
-            tool.execute(json!({}), ExecOptions::default()).await,
-            "Error: missing url"
-        );
-    }
-}
-
 pub fn create_web_fetch_tool() -> Arc<dyn HeddleTool> {
     Arc::new(WebFetchTool {
         options: WebFetchOptions {
@@ -216,5 +186,35 @@ impl HeddleTool for WebFetchTool {
             text
         };
         rendered
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn strict_denies_before_processing_arguments() {
+        let tool = create_web_fetch_tool_with_profile(
+            WebFetchOptions {
+                allow_private_addresses: true,
+            },
+            super::super::bash::SandboxProfile::Strict,
+        );
+        for args in [json!({}), json!({"url": "http://127.0.0.1/"})] {
+            assert_eq!(
+                tool.execute(args, ExecOptions::default()).await,
+                "Error: network capability denied (strict profile; web_fetch)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn developer_still_validates_urls_without_a_request() {
+        let tool = create_web_fetch_tool_with_options(WebFetchOptions::default());
+        assert_eq!(
+            tool.execute(json!({}), ExecOptions::default()).await,
+            "Error: missing url"
+        );
     }
 }

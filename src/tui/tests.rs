@@ -1848,8 +1848,8 @@ fn permission_prompt_renders_tool_details_and_choices() {
     assert!(screen.contains("call_7"));
     assert!(screen.contains("write_file requires approval"));
     assert!(screen.contains("Y allow"));
-    assert!(screen.contains("N deny and continue"));
-    assert!(screen.contains("A always allow"));
+    assert!(screen.contains("N deny"));
+    assert!(screen.contains("A allow"));
 }
 
 #[test]

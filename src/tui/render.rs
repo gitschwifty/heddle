@@ -192,7 +192,7 @@ fn permission_prompt_text(prompt: &PermissionPromptView) -> Text<'static> {
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![Span::styled(
-        "Y allow once  N deny  A allow identical arguments this session  Esc deny/clear",
+        "Y allow once  N deny  A allow this tool for the session  Esc deny/clear",
         Style::default().fg(Color::Yellow),
     )]));
     lines.push(Line::styled(

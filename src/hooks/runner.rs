@@ -234,7 +234,9 @@ fn hook_command(ctx: &HookContext) -> Command {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &ctx.project)
         .env("LANG", "C")
-        .current_dir(&ctx.project)
         .kill_on_drop(true);
+    if std::path::Path::new(&ctx.project).is_dir() {
+        cmd.current_dir(&ctx.project);
+    }
     cmd
 }
