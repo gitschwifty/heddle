@@ -44,10 +44,10 @@ use crate::tools::types::HeddleTool;
 use crate::tools::{create_create_task_tool, create_list_tasks_tool, create_update_task_tool};
 use crate::tools::{
     create_save_memory_tool, create_save_plan_tool, create_subagent_tool,
-    create_web_fetch_tool_with_options, create_workspace_bash_tool_with_profile,
-    create_workspace_edit_tool, create_workspace_glob_tool, create_workspace_grep_tool,
-    create_workspace_read_tool, create_workspace_write_tool, workspace_bash_capability_context,
-    SandboxProfile, SharedWorkspaceBoundary, SubagentOptions, WebFetchOptions, WorkspaceBoundary,
+    create_workspace_bash_tool_with_profile, create_workspace_edit_tool,
+    create_workspace_glob_tool, create_workspace_grep_tool, create_workspace_read_tool,
+    create_workspace_write_tool, workspace_bash_capability_context, SandboxProfile,
+    SharedWorkspaceBoundary, SubagentOptions, WebFetchOptions, WorkspaceBoundary,
 };
 use crate::types::{Message, SystemMessage};
 use crate::usage::collector::MetricsCollector;
@@ -163,9 +163,12 @@ fn default_tools(
                 .collect(),
             sandbox_profile,
         ),
-        create_web_fetch_tool_with_options(WebFetchOptions {
-            allow_private_addresses: config.web_fetch_allow_private_addresses,
-        }),
+        crate::tools::web_fetch::create_web_fetch_tool_with_profile(
+            WebFetchOptions {
+                allow_private_addresses: config.web_fetch_allow_private_addresses,
+            },
+            sandbox_profile,
+        ),
     ]
 }
 
@@ -311,7 +314,14 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     }
     let workspace = Arc::new(RwLock::new(workspace));
     let mode = options.mode.unwrap_or(Mode::Interactive);
-    let sandbox_profile = config.sandbox_profile;
+    // Isolated placement is a capability ceiling, including when ambient config
+    // was explicitly inherited. Tool allow rules cannot reopen its network.
+    let sandbox_profile = if isolated {
+        SandboxProfile::Strict
+    } else {
+        config.sandbox_profile
+    };
+    config.sandbox_profile = sandbox_profile;
     let mut features = get_features(mode, config.features.as_ref());
     if isolated {
         // These components still use global path helpers. Do not let an isolated
@@ -464,6 +474,17 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     )?;
 
     let cost_tracker = Arc::new(Mutex::new(CostTracker::new()));
+    append_context_marker(
+        &session_file,
+        &serde_json::json!({
+            "type": "capability_policy_resolved",
+            "sandbox_profile": sandbox_profile.as_str(),
+            "agent_network": if sandbox_profile == SandboxProfile::Strict { "deny" } else { "allow" },
+            "provider_network": "separate",
+            "hooks_enabled": features.hooks,
+            "hook_environment": "minimal",
+        }),
+    )?;
     let model_pricing = ModelPricing::new(
         config.api_key.clone().unwrap_or_default(),
         config.base_url.as_deref(),

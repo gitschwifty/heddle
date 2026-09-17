@@ -13,6 +13,7 @@ use super::types::{ExecOptions, HeddleTool};
 
 pub struct WebFetchTool {
     options: WebFetchOptions,
+    network_allowed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -23,16 +24,58 @@ pub struct WebFetchOptions {
 const MAX_LENGTH: usize = 50_000;
 const RENDER_WIDTH: usize = 80;
 
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn strict_denies_before_processing_arguments() {
+        let tool = create_web_fetch_tool_with_profile(
+            WebFetchOptions {
+                allow_private_addresses: true,
+            },
+            super::super::bash::SandboxProfile::Strict,
+        );
+        for args in [json!({}), json!({"url": "http://127.0.0.1/"})] {
+            assert_eq!(
+                tool.execute(args, ExecOptions::default()).await,
+                "Error: network capability denied (strict profile; web_fetch)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn developer_still_validates_urls_without_a_request() {
+        let tool = create_web_fetch_tool_with_options(WebFetchOptions::default());
+        assert_eq!(
+            tool.execute(json!({}), ExecOptions::default()).await,
+            "Error: missing url"
+        );
+    }
+}
+
 pub fn create_web_fetch_tool() -> Arc<dyn HeddleTool> {
     Arc::new(WebFetchTool {
         options: WebFetchOptions {
             allow_private_addresses: allow_private_addresses_from_env(),
         },
+        network_allowed: true,
     })
 }
 
 pub fn create_web_fetch_tool_with_options(options: WebFetchOptions) -> Arc<dyn HeddleTool> {
-    Arc::new(WebFetchTool { options })
+    create_web_fetch_tool_with_profile(options, super::bash::SandboxProfile::Developer)
+}
+
+/// Enforce the session's network boundary even when permission checks are bypassed.
+pub fn create_web_fetch_tool_with_profile(
+    options: WebFetchOptions,
+    profile: super::bash::SandboxProfile,
+) -> Arc<dyn HeddleTool> {
+    Arc::new(WebFetchTool {
+        options,
+        network_allowed: profile == super::bash::SandboxProfile::Developer,
+    })
 }
 
 fn allow_private_addresses_from_env() -> bool {
@@ -73,7 +116,11 @@ impl HeddleTool for WebFetchTool {
         "web_fetch"
     }
     fn description(&self) -> &str {
-        "Fetch the contents of a URL. HTML pages are converted to readable text."
+        if self.network_allowed {
+            "Fetch the contents of a URL. HTML pages are converted to readable text."
+        } else {
+            "Web fetching is denied by the strict network capability policy."
+        }
     }
     fn parameters(&self) -> Value {
         json!({
@@ -86,6 +133,10 @@ impl HeddleTool for WebFetchTool {
     }
 
     async fn execute(&self, params: Value, _options: ExecOptions) -> String {
+        // Deny before URL processing, client construction, DNS, or proxy discovery.
+        if !self.network_allowed {
+            return "Error: network capability denied (strict profile; web_fetch)".to_string();
+        }
         let raw_url = match params.get("url").and_then(Value::as_str) {
             Some(u) => u,
             None => return "Error: missing url".to_string(),
@@ -105,10 +156,14 @@ impl HeddleTool for WebFetchTool {
         }
 
         let client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .build();
+        let client = match client {
+            Ok(client) => client,
+            Err(_) => return "Error: could not construct web_fetch client".to_string(),
+        };
         let response = match client.get(url).send().await {
             Ok(r) => r,
             Err(e) if e.is_timeout() => return "Error: Request timed out after 10s".to_string(),

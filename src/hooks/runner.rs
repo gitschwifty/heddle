@@ -128,7 +128,7 @@ async fn execute_sync(hook: &ResolvedHookDefinition, ctx: &HookContext) -> HookR
     let env = build_env(ctx);
     let stdin_data = build_stdin(ctx);
 
-    let mut cmd = Command::new("sh");
+    let mut cmd = hook_command(ctx);
     cmd.args(["-c", &hook.command])
         .envs(env.iter())
         .stdin(Stdio::piped())
@@ -200,7 +200,7 @@ async fn execute_async(hook: &ResolvedHookDefinition, ctx: &HookContext) {
     let env = build_env(ctx);
     let stdin_data = build_stdin(ctx);
 
-    let mut cmd = Command::new("sh");
+    let mut cmd = hook_command(ctx);
     cmd.args(["-c", &hook.command])
         .envs(env.iter())
         .stdin(Stdio::piped())
@@ -224,4 +224,17 @@ async fn execute_async(hook: &ResolvedHookDefinition, ctx: &HookContext) {
 
     let timeout_dur = Duration::from_millis(hook.timeout);
     let _ = timeout(timeout_dur, child.wait_with_output()).await;
+}
+
+/// Hooks receive only runtime metadata plus a constructed execution environment.
+/// This is environment isolation, not filesystem or network confinement.
+fn hook_command(ctx: &HookContext) -> Command {
+    let mut cmd = Command::new("/bin/sh");
+    cmd.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &ctx.project)
+        .env("LANG", "C")
+        .current_dir(&ctx.project)
+        .kill_on_drop(true);
+    cmd
 }
