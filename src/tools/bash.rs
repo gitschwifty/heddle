@@ -217,15 +217,20 @@ impl HeddleTool for WorkspaceBashTool {
         {
             return "Error: Aborted".to_string();
         }
-        let (roots, runtime_root) = {
+        let (roots, runtime_root, isolated_runtime) = {
             let boundary = self.boundary.read();
             let roots: Vec<std::path::PathBuf> =
                 boundary.roots().map(std::path::Path::to_path_buf).collect();
-            (roots, boundary.runtime_root().to_path_buf())
+            (
+                roots,
+                boundary.runtime_root().to_path_buf(),
+                boundary.isolated_runtime(),
+            )
         };
         let mut cmd = match confined_bash_command(
             &roots,
             &runtime_root,
+            isolated_runtime,
             &self.additional_deny_paths,
             self.profile,
             command,
@@ -330,6 +335,8 @@ struct CuratedRuntime {
 
 #[cfg(target_os = "macos")]
 fn curated_runtimes() -> Result<Vec<CuratedRuntime>, String> {
+    use std::os::unix::fs::PermissionsExt;
+
     const COMMANDS: [&str; 5] = ["node", "npx", "tsc", "bun", "go"];
     let mut candidates = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
@@ -342,28 +349,28 @@ fn curated_runtimes() -> Result<Vec<CuratedRuntime>, String> {
     for command in COMMANDS {
         let Some(executable) = candidates
             .iter()
+            .filter(|directory| directory.is_absolute())
             .map(|directory| directory.join(command))
-            .find(|candidate| candidate.is_file())
+            .find(|candidate| {
+                candidate.metadata().is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            })
         else {
             continue;
         };
         let Ok(canonical) = executable.canonicalize() else {
             continue;
         };
-        let Some(root) = canonical
-            .parent()
-            .and_then(std::path::Path::parent)
-            .and_then(std::path::Path::parent)
-        else {
+        let Some(bin_dir) = canonical.parent() else {
+            continue;
+        };
+        let Some(root) = curated_runtime_root(&canonical) else {
             continue;
         };
         let runtime = CuratedRuntime {
-            bin_dir: sandbox_string(
-                executable
-                    .parent()
-                    .ok_or_else(|| "Error: runtime command has no bin directory".to_string())?,
-            )?,
-            root: sandbox_string(root)?,
+            bin_dir: sandbox_string(bin_dir)?,
+            root: sandbox_string(&root)?,
         };
         if !runtimes.iter().any(|existing: &CuratedRuntime| {
             existing.bin_dir == runtime.bin_dir && existing.root == runtime.root
@@ -372,6 +379,56 @@ fn curated_runtimes() -> Result<Vec<CuratedRuntime>, String> {
         }
     }
     Ok(runtimes)
+}
+
+/// Select installation roots by their layout, never by a fixed ancestor count.
+#[cfg(target_os = "macos")]
+fn curated_runtime_root(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+
+    for cellar in ["/opt/homebrew/Cellar", "/usr/local/Cellar"] {
+        if let Ok(relative) = executable.strip_prefix(cellar) {
+            let mut components = relative.components();
+            let package = components.next()?;
+            let version = components.next()?;
+            let root = Path::new(cellar).join(package).join(version);
+            return root.is_dir().then_some(root);
+        }
+    }
+    let parent = executable.parent()?;
+    // npm's executable symlinks resolve into the package itself.
+    for ancestor in parent.ancestors() {
+        if ancestor.parent().and_then(Path::file_name) == Some("node_modules".as_ref()) {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    let root = if parent.file_name() == Some("bin".as_ref()) {
+        parent.parent()?
+    } else {
+        parent
+    };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .and_then(|home| home.canonicalize().ok());
+    if [
+        "/",
+        "/usr",
+        "/usr/local",
+        "/opt",
+        "/opt/homebrew",
+        "/Users",
+        "/bin",
+        "/usr/bin",
+    ]
+    .iter()
+    .any(|broad| root == Path::new(broad))
+        || home.as_ref().is_some_and(|home| home.starts_with(root))
+    {
+        // System/local bin directories need no grant for their entire prefix.
+        return matches!(parent.to_str(), Some("/usr/bin" | "/usr/local/bin"))
+            .then(|| parent.to_path_buf());
+    }
+    Some(root.to_path_buf())
 }
 
 #[cfg(target_os = "macos")]
@@ -671,6 +728,7 @@ mod tests {
 fn confined_bash_command(
     _roots: &[std::path::PathBuf],
     _runtime_root: &std::path::Path,
+    _isolated_runtime: bool,
     _additional_deny_paths: &[std::path::PathBuf],
     _profile: SandboxProfile,
     _command: &str,

@@ -12,6 +12,7 @@ use super::{
 pub(super) fn confined_bash_command(
     roots: &[PathBuf],
     runtime_root: &Path,
+    isolated_runtime: bool,
     additional_deny_paths: &[PathBuf],
     profile: SandboxProfile,
     command: &str,
@@ -34,8 +35,6 @@ pub(super) fn confined_bash_command(
     let cargo_target_dir = Path::new(&runtime_root).join("cargo-target");
     std::fs::create_dir_all(&runtime_tmp)
         .map_err(|error| format!("Error: could not create runtime temp directory: {error}"))?;
-    std::fs::create_dir_all(&cargo_target_dir)
-        .map_err(|error| format!("Error: could not create Cargo target directory: {error}"))?;
     let toolchain = rust_toolchain_runtime()?;
     let runtimes = curated_runtimes()?;
     let profile_text = sandbox_profile(
@@ -49,9 +48,7 @@ pub(super) fn confined_bash_command(
     );
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.args(["-p", &profile_text, "/bin/bash", "-c", command])
-        .current_dir(&root)
-        .env("TMPDIR", runtime_tmp)
-        .env("CARGO_TARGET_DIR", cargo_target_dir);
+        .current_dir(&root);
     match profile {
         SandboxProfile::Strict => {
             cmd.env_clear()
@@ -70,9 +67,35 @@ pub(super) fn confined_bash_command(
             scrub_sensitive_environment(&mut cmd);
         }
     }
+    // Apply runtime overrides after env_clear: strict children need these too.
+    cmd.env("TMPDIR", &runtime_tmp);
+    if isolated_runtime {
+        cmd.env("CARGO_TARGET_DIR", cargo_target_dir);
+    } else {
+        // Let Cargo use the repository's normal target directory.
+        cmd.env_remove("CARGO_TARGET_DIR");
+    }
     if let Some(toolchain) = toolchain {
         cmd.env("PATH", runtime_path(&runtimes, Some(&toolchain.cargo_bin)));
-        cmd.env("CARGO_HOME", Path::new(&runtime_root).join("cargo-home"));
+        // Cargo's package-cache locks are mutable, but installed registry/git
+        // inputs remain read-only. Never point CARGO_HOME at the host directory.
+        let cargo_home = Path::new(&runtime_root).join("cargo-home");
+        std::fs::create_dir_all(&cargo_home)
+            .map_err(|error| format!("Error: could not create Cargo home: {error}"))?;
+        for entry in ["registry", "git", "config.toml"] {
+            let source = Path::new(&toolchain.cargo_home).join(entry);
+            let destination = cargo_home.join(entry);
+            if source.exists() && std::fs::symlink_metadata(&destination).is_err() {
+                match std::os::unix::fs::symlink(&source, &destination) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(format!("Error: could not link Cargo inputs: {error}"))
+                    }
+                }
+            }
+        }
+        cmd.env("CARGO_HOME", cargo_home);
         cmd.env("RUSTUP_HOME", toolchain.rustup_home)
             .env("RUSTUP_TOOLCHAIN", toolchain.name);
     } else {
@@ -83,6 +106,7 @@ pub(super) fn confined_bash_command(
         std::env::var_os("GOTELEMETRY").unwrap_or_else(|| "off".into()),
     )
     .env("GOCACHE", Path::new(&runtime_root).join("go-cache"))
-    .env("GOMODCACHE", Path::new(&runtime_root).join("go-mod-cache"));
+    .env("GOMODCACHE", Path::new(&runtime_root).join("go-mod-cache"))
+    .env("GOTMPDIR", runtime_tmp);
     Ok(cmd)
 }

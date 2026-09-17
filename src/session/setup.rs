@@ -256,6 +256,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
 
     let mut workspace = WorkspaceBoundary::new(std::env::current_dir()?)
         .map_err(|error| anyhow!(error.to_string()))?;
+    workspace.set_isolated_runtime(isolated);
 
     let mut config = if let Some(path) = placement.as_ref().and_then(|p| p.config_path.as_ref()) {
         load_config_from_file(path)

@@ -59,6 +59,7 @@ pub struct WorkspaceBoundary {
     root: PathBuf,
     additional_roots: Vec<WorkspaceRoot>,
     runtime_root: Arc<tempfile::TempDir>,
+    isolated_runtime: bool,
 }
 
 pub type SharedWorkspaceBoundary = Arc<RwLock<WorkspaceBoundary>>;
@@ -77,6 +78,7 @@ impl WorkspaceBoundary {
             root,
             additional_roots: Vec::new(),
             runtime_root: Arc::new(runtime_root),
+            isolated_runtime: false,
         })
     }
 
@@ -102,6 +104,15 @@ impl WorkspaceBoundary {
     /// filesystem-facing agent tools.
     pub(crate) fn runtime_root(&self) -> &Path {
         self.runtime_root.path()
+    }
+
+    /// Route build outputs outside the source tree for an isolated eval case.
+    pub fn set_isolated_runtime(&mut self, isolated: bool) {
+        self.isolated_runtime = isolated;
+    }
+
+    pub(crate) fn isolated_runtime(&self) -> bool {
+        self.isolated_runtime
     }
 
     pub fn add_project_root(&mut self, raw: impl AsRef<Path>) -> Result<PathBuf, WorkspaceError> {
@@ -176,6 +187,11 @@ impl WorkspaceBoundary {
             self.root.join(raw)
         };
         let resolved = canonicalize_with_missing_suffix(&candidate)?;
+        let runtime =
+            std::fs::canonicalize(self.runtime_root()).map_err(|_| WorkspaceError::Unresolvable)?;
+        if resolved.starts_with(runtime) {
+            return Err(WorkspaceError::OutsideRoot);
+        }
         if self.roots().any(|root| resolved.starts_with(root)) {
             Ok(resolved)
         } else {
@@ -251,5 +267,24 @@ mod tests {
                 .unwrap(),
             Some(std::fs::canonicalize(session_root.path()).unwrap())
         );
+    }
+
+    #[test]
+    fn runtime_remains_private_even_when_an_additional_root_contains_it() {
+        let primary = tempdir().unwrap();
+        let mut boundary = WorkspaceBoundary::new(primary.path()).unwrap();
+        let runtime = boundary.runtime_root().to_path_buf();
+        boundary
+            .add_interactive_root(runtime.parent().unwrap())
+            .unwrap();
+        assert!(matches!(
+            boundary.resolve(&runtime),
+            Err(WorkspaceError::OutsideRoot)
+        ));
+        let clone = boundary.clone();
+        drop(boundary);
+        assert!(runtime.exists());
+        drop(clone);
+        assert!(!runtime.exists());
     }
 }

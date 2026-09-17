@@ -96,19 +96,23 @@ environment while separately scrubbing credentials and redirecting its temp
 directory. Hermes-style agents choose an explicit execution backend (local,
 container, remote, or cloud sandbox), which owns its runtime environment.
 
-Heddle deliberately takes the stricter of those approaches for local sessions:
-it constructs a small environment rather than inheriting the terminal's entire
-`PATH`. `HOME` points into the workspace, while `TMPDIR` and Cargo build output
-point into a separate Heddle-owned runtime root. That root is writable only to
-the confined Bash child, is unavailable to workspace file tools, and is removed
-when its session or eval case ends. Cargo is made available via `~/.cargo/bin`,
-with read-only access to its registry cache, Rustup settings, and selected
-toolchain. `GOTELEMETRY` is the sole general runtime variable forwarded from
-the Heddle process; it defaults to `off` to prevent Go telemetry state from
-appearing under the workspace, while an explicit startup value wins. This keeps
-transient files such as build artifacts and Xcode's `xcrun_db` out of source
-diffs, while also keeping a host's unrelated PATH entries and credential-bearing
-home directories out of the bash tool.
+The strict profile constructs a small environment with workspace `HOME`.
+Both profiles construct `PATH` from resolved Cargo and the curated commands
+`node`, `npx`, `tsc`, `bun`, and `go`, followed by system commands. Discovery
+ignores relative host PATH entries and uses canonical installation roots;
+it does not grant a fixed number of parent directories around an executable.
+The developer profile retains its existing scrubbed developer environment.
+
+`TMPDIR` and Go cache/temp directories point into a Heddle-owned runtime root.
+Sessions with isolated runtime placement also set `CARGO_TARGET_DIR` there;
+ordinary sessions retain Cargo's repository output location. Workspace file
+tools reject the runtime root even if an additional workspace root contains it.
+The root is removed when the last owning boundary/tool is dropped. Cargo uses
+the resolved Rustup toolchain and a runtime-local Cargo home with writable
+package locks and read-only links to installed registry/git inputs and config.
+Downloading or changing those host caches remains unsupported. SDK discovery
+runs inside the confined child, keeping Xcode temporary state out of source
+diffs. `GOTELEMETRY` defaults to `off`, with an explicit startup value preserved.
 
 As more runtimes are added, model them as runtime descriptors: a constructed
 environment plus the executable, library, read-only state, and workspace-local

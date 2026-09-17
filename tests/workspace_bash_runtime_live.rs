@@ -4,7 +4,10 @@
 mod macos {
     use std::sync::Arc;
 
-    use heddle::tools::{create_workspace_bash_tool, ExecOptions, WorkspaceBoundary};
+    use heddle::tools::{
+        create_workspace_bash_tool, create_workspace_bash_tool_with_profile,
+        create_workspace_read_tool, ExecOptions, SandboxProfile, WorkspaceBoundary,
+    };
     use serde_json::json;
 
     fn fixture() -> tempfile::TempDir {
@@ -57,6 +60,53 @@ mod macos {
         };
 
         assert_eq!(result, "sandbox-echo\n sandbox-printf");
+    }
+
+    #[tokio::test]
+    async fn isolated_strict_runtime_is_private_and_removed_with_its_boundary() {
+        let workspace = fixture();
+        let mut boundary = WorkspaceBoundary::new(workspace.path()).unwrap();
+        boundary.set_isolated_runtime(true);
+        let boundary = Arc::new(parking_lot::RwLock::new(boundary));
+        let bash = create_workspace_bash_tool_with_profile(
+            boundary.clone(),
+            Vec::new(),
+            SandboxProfile::Strict,
+        );
+        let result = bash
+            .execute(
+                json!({"command": "printf '%s' \"$TMPDIR\""}),
+                ExecOptions::default(),
+            )
+            .await;
+        if result.contains("sandbox-exec: sandbox_apply: Operation not permitted") {
+            return;
+        }
+        let temp = std::path::PathBuf::from(&result);
+        assert!(temp.is_dir(), "{result}");
+        assert!(!temp.starts_with(workspace.path()));
+        let sentinel = temp.join("private-runtime.txt");
+        std::fs::write(&sentinel, "runtime-private").unwrap();
+        let read = create_workspace_read_tool(boundary.clone());
+        let denied = read
+            .execute(json!({"path": sentinel}), ExecOptions::default())
+            .await;
+        assert!(denied.contains("workspace boundary denied"), "{denied}");
+        let build = bash.execute(
+            json!({"command": "xcrun --sdk macosx --show-sdk-path >/dev/null && cargo build --offline"}),
+            ExecOptions::default(),
+        ).await;
+        if !build.contains("have not agreed to the Xcode license agreements") {
+            assert!(!build.starts_with("Error:"), "{build}");
+            assert!(!build.contains("Exit code:"), "{build}");
+            assert!(temp.parent().unwrap().join("cargo-target").is_dir());
+        }
+        assert!(!workspace.path().join("target").exists());
+        assert!(!workspace.path().join("xcrun_db").exists());
+        drop(read);
+        drop(bash);
+        drop(boundary);
+        assert!(!temp.parent().unwrap().exists());
     }
 
     #[tokio::test]
@@ -133,5 +183,6 @@ mod macos {
             !workspace.path().join("xcrun_db").exists(),
             "xcrun cache escaped runtime output root"
         );
+        assert!(workspace.path().join("target").is_dir(), "{result}");
     }
 }
