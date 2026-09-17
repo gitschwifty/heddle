@@ -107,6 +107,8 @@ pub struct PermissionChecker {
     always_allowed: HashSet<String>,
     merged_rules: Option<PermissionConfig>,
     project_dir: Option<PathBuf>,
+    approved_actions: Vec<(String, Option<Value>)>,
+    pub interactive_session_file: Option<PathBuf>,
 }
 
 impl PermissionChecker {
@@ -127,6 +129,8 @@ impl PermissionChecker {
             always_allowed: HashSet::new(),
             merged_rules,
             project_dir,
+            approved_actions: Vec::new(),
+            interactive_session_file: None,
         }
     }
 
@@ -227,6 +231,106 @@ impl PermissionChecker {
 
     pub fn allow_always(&mut self, tool_name: &str) {
         self.always_allowed.insert(tool_name.to_string());
+    }
+
+    /// Interactive decisions preserve deny rules and add a floor above allows.
+    /// Only explicit yolo configuration disables the built-in floor.
+    pub fn check_interactive(&self, tool_name: &str, args: Option<&Value>) -> PermissionDecision {
+        if self.mode == ApprovalMode::Plan
+            && !matches!(
+                TOOL_CATEGORIES.get(tool_name),
+                Some(ToolCategory::Read | ToolCategory::Network)
+            )
+        {
+            return PermissionDecision {
+                decision: Decision::Deny,
+                reason: Some("Plan mode denies mutation and execution".into()),
+            };
+        }
+        let mut result = self.check(tool_name, args);
+        if result.decision == Decision::Deny || self.mode == ApprovalMode::Yolo {
+            return result;
+        }
+        let category = super::interactive::classify(tool_name, args);
+        if super::interactive::requires_approval(category) {
+            result = PermissionDecision {
+                decision: Decision::Ask,
+                reason: Some(format!("Built-in {category:?} policy: scope is the exact tool arguments; shell affected paths may be unknown")),
+            };
+        }
+        if result.decision == Decision::Ask
+            && self
+                .approved_actions
+                .iter()
+                .any(|(tool, approved)| tool == tool_name && approved.as_ref() == args)
+        {
+            result.decision = Decision::Allow;
+        }
+        result
+    }
+
+    pub fn approve_action(&mut self, tool_name: &str, args: Option<&Value>) {
+        if !self
+            .approved_actions
+            .iter()
+            .any(|(tool, approved)| tool == tool_name && approved.as_ref() == args)
+        {
+            self.approved_actions
+                .push((tool_name.to_owned(), args.cloned()));
+        }
+    }
+
+    pub fn has_action_approval(&self, tool_name: &str, args: Option<&Value>) -> bool {
+        self.approved_actions
+            .iter()
+            .any(|(tool, approved)| tool == tool_name && approved.as_ref() == args)
+    }
+
+    pub fn revoke_action_approval(&mut self, tool_name: &str, args: Option<&Value>) {
+        self.approved_actions
+            .retain(|(tool, approved)| tool != tool_name || approved.as_ref() != args);
+    }
+
+    /// Stable rule reference without persisting patterns that may contain secrets.
+    pub fn interactive_rule_id(&self, tool_name: &str, args: Option<&Value>) -> String {
+        if self.mode == ApprovalMode::Plan
+            && !matches!(
+                TOOL_CATEGORIES.get(tool_name),
+                Some(ToolCategory::Read | ToolCategory::Network)
+            )
+        {
+            return "mode:plan".into();
+        }
+        if self.mode == ApprovalMode::Yolo {
+            return "mode:yolo".into();
+        }
+        if let Some(rules) = &self.merged_rules {
+            if let Some(index) = rules
+                .deny
+                .iter()
+                .position(|rule| super::rules::match_rule(rule, tool_name, args))
+            {
+                return format!("configured:deny:{index}");
+            }
+        }
+        if self.check(tool_name, args).decision == Decision::Deny {
+            return format!("mode:{}", self.mode.as_str());
+        }
+        let category = super::interactive::classify(tool_name, args);
+        if super::interactive::requires_approval(category) {
+            return format!("builtin:{category:?}");
+        }
+        if let Some(rules) = &self.merged_rules {
+            for (kind, entries) in [("ask", &rules.ask), ("allow", &rules.allow)] {
+                if let Some(index) = entries
+                    .iter()
+                    .position(|rule| super::rules::match_rule(rule, tool_name, args))
+                {
+                    return format!("configured:{kind}:{index}");
+                }
+            }
+        }
+        format!("mode:{}", self.mode.as_str())
     }
 
     fn should_downgrade(&self, tool_name: &str, args: Option<&Value>) -> bool {

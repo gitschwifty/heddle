@@ -162,7 +162,11 @@ pub fn match_rule(rule: &PermissionRule, tool_name: &str, args: Option<&Value>) 
     };
 
     if PATH_TOOLS.contains(&tool_name) {
-        if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+        if let Some(path) = args
+            .get("file_path")
+            .or_else(|| args.get("path"))
+            .and_then(|v| v.as_str())
+        {
             return glob_match(pattern, path) || glob_match(pattern, basename(path));
         }
     }

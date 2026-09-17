@@ -354,6 +354,23 @@ impl HeddleRuntime {
         let mut routed_models_by_assistant: Vec<Option<String>> = Vec::new();
         let mut failure_evidence = RuntimeFailureEvidence::default();
 
+        // Interactive frontends share the agent-loop policy gate. Headless turns
+        // retain their existing fixed permissions even on the same runtime.
+        if options.permission_resolver.is_some() && self.session.permission_checker.is_none() {
+            self.session.permission_checker = Some(Arc::new(parking_lot::Mutex::new(
+                crate::permissions::PermissionChecker::new(
+                    crate::config::loader::ApprovalMode::AutoEdit,
+                    self.session.config.permissions_layers.as_deref(),
+                    std::env::current_dir().ok(),
+                ),
+            )));
+        }
+        if let Some(checker) = &self.session.permission_checker {
+            checker.lock().interactive_session_file = options
+                .permission_resolver
+                .as_ref()
+                .map(|_| self.session.session_file.clone());
+        }
         let loop_opts = AgentLoopOptions {
             permission_checker: self.session.permission_checker.clone(),
             permission_resolver: options

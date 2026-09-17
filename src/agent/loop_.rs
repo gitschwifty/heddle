@@ -137,9 +137,61 @@ async fn check_permission(
     resolver: &Option<PermissionResolver>,
     call: &ToolCall,
 ) -> PermissionOutcome {
+    let args = serde_json::from_str::<Value>(&call.function.arguments).ok();
+    let interactive = resolver.is_some();
+    let initial = if interactive {
+        checker
+            .lock()
+            .check_interactive(&call.function.name, args.as_ref())
+    } else {
+        checker.lock().check(&call.function.name, args.as_ref())
+    };
+    let mut outcome = resolve_permission(checker, resolver, call).await;
+    if interactive {
+        let mut guard = checker.lock();
+        if let Some(path) = guard.interactive_session_file.clone() {
+            let marker = serde_json::json!({
+                "type": "interactive_policy_decision",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "call_id": call.id,
+                "category": crate::permissions::interactive::classify(&call.function.name, args.as_ref()),
+                "policy_decision": format!("{:?}", initial.decision).to_lowercase(),
+                "outcome": if outcome.tool_message.is_some() { "deny" } else { "allow" },
+                "scope": "exact_tool_arguments",
+                "session_approval": guard.has_action_approval(&call.function.name, args.as_ref()),
+                "rule": guard.interactive_rule_id(&call.function.name, args.as_ref()),
+            });
+            // An approved action must not start if its audit record cannot be saved.
+            if crate::session::jsonl::append_context_marker(&path, &marker).is_err() {
+                guard.revoke_action_approval(&call.function.name, args.as_ref());
+                let reason = "Could not persist interactive policy decision".to_string();
+                outcome.events.push(AgentEvent::PermissionDenied {
+                    name: call.function.name.clone(),
+                    call: call.clone(),
+                    reason: reason.clone(),
+                });
+                outcome.tool_message = Some(ToolMessage {
+                    tool_call_id: call.id.clone(),
+                    content: format!("Error: {reason}"),
+                });
+            }
+        }
+    }
+    outcome
+}
+
+async fn resolve_permission(
+    checker: &Arc<Mutex<PermissionChecker>>,
+    resolver: &Option<PermissionResolver>,
+    call: &ToolCall,
+) -> PermissionOutcome {
     let tool_name = call.function.name.clone();
     let args: Option<Value> = serde_json::from_str(&call.function.arguments).ok();
-    let result = checker.lock().check(&tool_name, args.as_ref());
+    let result = if resolver.is_some() {
+        checker.lock().check_interactive(&tool_name, args.as_ref())
+    } else {
+        checker.lock().check(&tool_name, args.as_ref())
+    };
 
     match result.decision {
         Decision::Allow => PermissionOutcome {
@@ -188,7 +240,7 @@ async fn check_permission(
             let response = resolver(tool_name.clone(), call.clone(), Some(reason.clone())).await;
             match response {
                 PermissionResponse::Always => {
-                    checker.lock().allow_always(&tool_name);
+                    checker.lock().approve_action(&tool_name, args.as_ref());
                     PermissionOutcome {
                         events,
                         tool_message: None,

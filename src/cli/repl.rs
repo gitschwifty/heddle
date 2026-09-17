@@ -42,10 +42,15 @@ use crate::usage::writer::{write_usage_record, UsageRecord};
 
 fn build_permission_resolver() -> PermissionResolver {
     Arc::new(
-        move |name: String, _call: ToolCall, _reason: Option<String>| {
+        move |name: String, call: ToolCall, reason: Option<String>| {
             Box::pin(async move {
                 // Read a single answer line from stdin.
-                print!("  Allow {name}? [y/n/always] ");
+                println!("  {}", reason.as_deref().unwrap_or("Approval required"));
+                println!(
+                    "  Action: {name} {}",
+                    call.function.arguments.escape_debug()
+                );
+                print!("  Allow? [y once / n deny / a identical arguments this session] ");
                 let _ = std::io::stdout().flush();
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf).is_err() {
@@ -54,7 +59,7 @@ fn build_permission_resolver() -> PermissionResolver {
                 let trimmed = buf.trim().to_lowercase();
                 match trimmed.as_str() {
                     "y" | "yes" => PermissionResponse::Allow,
-                    "always" | "a" => PermissionResponse::Always,
+                    "always" | "a" | "session" => PermissionResponse::Always,
                     _ => PermissionResponse::Deny,
                 }
             })
@@ -225,7 +230,17 @@ pub async fn start_cli() -> Result<()> {
     if let Some(t) = ctx.config.doom_loop_threshold {
         loop_options.doom_loop_threshold = Some(t);
     }
+    if ctx.permission_checker.is_none() {
+        ctx.permission_checker = Some(Arc::new(parking_lot::Mutex::new(
+            crate::permissions::PermissionChecker::new(
+                ApprovalMode::AutoEdit,
+                ctx.config.permissions_layers.as_deref(),
+                Some(cwd.clone()),
+            ),
+        )));
+    }
     if let Some(checker) = &ctx.permission_checker {
+        checker.lock().interactive_session_file = Some(ctx.session_file.clone());
         loop_options.permission_checker = Some(checker.clone());
         loop_options.permission_resolver = Some(build_permission_resolver());
     }
