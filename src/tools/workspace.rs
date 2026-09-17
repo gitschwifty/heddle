@@ -45,6 +45,8 @@ impl WorkspaceRoot {
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
+    #[error("{}", crate::secret_io::PROTECTED_PATH_DENIAL)]
+    ProtectedPath,
     #[error("{WORKSPACE_DENIAL}: parent traversal is not allowed")]
     ParentTraversal,
     #[error("{WORKSPACE_DENIAL}: path is outside the configured workspace")]
@@ -187,6 +189,11 @@ impl WorkspaceBoundary {
             self.root.join(raw)
         };
         let resolved = canonicalize_with_missing_suffix(&candidate)?;
+        if crate::secret_io::is_protected_path(&candidate)
+            || crate::secret_io::is_protected_path(&resolved)
+        {
+            return Err(WorkspaceError::ProtectedPath);
+        }
         let runtime =
             std::fs::canonicalize(self.runtime_root()).map_err(|_| WorkspaceError::Unresolvable)?;
         if resolved.starts_with(runtime) {

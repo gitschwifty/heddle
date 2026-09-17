@@ -113,9 +113,7 @@ fn search_args(
 }
 
 fn is_credential_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(".env"))
+    crate::secret_io::is_protected_path(path)
 }
 
 fn compile_glob(glob_filter: Option<&str>) -> Result<Option<globset::GlobMatcher>, String> {
@@ -159,6 +157,7 @@ fn native_search_with_matcher(
         .follow_links(false)
         .sort_by_file_name()
         .into_iter()
+        .filter_entry(|entry| !is_credential_path(entry.path()))
         .filter_map(Result::ok)
     {
         if !entry.file_type().is_file() || is_credential_path(entry.path()) {
@@ -361,14 +360,34 @@ impl HeddleTool for WorkspaceGrepTool {
     fn parameters(&self) -> Value {
         GrepTool.parameters()
     }
-    async fn execute(&self, mut params: Value, options: ExecOptions) -> String {
+    async fn execute(&self, params: Value, _options: ExecOptions) -> String {
         let raw = params.get("path").and_then(Value::as_str).unwrap_or(".");
         let path = match self.0.read().resolve(raw) {
             Ok(path) => path,
             Err(error) => return error.to_string(),
         };
-        params["path"] = json!(path);
-        GrepTool.execute(params, options).await
+        let Some(pattern) = params.get("pattern").and_then(Value::as_str) else {
+            return "Error: missing pattern".into();
+        };
+        let matcher = match RegexMatcher::new(pattern) {
+            Ok(matcher) => matcher,
+            Err(error) => return format!("Error: invalid regex: {error}"),
+        };
+        let glob = params
+            .get("glob")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        // Native discovery applies the same policy to every candidate before
+        // opening it; rg glob overrides cannot weaken the protected-path rule.
+        match tokio::task::spawn_blocking(move || {
+            native_search_with_matcher(&matcher, &path.to_string_lossy(), glob.as_deref())
+        })
+        .await
+        {
+            Ok(Ok(result)) => result.render(),
+            Ok(Err(error)) => error,
+            Err(_) => "Error: native search task failed".into(),
+        }
     }
 }
 

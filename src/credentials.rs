@@ -43,11 +43,13 @@ pub fn validate_credential_reference(reference: &str) -> Result<()> {
 
 /// Resolve a configured credential reference without exposing it to the agent.
 pub fn resolve_credential(reference: &str) -> Result<String> {
-    match CredentialReference::parse(reference)? {
+    let value = match CredentialReference::parse(reference)? {
         CredentialReference::Keychain { service, account } => {
             resolve_keychain_credential(&service, &account)
         }
-    }
+    }?;
+    crate::secret_io::register_credential(&value);
+    Ok(value)
 }
 
 #[cfg(target_os = "macos")]

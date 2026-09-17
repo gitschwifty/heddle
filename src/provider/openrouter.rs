@@ -61,6 +61,7 @@ fn create_openai_compatible_provider(
     config: ProviderConfig,
     openrouter_headers: bool,
 ) -> Arc<dyn Provider> {
+    crate::secret_io::register_credential(&config.api_key);
     Arc::new(OpenRouterProvider {
         config,
         client: regular_client(),

@@ -17,6 +17,22 @@ pub(super) fn confined_bash_command(
     profile: SandboxProfile,
     command: &str,
 ) -> Result<Command, String> {
+    // Seatbelt checks physical paths. Also deny existing targets of protected
+    // symlink names, even when the target itself has an innocuous filename.
+    let mut deny_paths = additional_deny_paths.to_vec();
+    for root in roots {
+        for entry in walkdir::WalkDir::new(root).follow_links(false) {
+            let entry = entry.map_err(|_| {
+                "Error: could not inspect workspace protected paths safely".to_string()
+            })?;
+            if entry.file_type().is_symlink() && crate::secret_io::is_protected_path(entry.path()) {
+                if let Ok(target) = entry.path().canonicalize() {
+                    deny_paths.push(target);
+                }
+            }
+        }
+    }
+    let additional_deny_paths = deny_paths.as_slice();
     let root = roots
         .first()
         .ok_or_else(|| "Error: workspace boundary denied empty workspace".to_string())?;

@@ -25,6 +25,7 @@ pub mod plans;
 pub mod provider;
 pub mod runtime;
 pub mod schema_export;
+pub mod secret_io;
 pub mod session;
 pub mod tasks;
 pub mod tools;

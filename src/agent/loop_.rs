@@ -31,6 +31,7 @@ const DEFAULT_DOOM_LOOP_THRESHOLD: u32 = 3;
 const MAX_TOOL_RESULT_BYTES: usize = 24 * 1024;
 
 fn bound_tool_result_for_history(result: String) -> String {
+    let result = crate::secret_io::redact(result);
     if result.len() <= MAX_TOOL_RESULT_BYTES {
         return result;
     }
@@ -476,7 +477,7 @@ pub fn run_agent_loop<'a>(
                 }
                 tool_messages.push(ToolMessage {
                     tool_call_id: call.id.clone(),
-                    content: final_result,
+                    content: bound_tool_result_for_history(final_result),
                 });
             }
             for tm in tool_messages {
@@ -781,7 +782,7 @@ pub fn run_agent_loop_streaming<'a>(
                 }
                 tool_messages.push(ToolMessage {
                     tool_call_id: call.id.clone(),
-                    content: final_result,
+                    content: bound_tool_result_for_history(final_result),
                 });
             }
             for tm in tool_messages {

@@ -79,6 +79,7 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
         .and_then(|reference| resolve_credential(reference).ok())
         .or_else(|| config.api_key.clone())
         .ok_or_else(|| anyhow!("{} credential is required", router_name(config.provider)))?;
+    crate::secret_io::register_credential(&api_key);
     let build = |model: &str| -> Arc<dyn Provider> {
         let params = request_params(config, model);
         let model = if config.provider == ProviderKind::OpenRouter

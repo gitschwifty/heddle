@@ -534,6 +534,12 @@ fn sandbox_profile(
             )
         })
         .collect::<String>();
+    // Use the same component policy as structured filesystem tools, at the
+    // OS boundary (including files created after the shell starts).
+    let sensitive_rules = format!(
+        "{sensitive_rules}(deny file-read* file-write* (regex #\"{}\"))\n",
+        crate::secret_io::PROTECTED_PATH_PATTERN,
+    );
     let additional_rules = additional
         .iter()
         .map(|root| {

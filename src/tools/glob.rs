@@ -74,6 +74,9 @@ impl HeddleTool for GlobTool {
         for entry in WalkDir::new(base)
             .into_iter()
             .filter_entry(|entry| {
+                if crate::secret_io::is_protected_path(entry.path()) {
+                    return false;
+                }
                 let excluded = !allow_excluded
                     && entry.file_type().is_dir()
                     && EXCLUDED_DIRS.iter().any(|dir| entry.file_name() == *dir);
