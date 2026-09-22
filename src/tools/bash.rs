@@ -42,6 +42,7 @@ impl SandboxProfile {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), expect(dead_code))]
     fn network_open(self) -> bool {
         matches!(self, Self::Developer)
     }
