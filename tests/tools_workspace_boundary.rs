@@ -79,6 +79,43 @@ async fn file_tools_deny_absolute_parent_and_symlink_escapes_without_disclosure(
 }
 
 #[tokio::test]
+async fn writes_reject_dangling_symlinks_without_creating_outside_files() {
+    let (workspace, outside, boundary) = boundary();
+    let target = outside.path().join("new.txt");
+    std::os::unix::fs::symlink(&target, workspace.path().join("dangling")).unwrap();
+    let result = create_workspace_write_tool(boundary.clone())
+        .execute(
+            json!({"file_path": "dangling", "content": "escaped"}),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(!target.exists(), "outside file was created: {result}");
+    assert!(
+        result.starts_with("Error: workspace boundary denied path"),
+        "{result}"
+    );
+
+    // Missing suffixes must not conceal a dangling directory component either.
+    let missing_dir = outside.path().join("missing-dir");
+    std::os::unix::fs::symlink(&missing_dir, workspace.path().join("dangling-dir")).unwrap();
+    assert!(boundary.read().resolve("dangling-dir/child.txt").is_err());
+    assert!(!missing_dir.exists());
+
+    // Ordinary new nested paths remain writable.
+    let result = create_workspace_write_tool(boundary)
+        .execute(
+            json!({"file_path": "new/nested.txt", "content": "inside"}),
+            ExecOptions::default(),
+        )
+        .await;
+    assert!(result.starts_with("Wrote"), "{result}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("new/nested.txt")).unwrap(),
+        "inside"
+    );
+}
+
+#[tokio::test]
 async fn explicitly_added_root_is_available_to_the_same_tool_registry() {
     let (_workspace, outside, boundary) = boundary();
     let path = outside.path().join("secret.txt");

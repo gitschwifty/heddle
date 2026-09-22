@@ -210,11 +210,19 @@ impl WorkspaceBoundary {
 fn canonicalize_with_missing_suffix(path: &Path) -> Result<PathBuf, WorkspaceError> {
     let mut existing = path;
     let mut suffix = Vec::new();
-    while !existing.exists() {
-        let name = existing.file_name().ok_or(WorkspaceError::Unresolvable)?;
-        suffix.push(name.to_os_string());
-        existing = existing.parent().ok_or(WorkspaceError::Unresolvable)?;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or(WorkspaceError::Unresolvable)?;
+                suffix.push(name.to_os_string());
+                existing = existing.parent().ok_or(WorkspaceError::Unresolvable)?;
+            }
+            Err(_) => return Err(WorkspaceError::Unresolvable),
+        }
     }
+    // A dangling symlink is an existing entry, not a missing suffix. Its
+    // canonicalization must fail rather than allowing a later write to follow it.
     let mut canonical =
         std::fs::canonicalize(existing).map_err(|_| WorkspaceError::Unresolvable)?;
     for component in suffix.iter().rev() {
