@@ -72,6 +72,9 @@ fn is_restricted_ip(ip: IpAddr) -> bool {
             ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
         }
         IpAddr::V6(ip) => {
+            if let Some(ipv4) = ip.to_ipv4_mapped() {
+                return is_restricted_ip(IpAddr::V4(ipv4));
+            }
             ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_unique_local()
@@ -192,6 +195,24 @@ impl HeddleTool for WebFetchTool {
 #[cfg(test)]
 mod capability_tests {
     use super::*;
+
+    #[test]
+    fn mapped_ipv4_uses_ipv4_policy() {
+        for addr in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "8.8.8.8",
+        ] {
+            let ipv4: std::net::Ipv4Addr = addr.parse().unwrap();
+            assert_eq!(
+                is_restricted_ip(IpAddr::V6(ipv4.to_ipv6_mapped())),
+                is_restricted_ip(IpAddr::V4(ipv4)),
+                "mapped policy mismatch for {addr}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn strict_denies_before_processing_arguments() {
