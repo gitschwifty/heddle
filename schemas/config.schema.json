@@ -417,6 +417,41 @@
             "string",
             "null"
           ]
+        },
+        "ignore_providers": {
+          "description": "OpenRouter upstream provider slugs to exclude for every model.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "models": {
+          "description": "Per-model additions to `ignore_providers`, keyed by the normal model id.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/OpenRouterModelRoutingSchema"
+          }
+        }
+      }
+    },
+    "OpenRouterModelRoutingSchema": {
+      "type": "object",
+      "properties": {
+        "ignore_providers": {
+          "description": "OpenRouter upstream provider slugs to exclude for this model.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
