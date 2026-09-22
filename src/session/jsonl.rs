@@ -111,6 +111,7 @@ pub fn load_session(path: &Path) -> Vec<Message> {
             }
         }
     }
+    super::history::recover_interrupted_tools(&mut messages);
     messages
 }
 

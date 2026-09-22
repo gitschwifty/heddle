@@ -18,18 +18,21 @@ use common::mocks::{finish_chunk, text_chunk, text_response, tool_call_chunk, to
 // ─── Scripted provider (FIFO) ─────────────────────────────────────────────
 
 struct ScriptProvider {
+    requests: Mutex<Vec<Vec<Message>>>,
     responses: Mutex<Vec<ChatCompletionResponse>>,
     chunk_sets: Mutex<Vec<Vec<StreamChunk>>>,
 }
 impl ScriptProvider {
     fn new(rs: Vec<ChatCompletionResponse>) -> Arc<Self> {
         Arc::new(Self {
+            requests: Mutex::new(Vec::new()),
             responses: Mutex::new(rs),
             chunk_sets: Mutex::new(Vec::new()),
         })
     }
     fn streaming(sets: Vec<Vec<StreamChunk>>) -> Arc<Self> {
         Arc::new(Self {
+            requests: Mutex::new(Vec::new()),
             responses: Mutex::new(Vec::new()),
             chunk_sets: Mutex::new(sets),
         })
@@ -40,10 +43,11 @@ impl ScriptProvider {
 impl Provider for ScriptProvider {
     async fn send(
         &self,
-        _messages: &[Message],
+        messages: &[Message],
         _tools: Option<&[ToolDefinition]>,
         _overrides: &Value,
     ) -> anyhow::Result<ChatCompletionResponse> {
+        self.requests.lock().unwrap().push(messages.to_vec());
         let mut v = self.responses.lock().unwrap();
         if v.is_empty() {
             return Err(anyhow::anyhow!("No more mock responses"));
@@ -52,10 +56,11 @@ impl Provider for ScriptProvider {
     }
     fn stream(
         &self,
-        _messages: Vec<Message>,
+        messages: Vec<Message>,
         _tools: Option<Vec<ToolDefinition>>,
         _overrides: Value,
     ) -> ChunkStream {
+        self.requests.lock().unwrap().push(messages);
         let mut sets = self.chunk_sets.lock().unwrap();
         let chunks = if sets.is_empty() {
             Vec::new()
@@ -134,6 +139,98 @@ fn registry_with_slow() -> ToolRegistry {
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dropping_cancelled_batch_preserves_completed_result_and_repairs_remaining_calls() {
+    for streaming in [false, true] {
+        let p = if streaming {
+            ScriptProvider::streaming(vec![vec![
+                tool_call_chunk(0, Some("call_0"), Some("slow"), Some(r#"{"ms":0}"#)),
+                tool_call_chunk(1, Some("call_1"), Some("slow"), Some(r#"{"ms":0}"#)),
+                finish_chunk("tool_calls"),
+            ]])
+        } else {
+            ScriptProvider::new(vec![tool_call_response(&[
+                ("slow", json!({"ms":0})),
+                ("slow", json!({"ms":0})),
+            ])])
+        };
+        let mut messages = user("Go");
+        let mut stream = if streaming {
+            run_agent_loop_streaming(
+                p,
+                registry_with_slow(),
+                &mut messages,
+                AgentLoopOptions::default(),
+            )
+        } else {
+            run_agent_loop(
+                p,
+                registry_with_slow(),
+                &mut messages,
+                AgentLoopOptions::default(),
+            )
+        };
+        let mut starts = 0;
+        while let Some(event) = stream.next().await {
+            if matches!(event, AgentEvent::ToolStart { .. }) {
+                starts += 1;
+            }
+            if matches!(event, AgentEvent::ToolEnd { .. }) {
+                break;
+            }
+        }
+        drop(stream); // runtime cancels by dropping at an event boundary
+        assert_eq!(starts, 1);
+        let results: Vec<_> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Tool(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2, "streaming={streaming}");
+        assert_eq!(results[0].content, "done");
+        assert!(results[1].content.contains("unknown"));
+        let calls = messages
+            .iter()
+            .find_map(|m| match m {
+                Message::Assistant(a) => a.tool_calls.as_ref(),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(results[0].tool_call_id, calls[0].id);
+        assert_eq!(results[1].tool_call_id, calls[1].id);
+        messages.extend(user("Continue"));
+        let expected = messages.clone();
+        let next = if streaming {
+            ScriptProvider::streaming(vec![vec![text_chunk("Recovered"), finish_chunk("stop")]])
+        } else {
+            ScriptProvider::new(vec![text_response("Recovered")])
+        };
+        let events = if streaming {
+            collect(run_agent_loop_streaming(
+                next.clone(),
+                registry_with_slow(),
+                &mut messages,
+                AgentLoopOptions::default(),
+            ))
+            .await
+        } else {
+            collect(run_agent_loop(
+                next.clone(),
+                registry_with_slow(),
+                &mut messages,
+                AgentLoopOptions::default(),
+            ))
+            .await
+        };
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ToolStart { .. })));
+        assert_eq!(next.requests.lock().unwrap().as_slice(), &[expected]);
+    }
+}
 
 #[tokio::test]
 async fn loop_exits_immediately_when_signal_already_cancelled() {

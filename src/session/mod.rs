@@ -1,6 +1,7 @@
 //! Session lifecycle: setup, JSONL persistence, list/find, fork.
 
 pub mod fork;
+pub mod history;
 pub mod jsonl;
 pub mod list;
 pub mod setup;

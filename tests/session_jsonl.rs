@@ -15,6 +15,57 @@ fn tmp() -> TempDir {
     tempfile::tempdir().unwrap()
 }
 
+#[test]
+fn resume_repairs_unanswered_calls_without_changing_completed_results() {
+    for completed in [false, true] {
+        let dir = tmp();
+        let path = dir.path().join("interrupted.jsonl");
+        let assistant: Message = serde_json::from_value(json!({"role":"assistant", "tool_calls": [
+            {"id":"a", "type":"function", "function":{"name":"bash", "arguments":"{}"}},
+            {"id":"b", "type":"function", "function":{"name":"bash", "arguments":"{}"}}
+        ]}))
+        .unwrap();
+        append_message(&path, &assistant).unwrap();
+        if completed {
+            append_message(
+                &path,
+                &Message::Tool(ToolMessage {
+                    tool_call_id: "a".into(),
+                    content: "observed result".into(),
+                }),
+            )
+            .unwrap();
+        }
+        // A crash can leave an incomplete final record.
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"role\":")
+            .unwrap();
+        let messages = load_session(&path);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0], assistant);
+        assert_eq!(messages, load_session(&path));
+        if let Message::Tool(result) = &messages[1] {
+            assert_eq!(result.tool_call_id, "a");
+            if completed {
+                assert_eq!(result.content, "observed result");
+            } else {
+                assert!(result.content.contains("unknown"));
+            }
+        } else {
+            panic!("missing tool result");
+        }
+        let recovered = dir.path().join("recovered.jsonl");
+        for message in &messages {
+            append_message(&recovered, message).unwrap();
+        }
+        assert_eq!(messages, load_session(&recovered));
+    }
+}
+
 fn meta(id: &str) -> SessionMeta {
     SessionMeta {
         kind: "session_meta".into(),

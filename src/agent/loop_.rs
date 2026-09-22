@@ -288,6 +288,9 @@ pub fn run_agent_loop<'a>(
     options: AgentLoopOptions,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'a>> {
     Box::pin(stream! {
+        crate::session::history::recover_interrupted_tools(messages);
+        let recovery = crate::session::history::HistoryRecovery(messages);
+        let messages = &mut *recovery.0;
         let max_iterations = options.max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
         let doom_threshold = options.doom_loop_threshold.unwrap_or(DEFAULT_DOOM_LOOP_THRESHOLD);
         let mut tools = registry.definitions();
@@ -392,11 +395,11 @@ pub fn run_agent_loop<'a>(
                     },
                 };
             }
+            messages.push(Message::Assistant(assistant_msg.clone()));
             yield AgentEvent::AssistantMessage {
                 message: assistant_msg.clone(),
                 finish_reason: choice.finish_reason.clone(),
             };
-            messages.push(Message::Assistant(assistant_msg.clone()));
             last_assistant_content = assistant_msg.content.clone();
 
             let tool_calls = match tool_calls {
@@ -411,16 +414,15 @@ pub fn run_agent_loop<'a>(
                 }
             };
 
-            let mut tool_messages: Vec<ToolMessage> = Vec::new();
             for call in &tool_calls {
                 if aborted(&options.signal) { return; }
 
                 if !tools.iter().any(|tool| tool.function.name == call.function.name) {
                     let reason = "Tool is not available in this phase".to_string();
-                    tool_messages.push(ToolMessage {
+                    messages.push(Message::Tool(ToolMessage {
                         tool_call_id: call.id.clone(),
                         content: format!("Error: {reason}"),
-                    });
+                    }));
                     yield AgentEvent::PermissionDenied {
                         name: call.function.name.clone(),
                         call: call.clone(),
@@ -431,11 +433,14 @@ pub fn run_agent_loop<'a>(
 
                 if let Some(checker) = &options.permission_checker {
                     let outcome = check_permission(checker, &options.permission_resolver, call).await;
+                    let denied = outcome.tool_message.is_some();
+                    if let Some(tm) = outcome.tool_message {
+                        messages.push(Message::Tool(tm));
+                    }
                     for ev in outcome.events {
                         yield ev;
                     }
-                    if let Some(tm) = outcome.tool_message {
-                        tool_messages.push(tm);
+                    if denied {
                         continue;
                     }
                 }
@@ -449,13 +454,13 @@ pub fn run_agent_loop<'a>(
                     };
                     let results = runner.run(HookEvent::PreTool, ctx).await;
                     if let Some(blocked) = results.iter().find(|r| r.blocked) {
-                        tool_messages.push(ToolMessage {
+                        messages.push(Message::Tool(ToolMessage {
                             tool_call_id: call.id.clone(),
                             content: format!(
                                 "Error: Blocked by hook — {}",
                                 blocked.reason.as_deref().unwrap_or("hook rejected")
                             ),
-                        });
+                        }));
                         continue;
                     }
                 }
@@ -465,6 +470,11 @@ pub fn run_agent_loop<'a>(
                 let result = bound_tool_result_for_history(registry
                     .execute(&call.function.name, &call.function.arguments, exec_opts)
                     .await);
+                let result_index = messages.len();
+                messages.push(Message::Tool(ToolMessage {
+                    tool_call_id: call.id.clone(),
+                    content: result.clone(),
+                }));
                 yield AgentEvent::ToolEnd {
                     name: call.function.name.clone(),
                     result: result.clone(),
@@ -489,13 +499,10 @@ pub fn run_agent_loop<'a>(
                         final_result = format!("{result}\n\n[hook feedback] {}", feedback.join("\n"));
                     }
                 }
-                tool_messages.push(ToolMessage {
+                messages[result_index] = Message::Tool(ToolMessage {
                     tool_call_id: call.id.clone(),
                     content: bound_tool_result_for_history(final_result),
                 });
-            }
-            for tm in tool_messages {
-                messages.push(Message::Tool(tm));
             }
 
             let hash = hash_tool_calls(&tool_calls);
@@ -522,6 +529,9 @@ pub fn run_agent_loop_streaming<'a>(
     options: AgentLoopOptions,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send + 'a>> {
     Box::pin(stream! {
+        crate::session::history::recover_interrupted_tools(messages);
+        let recovery = crate::session::history::HistoryRecovery(messages);
+        let messages = &mut *recovery.0;
         let max_iterations = options.max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
         let doom_threshold = options.doom_loop_threshold.unwrap_or(DEFAULT_DOOM_LOOP_THRESHOLD);
         let mut tools = registry.definitions();
@@ -701,6 +711,7 @@ pub fn run_agent_loop_streaming<'a>(
                 return;
             }
             empty_response_retries = 0;
+            messages.push(Message::Assistant(assistant_msg.clone()));
             yield AgentEvent::AssistantMessage {
                 message: assistant_msg.clone(),
                 finish_reason: if finish_reasons.is_empty() {
@@ -720,7 +731,6 @@ pub fn run_agent_loop_streaming<'a>(
                     },
                 };
             }
-            messages.push(Message::Assistant(assistant_msg.clone()));
             last_assistant_content = assistant_msg.content.clone();
 
             if tool_calls.is_empty() {
@@ -733,16 +743,15 @@ pub fn run_agent_loop_streaming<'a>(
             }
 
             // Same per-tool-call permission/hooks/execute flow as non-streaming
-            let mut tool_messages: Vec<ToolMessage> = Vec::new();
             for call in &tool_calls {
                 if aborted(&options.signal) { return; }
 
                 if !tools.iter().any(|tool| tool.function.name == call.function.name) {
                     let reason = "Tool is not available in this phase".to_string();
-                    tool_messages.push(ToolMessage {
+                    messages.push(Message::Tool(ToolMessage {
                         tool_call_id: call.id.clone(),
                         content: format!("Error: {reason}"),
-                    });
+                    }));
                     yield AgentEvent::PermissionDenied {
                         name: call.function.name.clone(),
                         call: call.clone(),
@@ -753,11 +762,14 @@ pub fn run_agent_loop_streaming<'a>(
 
                 if let Some(checker) = &options.permission_checker {
                     let outcome = check_permission(checker, &options.permission_resolver, call).await;
+                    let denied = outcome.tool_message.is_some();
+                    if let Some(tm) = outcome.tool_message {
+                        messages.push(Message::Tool(tm));
+                    }
                     for ev in outcome.events {
                         yield ev;
                     }
-                    if let Some(tm) = outcome.tool_message {
-                        tool_messages.push(tm);
+                    if denied {
                         continue;
                     }
                 }
@@ -769,13 +781,13 @@ pub fn run_agent_loop_streaming<'a>(
                     };
                     let results = runner.run(HookEvent::PreTool, ctx).await;
                     if let Some(blocked) = results.iter().find(|r| r.blocked) {
-                        tool_messages.push(ToolMessage {
+                        messages.push(Message::Tool(ToolMessage {
                             tool_call_id: call.id.clone(),
                             content: format!(
                                 "Error: Blocked by hook — {}",
                                 blocked.reason.as_deref().unwrap_or("hook rejected")
                             ),
-                        });
+                        }));
                         continue;
                     }
                 }
@@ -784,6 +796,11 @@ pub fn run_agent_loop_streaming<'a>(
                 let result = bound_tool_result_for_history(registry
                     .execute(&call.function.name, &call.function.arguments, exec_opts)
                     .await);
+                let result_index = messages.len();
+                messages.push(Message::Tool(ToolMessage {
+                    tool_call_id: call.id.clone(),
+                    content: result.clone(),
+                }));
                 yield AgentEvent::ToolEnd {
                     name: call.function.name.clone(),
                     result: result.clone(),
@@ -808,13 +825,10 @@ pub fn run_agent_loop_streaming<'a>(
                         final_result = format!("{result}\n\n[hook feedback] {}", feedback.join("\n"));
                     }
                 }
-                tool_messages.push(ToolMessage {
+                messages[result_index] = Message::Tool(ToolMessage {
                     tool_call_id: call.id.clone(),
                     content: bound_tool_result_for_history(final_result),
                 });
-            }
-            for tm in tool_messages {
-                messages.push(Message::Tool(tm));
             }
 
             let hash = hash_tool_calls(&tool_calls);
