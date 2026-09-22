@@ -65,6 +65,79 @@ fn user_msgs() -> Vec<Message> {
     })]
 }
 
+#[tokio::test]
+async fn stream_preserves_split_utf8_text_and_arguments() {
+    for character in ["é", "中", "🧶"] {
+        for split in 1..character.len() {
+            let record = format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                json!({
+                    "id": "utf8", "choices": [{"index": 0, "delta": {
+                        "content": character,
+                        "tool_calls": [{"index": 0, "id": "call_0", "type": "function",
+                            "function": {"name": "echo", "arguments": format!("{{\"text\":\"{character}\"}}")}}]
+                    }, "finish_reason": "tool_calls"}]
+                })
+            );
+            let boundary = record.find(character).unwrap() + split;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                    assert!(request.len() < 8192, "oversized test request headers");
+                }
+                let length: usize = std::str::from_utf8(&request)
+                    .unwrap()
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                assert!(length < 8192);
+                socket.read_exact(&mut vec![0; length]).await.unwrap();
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+                for part in [
+                    &record.as_bytes()[..boundary],
+                    &record.as_bytes()[boundary..],
+                ] {
+                    socket
+                        .write_all(format!("{:x}\r\n", part.len()).as_bytes())
+                        .await
+                        .unwrap();
+                    socket.write_all(part).await.unwrap();
+                    socket.write_all(b"\r\n").await.unwrap();
+                }
+                socket.write_all(b"0\r\n\r\n").await.unwrap();
+            });
+            let (chunks, error) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                drain_stream(provider(format!("http://{address}"))),
+            )
+            .await
+            .unwrap();
+            server.await.unwrap();
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(chunks.len(), 1, "lost {character} at byte {split}");
+            let delta = &chunks[0].choices[0].delta;
+            assert_eq!(delta.content.as_deref(), Some(character));
+            assert_eq!(
+                delta.tool_calls.as_ref().unwrap()[0]
+                    .function
+                    .as_ref()
+                    .unwrap()
+                    .arguments
+                    .as_deref(),
+                Some(format!("{{\"text\":\"{character}\"}}").as_str())
+            );
+        }
+    }
+}
+
 // ─── send() error handling ────────────────────────────────────────────────
 
 #[tokio::test]

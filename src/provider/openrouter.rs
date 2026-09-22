@@ -760,7 +760,7 @@ impl Provider for OpenRouterProvider {
                 Err::<reqwest::Response, _>(anyhow::Error::new(failure))?
                     .bytes_stream()
             };
-            let mut buffer = String::new();
+            let mut buffer = Vec::new();
             loop {
                 let chunk = match tokio::time::timeout(provider.stream_idle_timeout(), byte_stream.next()).await {
                     Ok(Some(Ok(chunk))) => chunk,
@@ -787,10 +787,10 @@ impl Provider for OpenRouterProvider {
                         unreachable!()
                     }
                 };
-                buffer.push_str(std::str::from_utf8(&chunk).unwrap_or(""));
+                buffer.extend_from_slice(&chunk);
 
-                while let Some(nl_idx) = buffer.find('\n') {
-                    let line = buffer[..nl_idx].trim().to_string();
+                while let Some(nl_idx) = buffer.iter().position(|byte| *byte == b'\n') {
+                    let line = std::str::from_utf8(&buffer[..nl_idx])?.trim().to_string();
                     buffer.drain(..=nl_idx);
 
                     if line.is_empty() || !line.starts_with("data: ") {
@@ -807,7 +807,7 @@ impl Provider for OpenRouterProvider {
                     yield parsed;
                 }
             }
-            let trimmed = buffer.trim();
+            let trimmed = std::str::from_utf8(&buffer)?.trim();
             if let Some(data) = trimmed.strip_prefix("data: ") {
                 if data != "[DONE]" {
                     if !openrouter_headers {
