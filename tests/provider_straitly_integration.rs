@@ -29,6 +29,7 @@ async fn straitly_stream_includes_usage() {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
     let messages = vec![Message::User(UserMessage {
         content: "Reply with exactly: ok".into(),

@@ -19,6 +19,7 @@ pub enum ProviderFailureKind {
     TransportError,
     ResponseHeadersTimeout,
     StreamIdleTimeout,
+    StreamProgressTimeout,
     StreamBodyDecode,
 }
 
@@ -55,6 +56,8 @@ pub struct ProviderConfig {
     /// Maximum time a streaming response may go without receiving response
     /// bytes. `None` uses the 10-minute transport default.
     pub stream_idle_timeout_secs: Option<u64>,
+    /// Deadline between meaningful deltas. None or zero uses 10 minutes.
+    pub stream_progress_timeout_secs: Option<u64>,
 }
 
 /// Safe, bounded provider-side correlation data. It intentionally excludes

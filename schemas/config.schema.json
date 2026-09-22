@@ -187,6 +187,15 @@
         }
       ]
     },
+    "stream_progress_timeout_secs": {
+      "description": "Maximum seconds without meaningful stream progress (default 600).",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
     "system_prompt": {
       "type": [
         "string",

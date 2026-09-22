@@ -100,6 +100,7 @@ pub fn create_providers(config: &HeddleConfig) -> Result<Providers> {
             app_attribution: config.app_attribution.clone(),
             retry: Some(RetryConfig::default()),
             stream_idle_timeout_secs: config.stream_idle_timeout_secs,
+            stream_progress_timeout_secs: config.stream_progress_timeout_secs,
         };
         match config.provider {
             ProviderKind::OpenRouter => create_openrouter_provider(provider_config),

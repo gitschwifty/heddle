@@ -24,6 +24,7 @@ fn make_provider(base_url: &str, retry: Option<RetryConfig>) -> Arc<dyn Provider
         app_attribution: None,
         retry,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     })
 }
 
@@ -235,6 +236,7 @@ async fn send_uses_custom_app_attribution_headers() {
         }),
         retry: Some(default_retry()),
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
     p.send(&user_msgs(), None, &json!({})).await.unwrap();
 
@@ -266,6 +268,7 @@ async fn send_ignores_partial_app_attribution() {
         }),
         retry: Some(default_retry()),
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
     p.send(&user_msgs(), None, &json!({})).await.unwrap();
 
@@ -651,6 +654,7 @@ async fn per_call_overrides_win_over_request_params() {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
 
     p.send(&user_msgs(), None, &json!({"temperature": 0.8}))

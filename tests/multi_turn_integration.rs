@@ -54,6 +54,7 @@ fn make_provider(api_key: String) -> Arc<dyn Provider> {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     })
 }
 

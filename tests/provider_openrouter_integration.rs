@@ -53,6 +53,7 @@ async fn send_returns_text_response() {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
 
     let resp = p
@@ -84,6 +85,7 @@ async fn stream_yields_chunks_and_assembles_content() {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
 
     let mut stream = p.stream(user_msg(), None, json!({}));
@@ -135,6 +137,7 @@ async fn send_with_reasoning_returns_response() {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
 
     let resp = p

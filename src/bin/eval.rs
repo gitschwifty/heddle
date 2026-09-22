@@ -1783,6 +1783,7 @@ fn make_provider(
             max_delay_ms: 90_000,
         }),
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
     if is_free_model(model) {
         Arc::new(PacedProvider {
@@ -2143,6 +2144,7 @@ async fn run_one(
                             ProviderFailureKind::TransportError
                             | ProviderFailureKind::ResponseHeadersTimeout
                             | ProviderFailureKind::StreamIdleTimeout
+                            | ProviderFailureKind::StreamProgressTimeout
                             | ProviderFailureKind::StreamBodyDecode,
                         ) => FailureCause::ProviderApi,
                         None => FailureCause::ProviderApi,

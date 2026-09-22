@@ -23,6 +23,7 @@ fn clear_env() {
         "HEDDLE_MAX_TOKENS",
         "HEDDLE_TEMPERATURE",
         "HEDDLE_STREAM_IDLE_TIMEOUT_SECS",
+        "HEDDLE_STREAM_PROGRESS_TIMEOUT_SECS",
         "HEDDLE_APP_REFERER",
         "HEDDLE_APP_TITLE",
         "HEDDLE_APP_CATEGORIES",
@@ -356,9 +357,13 @@ fn loads_temperature() {
 fn loads_stream_idle_timeout() {
     let sb = Sandbox::new("loader-stream-idle-timeout");
     clear_env();
-    write_global(&sb, "stream_idle_timeout_secs = 900\n");
+    write_global(
+        &sb,
+        "stream_idle_timeout_secs = 900\nstream_progress_timeout_secs = 120\n",
+    );
     let cfg = load_config(None);
     assert_eq!(cfg.stream_idle_timeout_secs, Some(900));
+    assert_eq!(cfg.stream_progress_timeout_secs, Some(120));
 }
 
 #[test]
@@ -548,8 +553,10 @@ fn heddle_stream_idle_timeout_env_overrides() {
     let _sb = Sandbox::new("loader-env-stream-idle-timeout");
     clear_env();
     std::env::set_var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS", "900");
+    std::env::set_var("HEDDLE_STREAM_PROGRESS_TIMEOUT_SECS", "120");
     let cfg = load_config(None);
     assert_eq!(cfg.stream_idle_timeout_secs, Some(900));
+    assert_eq!(cfg.stream_progress_timeout_secs, Some(120));
     clear_env();
 }
 

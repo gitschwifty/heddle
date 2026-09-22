@@ -92,6 +92,15 @@ impl OpenRouterProvider {
         self.config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
     }
 
+    fn stream_progress_timeout(&self) -> Duration {
+        Duration::from_secs(
+            self.config
+                .stream_progress_timeout_secs
+                .filter(|seconds| *seconds > 0)
+                .unwrap_or(600),
+        )
+    }
+
     fn build_headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -544,6 +553,53 @@ fn provider_failure(
     }
 }
 
+fn stream_has_progress(chunk: &StreamChunk, data: &str) -> bool {
+    let nonempty = |value: Option<&str>| value.is_some_and(|s| !s.is_empty());
+    if chunk.choices.iter().any(|choice| {
+        nonempty(choice.finish_reason.as_deref())
+            || nonempty(choice.delta.content.as_deref())
+            || choice
+                .delta
+                .tool_calls
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|call| {
+                    nonempty(call.id.as_deref())
+                        || call.function.as_ref().is_some_and(|function| {
+                            nonempty(function.name.as_deref())
+                                || nonempty(function.arguments.as_deref())
+                        })
+                })
+    }) {
+        return true;
+    }
+    // Reasoning is progress even though it is not emitted as assistant content.
+    // Inspect only known reasoning payloads; metadata and empty objects do not count.
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        return false;
+    };
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                let delta = &choice["delta"];
+                nonempty(delta["reasoning"].as_str())
+                    || nonempty(delta["reasoning_content"].as_str())
+                    || delta["reasoning_details"]
+                        .as_array()
+                        .is_some_and(|details| {
+                            details.iter().any(|detail| {
+                                ["text", "summary", "data"]
+                                    .iter()
+                                    .any(|key| nonempty(detail[key].as_str()))
+                            })
+                        })
+            })
+        })
+}
+
 fn parse_stream_chunk(headers: &HeaderMap, status: u16, data: &str) -> Result<StreamChunk> {
     serde_json::from_str(data).map_err(|error| {
         let mut failure = provider_failure(
@@ -718,6 +774,7 @@ impl Provider for OpenRouterProvider {
         let model = self.config.model.clone();
         let retry = self.config.retry.clone();
         let stream_idle_timeout_secs = self.config.stream_idle_timeout_secs;
+        let stream_progress_timeout_secs = self.config.stream_progress_timeout_secs;
         let streaming_client = self.streaming_client.clone();
         let openrouter_headers = self.openrouter_headers;
 
@@ -731,6 +788,7 @@ impl Provider for OpenRouterProvider {
                     app_attribution,
                     retry,
                     stream_idle_timeout_secs,
+                    stream_progress_timeout_secs,
                 },
                 client: regular_client(),
                 streaming_client,
@@ -761,8 +819,12 @@ impl Provider for OpenRouterProvider {
                     .bytes_stream()
             };
             let mut buffer = Vec::new();
+            let progress_timeout = provider.stream_progress_timeout();
+            let mut last_progress = tokio::time::Instant::now();
             loop {
-                let chunk = match tokio::time::timeout(provider.stream_idle_timeout(), byte_stream.next()).await {
+                let progress_deadline = last_progress + progress_timeout;
+                let idle_deadline = tokio::time::Instant::now() + provider.stream_idle_timeout();
+                let chunk = match tokio::time::timeout_at(idle_deadline.min(progress_deadline), byte_stream.next()).await {
                     Ok(Some(Ok(chunk))) => chunk,
                     Ok(Some(Err(error))) => {
                         let failure = stream_body_failure(
@@ -778,11 +840,20 @@ impl Provider for OpenRouterProvider {
                     }
                     Ok(None) => break,
                     Err(_) => {
-                        let failure = stream_idle_timeout_failure(
+                        let failure = if progress_deadline < idle_deadline {
+                            let elapsed = last_progress.elapsed().as_secs_f64();
+                            let mut failure = provider_failure(&response_headers, Some(status.as_u16()), &[],
+                                format!("provider stream progress timeout after {}s without meaningful model progress", progress_timeout.as_secs()));
+                            failure.telemetry.failure_kind = Some(ProviderFailureKind::StreamProgressTimeout);
+                            let detail = format!("phase=stream_body progress_timeout_secs={} elapsed_secs={elapsed:.3}", progress_timeout.as_secs());
+                            failure.telemetry.detail = Some(detail.clone());
+                            failure.debug_detail = Some(detail);
+                            failure
+                        } else { stream_idle_timeout_failure(
                             &response_headers,
                             status.as_u16(),
                             &provider,
-                        );
+                        ) };
                         Err::<(), _>(anyhow::Error::new(failure))?;
                         unreachable!()
                     }
@@ -804,6 +875,9 @@ impl Provider for OpenRouterProvider {
                         return;
                     }
                     let parsed = parse_stream_chunk(&response_headers, status.as_u16(), data)?;
+                    if stream_has_progress(&parsed, data) {
+                        last_progress = tokio::time::Instant::now();
+                    }
                     yield parsed;
                 }
             }
@@ -892,6 +966,26 @@ pub fn empty_overrides() -> Value {
 #[cfg(test)]
 mod retry_tests {
     use super::*;
+
+    #[test]
+    fn stream_progress_ignores_metadata_and_empty_payloads() {
+        for delta in [
+            json!({}),
+            json!({"role":"assistant"}),
+            json!({"content":"", "reasoning":"", "reasoning_details":[{"type":"reasoning.text", "text":""}]}),
+            json!({"tool_calls":[{"index":0,"function":{"arguments":""}}]}),
+        ] {
+            let data = json!({"id":"test","choices":[{"index":0,"delta":delta}]}).to_string();
+            let chunk = serde_json::from_str(&data).unwrap();
+            assert!(!stream_has_progress(&chunk, &data));
+        }
+        let data = json!({"id":"test","choices":[{"index":0,"delta":{}, "finish_reason":"stop"}]})
+            .to_string();
+        assert!(stream_has_progress(
+            &serde_json::from_str(&data).unwrap(),
+            &data
+        ));
+    }
 
     #[test]
     fn retry_after_header_uses_seconds() {

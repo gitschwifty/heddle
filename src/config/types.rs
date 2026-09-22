@@ -35,6 +35,8 @@ pub struct ProviderConfigSchema {
     pub openrouter_routing: Option<OpenRouterRoutingModeWire>,
     /// Maximum time a provider stream may be idle before it is aborted.
     pub stream_idle_timeout_secs: Option<u64>,
+    /// Maximum seconds without meaningful stream progress (default 600).
+    pub stream_progress_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +141,8 @@ pub struct SandboxConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct HeddleConfigSchema {
+    /// Maximum seconds without meaningful stream progress (default 600).
+    pub stream_progress_timeout_secs: Option<u64>,
     /// Legacy plaintext credential. Prefer the default Keychain item or an override.
     pub api_key: Option<String>,
     /// Request routers such as OpenRouter and Straitly.

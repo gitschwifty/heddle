@@ -51,6 +51,7 @@ async fn hostile_model_cannot_change_or_disclose_protected_sibling() {
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
     let protected_path = sentinel.display();
     let mut messages = vec![

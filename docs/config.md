@@ -46,6 +46,11 @@ openrouter_routing = "balanced" # "balanced" | "nitro" | "exacto"
 # A stream can run indefinitely while it remains active. This is the maximum
 # idle time between received response bytes; default: 600 seconds (10 minutes).
 stream_idle_timeout_secs = 600 # Or HEDDLE_STREAM_IDLE_TIMEOUT_SECS
+# Separate deadline for nonempty content/tool deltas, reasoning text or opaque
+# reasoning data, and finish events. Comments, role/usage-only chunks, and empty
+# deltas do not renew it. Zero uses the default; healthy progress can continue
+# beyond the deadline's total duration. Timeout stops the turn without replay.
+stream_progress_timeout_secs = 600 # Or HEDDLE_STREAM_PROGRESS_TIMEOUT_SECS
 
 [app_attribution]              # Optional OpenRouter dashboard attribution
 referer = "https://github.com/gitschwifty/heddle"
@@ -143,6 +148,7 @@ credential = "keychain:heddle/straitly"
 | `HEDDLE_MAX_TOKENS` | `max_tokens` |
 | `HEDDLE_TEMPERATURE` | `temperature` |
 | `HEDDLE_STREAM_IDLE_TIMEOUT_SECS` | `stream_idle_timeout_secs` |
+| `HEDDLE_STREAM_PROGRESS_TIMEOUT_SECS` | `stream_progress_timeout_secs` |
 | `HEDDLE_OPENROUTER_ROUTING` | `openrouter_routing` |
 | `HEDDLE_APP_REFERER` + `HEDDLE_APP_TITLE` | `app_attribution.referer` + `app_attribution.title` |
 | `HEDDLE_APP_CATEGORIES` | `app_attribution.categories` |

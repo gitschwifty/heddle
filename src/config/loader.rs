@@ -16,6 +16,19 @@ use crate::hooks::types::ResolvedHooksConfig;
 use crate::provider::types::AppAttribution;
 use crate::tools::SandboxProfile;
 
+fn apply_stream_timeouts_from_env(config: &mut HeddleConfig) {
+    if let Ok(value) = std::env::var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS") {
+        if let Ok(seconds) = value.parse::<u64>() {
+            config.stream_idle_timeout_secs = Some(seconds);
+        }
+    }
+    if let Ok(value) = std::env::var("HEDDLE_STREAM_PROGRESS_TIMEOUT_SECS") {
+        if let Ok(seconds) = value.parse::<u64>() {
+            config.stream_progress_timeout_secs = Some(seconds);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalMode {
@@ -123,6 +136,8 @@ pub struct HeddleConfig {
     pub openrouter_routing: OpenRouterRoutingMode,
     /// Maximum time a provider stream may go without receiving response bytes.
     pub stream_idle_timeout_secs: Option<u64>,
+    /// Maximum seconds without meaningful model progress, independent of bytes.
+    pub stream_progress_timeout_secs: Option<u64>,
     /// Upstream provider slugs excluded from every OpenRouter request.
     pub openrouter_provider_ignore: Vec<String>,
     /// Additional OpenRouter provider exclusions, keyed by model id.
@@ -170,6 +185,7 @@ impl Default for HeddleConfig {
             app_attribution: None,
             openrouter_routing: OpenRouterRoutingMode::Balanced,
             stream_idle_timeout_secs: None,
+            stream_progress_timeout_secs: None,
             openrouter_provider_ignore: Vec::new(),
             openrouter_model_provider_ignore: BTreeMap::new(),
             system_prompt: None,
@@ -343,6 +359,13 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(n) = table.get("stream_idle_timeout_secs").and_then(as_int) {
         config.stream_idle_timeout_secs = Some(n as u64);
+    }
+    if let Some(n) = table
+        .get("stream_progress_timeout_secs")
+        .and_then(as_int)
+        .filter(|n| *n > 0)
+    {
+        config.stream_progress_timeout_secs = Some(n as u64);
     }
     if let Some(n) = table.get("max_iterations").and_then(as_int) {
         config.max_iterations = Some(n as u32);
@@ -590,11 +613,7 @@ pub fn load_config(local_dir: Option<&Path>) -> HeddleConfig {
             merged.temperature = Some(n);
         }
     }
-    if let Ok(v) = std::env::var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS") {
-        if let Ok(n) = v.parse::<u64>() {
-            merged.stream_idle_timeout_secs = Some(n);
-        }
-    }
+    apply_stream_timeouts_from_env(&mut merged);
     if let Ok(v) = std::env::var("HEDDLE_WEAK_MODEL") {
         merged.weak_model = Some(v);
     }
@@ -670,11 +689,7 @@ pub fn load_config_without_files() -> HeddleConfig {
             merged.temperature = Some(n);
         }
     }
-    if let Ok(v) = std::env::var("HEDDLE_STREAM_IDLE_TIMEOUT_SECS") {
-        if let Ok(n) = v.parse::<u64>() {
-            merged.stream_idle_timeout_secs = Some(n);
-        }
-    }
+    apply_stream_timeouts_from_env(&mut merged);
     if let Ok(v) = std::env::var("HEDDLE_WEAK_MODEL") {
         merged.weak_model = Some(v);
     }

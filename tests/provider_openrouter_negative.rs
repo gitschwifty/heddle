@@ -15,6 +15,14 @@ fn provider_with_idle_timeout(
     base_url: String,
     stream_idle_timeout_secs: Option<u64>,
 ) -> std::sync::Arc<dyn heddle::provider::types::Provider> {
+    provider_with_timeouts(base_url, stream_idle_timeout_secs, None)
+}
+
+fn provider_with_timeouts(
+    base_url: String,
+    stream_idle_timeout_secs: Option<u64>,
+    stream_progress_timeout_secs: Option<u64>,
+) -> std::sync::Arc<dyn heddle::provider::types::Provider> {
     create_openrouter_provider(ProviderConfig {
         api_key: "sk-test".to_string(),
         model: "test-model".to_string(),
@@ -23,7 +31,121 @@ fn provider_with_idle_timeout(
         app_attribution: None,
         retry: None,
         stream_idle_timeout_secs,
+        stream_progress_timeout_secs,
     })
+}
+
+#[tokio::test]
+async fn heartbeats_do_not_extend_progress_deadline() {
+    for data in [
+        ": keepalive\n\n".to_string(),
+        format!(
+            "data: {}\n\n",
+            json!({"id":"empty", "choices":[{"index":0,"delta":{"content":""}}]})
+        ),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            loop {
+                let frame = format!("{:x}\r\n{data}\r\n", data.len());
+                if socket.write_all(frame.as_bytes()).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        });
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            drain_stream(provider_with_timeouts(
+                format!("http://{address}"),
+                Some(5),
+                Some(1),
+            )),
+        )
+        .await;
+        server.abort();
+        let (_, error) = outcome.expect("heartbeats must not keep the stream alive indefinitely");
+        let failure = error
+            .expect("progress timeout")
+            .downcast::<ProviderFailure>()
+            .unwrap();
+        assert!(failure.message.contains("progress timeout"));
+        assert_eq!(
+            failure.telemetry.failure_kind,
+            Some(ProviderFailureKind::StreamProgressTimeout)
+        );
+        assert!(failure.telemetry.detail.unwrap().contains("elapsed_secs="));
+    }
+}
+
+#[tokio::test]
+async fn meaningful_deltas_renew_deadline_but_stalls_after_output_fail() {
+    for delta in [
+        json!({"content":"x"}),
+        json!({"reasoning":"thinking"}),
+        json!({"reasoning_content":"thinking"}),
+        json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"opaque"}]}),
+        json!({"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}),
+    ] {
+        for complete in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let data = format!(
+                "data: {}\n\n",
+                json!({"id":"progress", "choices":[{"index":0,"delta":delta}]})
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+                for _ in 0..5 {
+                    let frame = format!("{:x}\r\n{data}\r\n", data.len());
+                    socket.write_all(frame.as_bytes()).await.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+                if complete {
+                    socket
+                        .write_all(b"e\r\ndata: [DONE]\n\n\r\n0\r\n\r\n")
+                        .await
+                        .unwrap();
+                } else {
+                    loop {
+                        if socket.write_all(b"6\r\n: hb\n\n\r\n").await.is_err() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            });
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                drain_stream(provider_with_timeouts(
+                    format!("http://{address}"),
+                    Some(5),
+                    Some(1),
+                )),
+            )
+            .await;
+            server.abort();
+            let (chunks, error) = outcome.unwrap();
+            assert_eq!(chunks.len(), 5);
+            if complete {
+                assert!(error.is_none(), "{error:?}");
+            } else {
+                assert_eq!(
+                    error
+                        .unwrap()
+                        .downcast::<ProviderFailure>()
+                        .unwrap()
+                        .telemetry
+                        .failure_kind,
+                    Some(ProviderFailureKind::StreamProgressTimeout)
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -203,6 +325,7 @@ async fn send_retries_transient_pre_header_transport_failure() {
             max_delay_ms: 1,
         }),
         stream_idle_timeout_secs: None,
+        stream_progress_timeout_secs: None,
     });
 
     let response = p.send(&user_msgs(), None, &json!({})).await.unwrap();
