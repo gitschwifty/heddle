@@ -415,6 +415,20 @@ pub fn run_agent_loop<'a>(
             for call in &tool_calls {
                 if aborted(&options.signal) { return; }
 
+                if !tools.iter().any(|tool| tool.function.name == call.function.name) {
+                    let reason = "Tool is not available in this phase".to_string();
+                    tool_messages.push(ToolMessage {
+                        tool_call_id: call.id.clone(),
+                        content: format!("Error: {reason}"),
+                    });
+                    yield AgentEvent::PermissionDenied {
+                        name: call.function.name.clone(),
+                        call: call.clone(),
+                        reason,
+                    };
+                    continue;
+                }
+
                 if let Some(checker) = &options.permission_checker {
                     let outcome = check_permission(checker, &options.permission_resolver, call).await;
                     for ev in outcome.events {
@@ -722,6 +736,20 @@ pub fn run_agent_loop_streaming<'a>(
             let mut tool_messages: Vec<ToolMessage> = Vec::new();
             for call in &tool_calls {
                 if aborted(&options.signal) { return; }
+
+                if !tools.iter().any(|tool| tool.function.name == call.function.name) {
+                    let reason = "Tool is not available in this phase".to_string();
+                    tool_messages.push(ToolMessage {
+                        tool_call_id: call.id.clone(),
+                        content: format!("Error: {reason}"),
+                    });
+                    yield AgentEvent::PermissionDenied {
+                        name: call.function.name.clone(),
+                        call: call.clone(),
+                        reason,
+                    };
+                    continue;
+                }
 
                 if let Some(checker) = &options.permission_checker {
                     let outcome = check_permission(checker, &options.permission_resolver, call).await;
