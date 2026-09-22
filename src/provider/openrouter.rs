@@ -840,7 +840,7 @@ impl Provider for OpenRouterProvider {
             }
         }
         new_config.request_params = Some(Value::Object(merged));
-        create_openrouter_provider(new_config)
+        create_openai_compatible_provider(new_config, self.openrouter_headers)
     }
 }
 

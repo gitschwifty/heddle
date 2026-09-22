@@ -35,6 +35,33 @@ fn tool() -> ToolDefinition {
 }
 
 #[tokio::test]
+async fn straitly_overrides_preserve_router_headers_and_stream_usage() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("data: [DONE]\n\n"))
+        .mount(&server)
+        .await;
+    let provider = create_providers(&config(server.uri()))
+        .unwrap()
+        .main
+        .with(json!({"model": "override-model"}))
+        .with(json!({"temperature": 0.2}));
+    let chunks: Vec<_> = provider
+        .stream(messages(), None, Value::Null)
+        .collect()
+        .await;
+    assert!(chunks.iter().all(Result::is_ok));
+    let request = server.received_requests().await.unwrap().remove(0);
+    assert!(request.headers.get("x-openrouter-title").is_none());
+    assert!(request.headers.get("x-openrouter-metadata").is_none());
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["model"], "override-model");
+    assert_eq!(body["temperature"], 0.2);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+}
+
+#[tokio::test]
 async fn straitly_uses_openai_compatible_request_without_openrouter_headers() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
