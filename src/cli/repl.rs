@@ -227,6 +227,9 @@ pub async fn start_cli() -> Result<()> {
     )));
 
     let mut loop_options = AgentLoopOptions::default();
+    if let Some(max_iterations) = ctx.config.max_iterations {
+        loop_options.max_iterations = Some(max_iterations);
+    }
     if let Some(t) = ctx.config.doom_loop_threshold {
         loop_options.doom_loop_threshold = Some(t);
     }

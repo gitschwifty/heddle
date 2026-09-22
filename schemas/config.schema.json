@@ -101,6 +101,13 @@
         "type": "string"
       }
     },
+    "max_iterations": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
     "max_tokens": {
       "type": [
         "number",

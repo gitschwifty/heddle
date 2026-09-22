@@ -36,6 +36,23 @@ pub async fn run_oneshot_with_context(
     registry: ToolRegistry,
     messages: &mut Vec<Message>,
 ) -> OneshotResult {
+    run_oneshot_with_context_options(
+        prompt,
+        provider,
+        registry,
+        messages,
+        AgentLoopOptions::default(),
+    )
+    .await
+}
+
+async fn run_oneshot_with_context_options(
+    prompt: &str,
+    provider: Arc<dyn Provider>,
+    registry: ToolRegistry,
+    messages: &mut Vec<Message>,
+    loop_options: AgentLoopOptions,
+) -> OneshotResult {
     if prompt.is_empty() {
         return OneshotResult {
             output: "No prompt provided".to_string(),
@@ -49,7 +66,7 @@ pub async fn run_oneshot_with_context(
 
     let mut output = String::new();
     let mut tool_calls = 0u32;
-    let mut stream = run_agent_loop(provider, registry, messages, AgentLoopOptions::default());
+    let mut stream = run_agent_loop(provider, registry, messages, loop_options);
     while let Some(event) = stream.next().await {
         match event {
             AgentEvent::AssistantMessage { message, .. } => {
@@ -97,11 +114,15 @@ pub async fn run_oneshot(options: OneshotOptions) -> OneshotResult {
         }
     };
     let mut messages = session.messages;
-    run_oneshot_with_context(
+    run_oneshot_with_context_options(
         &options.prompt,
         session.provider,
         session.registry,
         &mut messages,
+        AgentLoopOptions {
+            max_iterations: session.config.max_iterations,
+            ..AgentLoopOptions::default()
+        },
     )
     .await
 }

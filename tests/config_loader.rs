@@ -357,6 +357,15 @@ fn loads_doom_loop_threshold() {
 }
 
 #[test]
+fn loads_max_iterations() {
+    let sb = Sandbox::new("loader-max-iterations");
+    clear_env();
+    write_global(&sb, "max_iterations = 48\n");
+    let cfg = load_config(None);
+    assert_eq!(cfg.max_iterations, Some(48));
+}
+
+#[test]
 fn loads_budget_limit() {
     let sb = Sandbox::new("loader-budget");
     clear_env();

@@ -79,6 +79,7 @@ credential = "keychain:heddle/straitly"
 | `approval_mode` | string | — | Permission mode (see [Permissions](#permissions)) |
 | `instructions` | string[] | — | Additional instruction files to inject |
 | `tools` | string[] | — | Allowlist of tools to enable |
+| `max_iterations` | number | 20 | Maximum model/tool-use rounds per turn, for the main agent and subagents |
 | `web_fetch_allow_private_addresses` | boolean | false | Allow `web_fetch` to access localhost/private IPs for trusted local workflows |
 | `doom_loop_threshold` | number | 3 | Identical tool call iterations before stopping |
 | `budget_limit` | number | — | Cost limit for session |

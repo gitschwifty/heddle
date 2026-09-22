@@ -132,6 +132,8 @@ pub struct HeddleConfig {
     pub approval_mode: Option<ApprovalMode>,
     pub instructions: Option<Vec<String>>,
     pub tools: Option<Vec<String>>,
+    /// Maximum model/tool-use rounds per agent turn. Defaults to the agent-loop limit.
+    pub max_iterations: Option<u32>,
     pub doom_loop_threshold: Option<u32>,
     pub budget_limit: Option<f64>,
     pub compact_trigger: Option<f64>,
@@ -174,6 +176,7 @@ impl Default for HeddleConfig {
             approval_mode: None,
             instructions: None,
             tools: None,
+            max_iterations: None,
             doom_loop_threshold: None,
             budget_limit: None,
             compact_trigger: None,
@@ -340,6 +343,9 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
     if let Some(n) = table.get("stream_idle_timeout_secs").and_then(as_int) {
         config.stream_idle_timeout_secs = Some(n as u64);
+    }
+    if let Some(n) = table.get("max_iterations").and_then(as_int) {
+        config.max_iterations = Some(n as u32);
     }
     if let Some(n) = table.get("doom_loop_threshold").and_then(as_int) {
         config.doom_loop_threshold = Some(n as u32);

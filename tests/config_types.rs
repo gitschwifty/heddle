@@ -82,6 +82,7 @@ fn session_config_accepts_full() {
         "approval_mode": "full-auto",
         "instructions": ["HEDDLE.md"],
         "tools": ["read_file", "glob"],
+        "max_iterations": 48,
         "doom_loop_threshold": 5,
         "budget_limit": 1.5
     }));
