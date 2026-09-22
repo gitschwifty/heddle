@@ -40,7 +40,7 @@ pub fn should_compact(messages: &[Message], model_limit: u64, config: Compaction
 
 fn protection_boundary(messages: &[Message], protect: u64) -> usize {
     let mut accumulated: u64 = 0;
-    let mut boundary = messages.len();
+    let mut boundary = 1.min(messages.len());
     if messages.len() > 1 {
         for i in (1..messages.len()).rev() {
             let json = serde_json::to_string(&messages[i]).unwrap_or_default();
@@ -135,7 +135,8 @@ pub async fn compact_context(
         .choices
         .first()
         .and_then(|c| c.message.content.clone())
-        .unwrap_or_else(|| "No summary generated.".to_string());
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Compaction returned an empty summary"))?;
 
     // Remove high-to-low so indices stay valid.
     let mut sorted: Vec<usize> = indices_to_remove.iter().copied().collect();
