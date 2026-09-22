@@ -269,6 +269,12 @@
     "FeaturesSchema": {
       "type": "object",
       "properties": {
+        "checkpoints": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "facets": {
           "type": [
             "boolean",

@@ -36,6 +36,58 @@ fn clear_env() {
 }
 
 #[test]
+fn feature_layers_preserve_unspecified_global_overrides() {
+    use heddle::config::features::{get_features, Mode};
+
+    let sb = Sandbox::new("loader-feature-layers");
+    clear_env();
+    write_global(
+        &sb,
+        "[features]\nhooks = false\nhistory = false\nusage_data = false\nfile_history = false\n",
+    );
+    for local in ["[features]\nstatus_line = false\n", "[features]\n"] {
+        write_local(&sb, local);
+        let cfg = load_config(None);
+        let features = get_features(Mode::Interactive, cfg.features.as_ref());
+        assert!(!features.hooks);
+        assert!(!features.history);
+        assert!(!features.usage_data);
+        assert!(!features.file_history);
+    }
+    write_local(&sb, "[features]\nhooks = true\n");
+    let cfg = load_config(None);
+    let features = get_features(Mode::Interactive, cfg.features.as_ref());
+    assert!(
+        features.hooks,
+        "explicit local values still take precedence"
+    );
+    assert!(!features.history);
+    assert!(!features.usage_data);
+}
+
+#[test]
+fn feature_checkpoints_load_and_match_schema() {
+    use heddle::config::features::{get_features, Mode};
+
+    let sb = Sandbox::new("loader-feature-checkpoints");
+    clear_env();
+    write_global(&sb, "[features]\ncheckpoints = false\n");
+    write_local(&sb, "[features]\nstatus_line = false\n");
+    let cfg = load_config(None);
+    assert!(!get_features(Mode::Interactive, cfg.features.as_ref()).checkpoints);
+    write_local(&sb, "[features]\ncheckpoints = true\n");
+    let cfg = load_config(None);
+    assert!(get_features(Mode::Headless, cfg.features.as_ref()).checkpoints);
+    let cfg = load_config_from_file(&sb.heddle_home.join("config.toml"));
+    assert!(!get_features(Mode::Interactive, cfg.features.as_ref()).checkpoints);
+    assert!(
+        heddle::schema_export::config_schema()["definitions"]["FeaturesSchema"]["properties"]
+            .get("checkpoints")
+            .is_some()
+    );
+}
+
+#[test]
 fn defaults_when_no_config_files() {
     let _sb = Sandbox::new("loader-defaults");
     clear_env();

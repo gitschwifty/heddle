@@ -397,7 +397,7 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
     }
 
     if let Some(feat) = table.get("features").and_then(|v| v.as_table()) {
-        let mut over = FeatureFlagsOverride::default();
+        let mut over = config.features.unwrap_or_default();
         if let Some(b) = feat.get("history").and_then(as_bool) {
             over.history = Some(b);
         }
@@ -421,6 +421,9 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
         }
         if let Some(b) = feat.get("tasks").and_then(as_bool) {
             over.tasks = Some(b);
+        }
+        if let Some(b) = feat.get("checkpoints").and_then(as_bool) {
+            over.checkpoints = Some(b);
         }
         config.features = Some(over);
     }

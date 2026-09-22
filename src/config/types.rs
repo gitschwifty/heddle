@@ -105,6 +105,7 @@ pub struct SessionConfigSchema {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct FeaturesSchema {
+    pub checkpoints: Option<bool>,
     pub history: Option<bool>,
     pub usage_data: Option<bool>,
     pub facets: Option<bool>,
