@@ -234,6 +234,10 @@ If all levels fail, it reports the closest match with line number.
 ## Sessions
 
 Sessions are persisted as JSONL files in `~/.heddle/projects/{encoded-path}/sessions/`.
+Each subagent invocation also writes an event-level child transcript to
+`~/.heddle/projects/{encoded-path}/sessions/subagents/{parent-session-id}/`.
+These logs retain the child prompt, messages, tool calls and results, permission
+decisions, provider telemetry, usage, and terminal errors for debugging.
 
 ### Resume / Fork a Session
 

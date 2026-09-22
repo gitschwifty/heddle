@@ -289,6 +289,11 @@ fn format_tool_row(
 
     let result = match name {
         "read_file" | "grep" | "glob" if !result.is_some_and(is_error_result) => String::new(),
+        // A subagent is a delegated answer, not incidental command output. Keep
+        // its complete final response visible after the tool finishes.
+        "subagent" => result
+            .map(|result| format!("\n{}", result.trim()))
+            .unwrap_or_default(),
         _ => result
             .map(|result| format!(" - {}", abbreviate(result.trim(), 160)))
             .unwrap_or_default(),

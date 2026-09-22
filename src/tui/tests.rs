@@ -299,6 +299,25 @@ fn tool_events_collapse_started_row_to_finished_row() {
 }
 
 #[test]
+fn subagent_tool_row_keeps_its_complete_final_response() {
+    let mut app = TuiApp::new();
+    let call = tool_call_with_args("child-1", "subagent", r#"{"prompt":"inspect"}"#);
+    let result = "first finding\nsecond finding\nthird finding";
+
+    app.apply_runtime_event(RuntimeEvent::ToolStarted {
+        name: "subagent".to_string(),
+        call: call.clone(),
+    });
+    app.apply_runtime_event(RuntimeEvent::ToolFinished {
+        name: "subagent".to_string(),
+        result: result.to_string(),
+        call,
+    });
+
+    assert!(app.transcript[0].text.contains(result));
+}
+
+#[test]
 fn empty_assistant_delta_before_tool_does_not_render_blank_assistant_row() {
     let mut app = TuiApp::new();
     let call = tool_call("call-1", "read_file");

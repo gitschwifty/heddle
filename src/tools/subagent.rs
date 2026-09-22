@@ -1,11 +1,14 @@
 //! subagent tool — recursively runs the agent loop with an isolated context.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use super::registry::ToolRegistry;
 use super::types::{ExecOptions, HeddleTool};
@@ -15,6 +18,7 @@ use crate::cost::tracker::CostTracker;
 use crate::hooks::runner::HooksRunner;
 use crate::permissions::checker::PermissionChecker;
 use crate::provider::types::Provider;
+use crate::session::jsonl::{append_context_marker, append_message};
 use crate::types::{Message, SystemMessage, UserMessage};
 
 #[derive(Clone, Default)]
@@ -23,6 +27,10 @@ pub struct SubagentOptions {
     pub cost_tracker: Option<Arc<Mutex<CostTracker>>>,
     pub hooks_runner: Option<Arc<HooksRunner>>,
     pub max_iterations: Option<u32>,
+    /// Directory where child transcripts for this parent session are stored.
+    pub transcript_dir: Option<PathBuf>,
+    /// Durable identifier of the parent session, used to correlate child logs.
+    pub parent_session_id: Option<String>,
 }
 
 pub struct SubagentTool {
@@ -83,8 +91,11 @@ impl HeddleTool for SubagentTool {
             Message::System(SystemMessage {
                 content: "You are a subagent. Complete the given task using available tools. Be concise and focused.".to_string(),
             }),
-            Message::User(UserMessage { content: prompt }),
+            Message::User(UserMessage {
+                content: prompt.clone(),
+            }),
         ];
+        let transcript = self.create_transcript(&prompt, &messages);
 
         let loop_opts = AgentLoopOptions {
             max_iterations: self.options.max_iterations,
@@ -108,7 +119,25 @@ impl HeddleTool for SubagentTool {
                     ct.lock().add_usage(usage);
                 }
             }
+            if let Some(path) = &transcript {
+                self.record_event(path, &event);
+            }
             events.push(event);
+        }
+        drop(stream);
+
+        if let Some(path) = &transcript {
+            // This is the authoritative model-facing conversation. Event records
+            // above preserve timing and permission details; this snapshot also
+            // includes tool messages synthesized for denied or hook-blocked calls.
+            let _ = append_context_marker(
+                path,
+                &json!({
+                    "type": "subagent_complete",
+                    "timestamp": Utc::now().to_rfc3339(),
+                    "messages": messages,
+                }),
+            );
         }
 
         let last_assistant_content = events.iter().rev().find_map(|e| match e {
@@ -126,5 +155,99 @@ impl HeddleTool for SubagentTool {
             return format!("Error: Subagent failed — {m}");
         }
         "Error: Subagent produced no response".to_string()
+    }
+}
+
+impl SubagentTool {
+    fn create_transcript(&self, prompt: &str, messages: &[Message]) -> Option<PathBuf> {
+        let root = self.options.transcript_dir.as_ref()?;
+        let id = Uuid::new_v4().to_string();
+        let path = root.join(format!("{id}.jsonl"));
+        let _ = append_context_marker(
+            &path,
+            &json!({
+                "type": "subagent_transcript",
+                "id": id,
+                "parent_session_id": self.options.parent_session_id,
+                "created": Utc::now().to_rfc3339(),
+                "prompt": prompt,
+            }),
+        );
+        for message in messages {
+            let _ = append_message(&path, message);
+        }
+        Some(path)
+    }
+
+    fn record_event(&self, path: &std::path::Path, event: &AgentEvent) {
+        let value = match event {
+            AgentEvent::AssistantMessage {
+                message,
+                finish_reason,
+            } => {
+                let _ = append_message(path, &Message::Assistant(message.clone()));
+                json!({ "type": "subagent_event", "event": "assistant_message", "finish_reason": finish_reason })
+            }
+            AgentEvent::ToolStart { name, call } => {
+                json!({ "type": "subagent_event", "event": "tool_start", "name": name, "call": call })
+            }
+            AgentEvent::ToolEnd { name, result, call } => {
+                json!({ "type": "subagent_event", "event": "tool_end", "name": name, "call": call, "result": result })
+            }
+            AgentEvent::Usage {
+                usage,
+                generation_id,
+                timing,
+            } => {
+                json!({ "type": "subagent_event", "event": "usage", "usage": usage, "generation_id": generation_id, "timing": timing })
+            }
+            AgentEvent::RoutedModel { model } => {
+                json!({ "type": "subagent_event", "event": "routed_model", "model": model })
+            }
+            AgentEvent::UpstreamProvider { provider } => {
+                json!({ "type": "subagent_event", "event": "upstream_provider", "provider": provider })
+            }
+            AgentEvent::LoopDetected { count } => {
+                json!({ "type": "subagent_event", "event": "loop_detected", "count": count })
+            }
+            AgentEvent::Error { message } => {
+                json!({ "type": "subagent_event", "event": "error", "message": message })
+            }
+            AgentEvent::ProviderError {
+                message, telemetry, ..
+            } => {
+                json!({ "type": "subagent_event", "event": "provider_error", "message": message, "telemetry": telemetry })
+            }
+            AgentEvent::PermissionRequest { name, call, reason } => {
+                json!({ "type": "subagent_event", "event": "permission_request", "name": name, "call": call, "reason": reason })
+            }
+            AgentEvent::PermissionDenied { name, call, reason } => {
+                json!({ "type": "subagent_event", "event": "permission_denied", "name": name, "call": call, "reason": reason })
+            }
+            AgentEvent::ContentDelta { text } => {
+                json!({ "type": "subagent_event", "event": "content_delta", "text": text })
+            }
+            AgentEvent::PlanComplete { plan } => {
+                json!({ "type": "subagent_event", "event": "plan_complete", "plan": plan })
+            }
+            AgentEvent::ContextPrune {
+                messages_pruned,
+                tokens_before,
+                tokens_after,
+            } => {
+                json!({ "type": "subagent_event", "event": "context_prune", "messages_pruned": messages_pruned, "tokens_before": tokens_before, "tokens_after": tokens_after })
+            }
+            AgentEvent::ContextCompact => {
+                json!({ "type": "subagent_event", "event": "context_compact" })
+            }
+            AgentEvent::ContextHandoff => {
+                json!({ "type": "subagent_event", "event": "context_handoff" })
+            }
+        };
+        let mut value = value;
+        if let Value::Object(fields) = &mut value {
+            fields.insert("timestamp".into(), Value::String(Utc::now().to_rfc3339()));
+        }
+        let _ = append_context_marker(path, &value);
     }
 }

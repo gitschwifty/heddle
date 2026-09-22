@@ -544,7 +544,15 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
             permission_checker: permission_checker.clone(),
             cost_tracker: Some(cost_tracker.clone()),
             hooks_runner: hooks_runner.clone(),
-            max_iterations: None,
+            max_iterations: config.max_iterations,
+            transcript_dir: Some(
+                session_file
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("subagents")
+                    .join(&session_id),
+            ),
+            parent_session_id: Some(session_id.clone()),
         },
     ))?;
 

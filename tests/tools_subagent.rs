@@ -11,6 +11,7 @@ use parking_lot::Mutex as PlMutex;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tempfile::tempdir;
 
 mod common;
 use common::mocks::{text_response, tool_call_response};
@@ -229,6 +230,86 @@ async fn runs_simple_prompt_and_returns_assistant_response() {
         )
         .await;
     assert_eq!(result, "The answer is 42.");
+}
+
+#[tokio::test]
+async fn writes_a_linked_transcript_with_events_and_final_messages() {
+    let dir = tempdir().unwrap();
+    let p = ScriptProvider::new(vec![
+        tool_call_response(&[("echo", json!({ "text": "hello" }))]),
+        text_response("Echo returned: hello"),
+    ]);
+    let mut r = ToolRegistry::new();
+    r.register(Arc::new(EchoTool)).unwrap();
+    let tool = create_subagent_tool(
+        p,
+        r,
+        SubagentOptions {
+            transcript_dir: Some(dir.path().join("subagents").join("parent-123")),
+            parent_session_id: Some("parent-123".into()),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        tool.execute(json!({ "prompt": "Use echo" }), ExecOptions::default())
+            .await,
+        "Echo returned: hello"
+    );
+
+    let entries: Vec<_> = std::fs::read_dir(dir.path().join("subagents/parent-123"))
+        .unwrap()
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let lines: Vec<Value> = std::fs::read_to_string(entries[0].as_ref().unwrap().path())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["type"], "subagent_transcript");
+    assert_eq!(lines[0]["parent_session_id"], "parent-123");
+    assert!(lines
+        .iter()
+        .any(|line| { line["type"] == "subagent_event" && line["event"] == "tool_start" }));
+    assert!(lines.iter().any(|line| {
+        line["type"] == "subagent_event" && line["event"] == "tool_end" && line["result"] == "hello"
+    }));
+    let complete = lines
+        .iter()
+        .find(|line| line["type"] == "subagent_complete")
+        .unwrap();
+    assert!(complete["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| message["role"] == "tool" && message["content"] == "hello"));
+}
+
+#[tokio::test]
+async fn writes_provider_errors_to_child_transcript() {
+    let dir = tempdir().unwrap();
+    let tool = create_subagent_tool(
+        Arc::new(FailingProvider),
+        ToolRegistry::new(),
+        SubagentOptions {
+            transcript_dir: Some(dir.path().join("subagents/parent-456")),
+            parent_session_id: Some("parent-456".into()),
+            ..Default::default()
+        },
+    );
+
+    let result = tool
+        .execute(json!({ "prompt": "Do something" }), ExecOptions::default())
+        .await;
+    assert!(result.contains("API connection failed"));
+    let entry = std::fs::read_dir(dir.path().join("subagents/parent-456"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let transcript = std::fs::read_to_string(entry.path()).unwrap();
+    assert!(transcript.contains("\"event\":\"error\""), "{transcript}");
+    assert!(transcript.contains("API connection failed"), "{transcript}");
 }
 
 #[tokio::test]
