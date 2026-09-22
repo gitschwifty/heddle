@@ -300,6 +300,16 @@ fn scrub_sensitive_environment(cmd: &mut Command) {
 fn is_sensitive_environment_variable(key: &std::ffi::OsStr) -> bool {
     let key = key.to_string_lossy().to_ascii_uppercase();
     key.starts_with("HEDDLE_")
+        || matches!(
+            key.as_str(),
+            "TOKEN"
+                | "PASSWORD"
+                | "SECRET"
+                | "CREDENTIAL"
+                | "CREDENTIALS"
+                | "AWS_ACCESS_KEY_ID"
+                | "PGPASSWORD"
+        )
         || key == "OPENROUTER_API_KEY"
         || key == "GH_TOKEN"
         || key == "GITHUB_TOKEN"
@@ -715,6 +725,14 @@ mod tests {
             "CUSTOM_SERVICE_KEY",
             "MY_SERVICE_PASSWORD",
             "DOCKER_AUTH_CONFIG",
+            "TOKEN",
+            "PASSWORD",
+            "SECRET",
+            "CREDENTIAL",
+            "CREDENTIALS",
+            "AWS_ACCESS_KEY_ID",
+            "PGPASSWORD",
+            "pgpassword",
         ] {
             assert!(is_sensitive_environment_variable(key.as_ref()), "{key}");
         }
