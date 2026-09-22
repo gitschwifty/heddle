@@ -201,16 +201,22 @@ async fn unknown_tool_returns_error_to_model_and_loop_continues() {
         AgentLoopOptions::default(),
     );
     let events = collect(stream).await;
-    let tool_end = events
+    let denied = events
         .iter()
-        .find(|e| matches!(e, AgentEvent::ToolEnd { .. }))
-        .expect("expected tool_end");
-    if let AgentEvent::ToolEnd { result, .. } = tool_end {
-        assert!(
-            result.contains("Error: Tool \"nonexistent_tool\" is not enabled for this session"),
-            "got: {result}"
-        );
+        .find(|e| matches!(e, AgentEvent::PermissionDenied { .. }))
+        .expect("expected permission denial");
+    if let AgentEvent::PermissionDenied { name, reason, .. } = denied {
+        assert_eq!(name, "nonexistent_tool");
+        assert_eq!(reason, "Tool is not available in this phase");
     }
+    let tool_message = messages
+        .iter()
+        .find_map(|message| match message {
+            Message::Tool(tool) => Some(&tool.content),
+            _ => None,
+        })
+        .expect("expected denied tool message");
+    assert_eq!(tool_message, "Error: Tool is not available in this phase");
     let assistant_count = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::AssistantMessage { .. }))

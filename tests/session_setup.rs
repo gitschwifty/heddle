@@ -266,10 +266,11 @@ async fn system_prompt_includes_runtime_cwd_context() {
             .content
             .contains(&format!("Current working directory: {}", cwd_dir.display())));
         assert!(m.content.contains("Do not invent absolute paths."));
-        assert!(m.content.contains("network_mode: closed"));
+        assert!(m.content.contains("sandbox_profile: developer"));
+        assert!(m.content.contains("network_mode: open"));
         assert!(m
             .content
-            .contains("Do not use package downloads, `npx --yes`, `curl`"));
+            .contains("Outbound network is available to Bash commands in this developer sandbox."));
     } else {
         panic!("expected system message");
     }

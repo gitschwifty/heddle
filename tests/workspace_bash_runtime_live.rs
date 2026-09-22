@@ -154,7 +154,7 @@ mod macos {
     #[tokio::test]
     async fn confined_bash_forwards_explicit_go_telemetry_setting() {
         let workspace = fixture();
-        let Some(result) = run(workspace.path(), "go env GOTELEMETRY").await else {
+        let Some(result) = run(workspace.path(), "printf '%s' \"$GOTELEMETRY\"").await else {
             return;
         };
 
