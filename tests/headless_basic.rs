@@ -5,6 +5,26 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 mod common;
+
+#[test]
+fn invalid_requests_preserve_recoverable_ids() {
+    let mut h = common::headless::Headless::spawn(std::collections::HashMap::new());
+    for (index, request) in [
+        serde_json::json!({"type":"send", "id":"bad-message", "message":7}),
+        serde_json::json!({"type":"unknown", "id":"bad-type"}),
+        serde_json::json!({"id":"missing-type"}),
+        serde_json::json!({"type":"send", "id":7, "message":"hi"}),
+    ]
+    .iter()
+    .enumerate()
+    {
+        h.send_line(&request.to_string());
+        let lines = h.wait_for_lines(index + 1, std::time::Duration::from_secs(8));
+        let response = common::headless::parse_line(&lines[index]);
+        assert_eq!(response["status"], "error");
+        assert_eq!(response["id"], request["id"].as_str().unwrap_or("unknown"));
+    }
+}
 use common::headless::{init_msg, parse_line, Headless};
 
 const T: Duration = Duration::from_secs(5);

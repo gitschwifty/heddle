@@ -95,7 +95,10 @@ fn init_router_selects_a_gateway_not_upstream_metadata() {
 fn decode_invalid_json() {
     let r = decode_request("not json{");
     match r {
-        DecodeResult::Err(e) => assert_eq!(e, "Invalid JSON"),
+        DecodeResult::Err(e) => {
+            assert_eq!(e.message, "Invalid JSON");
+            assert!(e.id.is_none());
+        }
         _ => panic!("expected err"),
     }
 }
@@ -104,7 +107,10 @@ fn decode_invalid_json() {
 fn decode_missing_type() {
     let r = decode_request(r#"{"id":"1"}"#);
     match r {
-        DecodeResult::Err(e) => assert_eq!(e, "Missing 'type' field"),
+        DecodeResult::Err(e) => {
+            assert_eq!(e.message, "Missing 'type' field");
+            assert_eq!(e.id.as_deref(), Some("1"));
+        }
         _ => panic!("expected err"),
     }
 }
@@ -113,7 +119,10 @@ fn decode_missing_type() {
 fn decode_missing_id() {
     let r = decode_request(r#"{"type":"send"}"#);
     match r {
-        DecodeResult::Err(e) => assert_eq!(e, "Missing 'id' field"),
+        DecodeResult::Err(e) => {
+            assert_eq!(e.message, "Missing 'id' field");
+            assert!(e.id.is_none());
+        }
         _ => panic!("expected err"),
     }
 }
@@ -122,7 +131,10 @@ fn decode_missing_id() {
 fn decode_non_object() {
     let r = decode_request(r#""hello""#);
     match r {
-        DecodeResult::Err(e) => assert_eq!(e, "Expected JSON object"),
+        DecodeResult::Err(e) => {
+            assert_eq!(e.message, "Expected JSON object");
+            assert!(e.id.is_none());
+        }
         _ => panic!("expected err"),
     }
 }

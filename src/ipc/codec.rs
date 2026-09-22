@@ -21,26 +21,43 @@ pub fn encode_response(response: &IpcResponse) -> String {
 
 pub enum DecodeResult {
     Ok(IpcRequest),
-    Err(String),
+    Err(DecodeError),
+}
+
+pub struct DecodeError {
+    pub id: Option<String>,
+    pub message: String,
 }
 
 pub fn decode_request(line: &str) -> DecodeResult {
     let parsed: Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(_) => return DecodeResult::Err("Invalid JSON".to_string()),
+        Err(_) => {
+            return DecodeResult::Err(DecodeError {
+                id: None,
+                message: "Invalid JSON".to_string(),
+            })
+        }
+    };
+    let id = parsed.get("id").and_then(Value::as_str).map(String::from);
+    let invalid = |message: String| {
+        DecodeResult::Err(DecodeError {
+            id: id.clone(),
+            message,
+        })
     };
     if !parsed.is_object() {
-        return DecodeResult::Err("Expected JSON object".to_string());
+        return invalid("Expected JSON object".to_string());
     }
     if parsed.get("type").and_then(Value::as_str).is_none() {
-        return DecodeResult::Err("Missing 'type' field".to_string());
+        return invalid("Missing 'type' field".to_string());
     }
     if parsed.get("id").and_then(Value::as_str).is_none() {
-        return DecodeResult::Err("Missing 'id' field".to_string());
+        return invalid("Missing 'id' field".to_string());
     }
     match serde_json::from_value::<IpcRequest>(parsed) {
         Ok(req) => DecodeResult::Ok(req),
-        Err(e) => DecodeResult::Err(e.to_string()),
+        Err(e) => invalid(e.to_string()),
     }
 }
 

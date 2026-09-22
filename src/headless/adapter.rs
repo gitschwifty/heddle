@@ -100,7 +100,7 @@ pub async fn run_headless() -> Result<()> {
         let mut lines = BufReader::new(stdin).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             match decode_request(&line) {
-                DecodeResult::Err(e) => write_line(&protocol_error(None, e)),
+                DecodeResult::Err(e) => write_line(&protocol_error(e.id.as_deref(), e.message)),
                 DecodeResult::Ok(req) => {
                     // Cancel for active send → flip immediately.
                     // Cancel arriving before send dispatch → queue for the send to consume.
