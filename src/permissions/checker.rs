@@ -8,7 +8,7 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 
 use super::rules::{
-    evaluate_rules, parse_rule, ParsedRule, PermissionConfig, PermissionRule, RuleDecision,
+    evaluate_rules, parse_rule_checked, ParsedRule, PermissionConfig, PermissionRule, RuleDecision,
 };
 use crate::config::loader::{ApprovalMode, PermissionsLayer};
 use crate::types::ToolDefinition;
@@ -103,6 +103,7 @@ pub fn read_only_tool_filter(tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
 }
 
 pub struct PermissionChecker {
+    validation_error: Option<String>,
     mode: ApprovalMode,
     always_allowed: HashSet<String>,
     merged_rules: Option<PermissionConfig>,
@@ -117,14 +118,19 @@ impl PermissionChecker {
         layers: Option<&[PermissionsLayer]>,
         project_dir: Option<PathBuf>,
     ) -> Self {
-        let merged_rules = layers.and_then(|layers| {
-            if layers.is_empty() {
-                return None;
-            }
-            let configs: Vec<PermissionConfig> = layers.iter().map(Self::parse_layer).collect();
-            Some(super::rules::merge_configs(&configs))
-        });
+        let parsed: Result<Vec<_>, _> = layers
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| Self::parse_layer(layer, index + 1))
+            .collect();
+        let (merged_rules, validation_error) = match parsed {
+            Ok(configs) if configs.is_empty() => (None, None),
+            Ok(configs) => (Some(super::rules::merge_configs(&configs)), None),
+            Err(error) => (None, Some(error)),
+        };
         Self {
+            validation_error,
             mode,
             always_allowed: HashSet::new(),
             merged_rules,
@@ -134,26 +140,38 @@ impl PermissionChecker {
         }
     }
 
-    fn parse_layer(layer: &PermissionsLayer) -> PermissionConfig {
-        let parse = |rules: &[String]| -> Vec<PermissionRule> {
+    fn parse_layer(
+        layer: &PermissionsLayer,
+        layer_index: usize,
+    ) -> Result<PermissionConfig, String> {
+        let parse = |list: &str, rules: &[String]| -> Result<Vec<PermissionRule>, String> {
             let mut out = Vec::new();
-            for raw in rules {
-                match parse_rule(raw) {
-                    Some(ParsedRule::One(r)) => out.push(r),
-                    Some(ParsedRule::Many(rs)) => out.extend(rs),
-                    None => {}
+            for (index, raw) in rules.iter().enumerate() {
+                match parse_rule_checked(raw).map_err(|reason| format!("Invalid permission configuration: layer {layer_index} {list}[{index}]: {reason}"))? {
+                    ParsedRule::One(r) => out.push(r),
+                    ParsedRule::Many(rs) => out.extend(rs),
                 }
             }
-            out
+            Ok(out)
         };
-        PermissionConfig {
-            allow: parse(&layer.allow),
-            deny: parse(&layer.deny),
-            ask: parse(&layer.ask),
-        }
+        Ok(PermissionConfig {
+            allow: parse("allow", &layer.allow)?,
+            deny: parse("deny", &layer.deny)?,
+            ask: parse("ask", &layer.ask)?,
+        })
+    }
+
+    pub fn validation_error(&self) -> Option<&str> {
+        self.validation_error.as_deref()
     }
 
     pub fn check(&self, tool_name: &str, args: Option<&Value>) -> PermissionDecision {
+        if let Some(error) = &self.validation_error {
+            return PermissionDecision {
+                decision: Decision::Deny,
+                reason: Some(error.clone()),
+            };
+        }
         if matches!(self.mode, ApprovalMode::Yolo) {
             return PermissionDecision {
                 decision: Decision::Allow,

@@ -30,6 +30,19 @@ use common::headless::{init_msg, parse_line, Headless};
 const T: Duration = Duration::from_secs(5);
 
 #[test]
+fn malformed_permission_override_rejects_init() {
+    let mut h = Headless::spawn(HashMap::new());
+    let mut request: serde_json::Value = serde_json::from_str(&init_msg()).unwrap();
+    request["config"]["permissions"] = serde_json::json!({"deny":["Bash(rm *"]});
+    h.send_line(&request.to_string());
+    let lines = h.wait_for_lines(1, T);
+    let response = parse_line(&lines[0]);
+    assert_ne!(response["type"], "init_ok");
+    assert!(response.to_string().contains("deny[0]"), "{response}");
+    assert!(!response.to_string().contains("rm *"));
+}
+
+#[test]
 fn init_returns_init_ok_with_session_id_and_protocol_version() {
     let mut h = Headless::spawn(HashMap::new());
     h.send_line(&init_msg());

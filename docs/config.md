@@ -250,6 +250,6 @@ defaults → ~/.heddle/config.toml → .heddle/config.toml → env vars
 
 For most fields, last value wins. Exceptions:
 
-- **Permissions**: Kept as separate layers for precedence resolution (deny beats allow within each layer)
+- **Permissions**: Kept as separate layers for precedence resolution (deny beats allow within each layer). Session initialization rejects malformed rules, unknown names, empty patterns, invalid path/host globs, and non-string entries. Diagnostics identify the layer (starting at 1), rule list, and entry index (starting at 0), without printing the pattern.
 - **Hooks**: Merged additively (global hooks + local hooks, both fire)
 - **Instructions**: Local replaces global (not concatenated)

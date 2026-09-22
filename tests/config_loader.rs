@@ -773,12 +773,18 @@ fn empty_permissions_section_no_layers() {
 }
 
 #[test]
-fn non_string_perm_entries_dropped() {
+fn non_string_perm_entries_retained_for_fail_closed_validation() {
     let sb = Sandbox::new("loader-perms-invalid");
     clear_env();
     write_global(&sb, "[permissions]\ndeny = [\"Write(.env*)\", 42]\n");
     let cfg = load_config(None);
     let layers = cfg.permissions_layers.unwrap();
     assert_eq!(layers.len(), 1);
-    assert_eq!(layers[0].deny, vec!["Write(.env*)"]);
+    assert_eq!(layers[0].deny, vec!["Write(.env*)", ""]);
+    let checker = heddle::permissions::checker::PermissionChecker::new(
+        ApprovalMode::FullAuto,
+        Some(&layers),
+        None,
+    );
+    assert!(checker.validation_error().unwrap().contains("deny[1]"));
 }

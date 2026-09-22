@@ -275,6 +275,24 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
     if let Some(router) = options.router {
         config.provider = router;
     }
+    let mut permission_layers = config.permissions_layers.clone().unwrap_or_default();
+    if let Some(overrides) = &options.permission_overrides {
+        permission_layers.push(PermissionsLayer {
+            allow: overrides.allow.clone().unwrap_or_default(),
+            deny: overrides.deny.clone().unwrap_or_default(),
+            ask: overrides.ask.clone().unwrap_or_default(),
+        });
+    }
+    let checker = PermissionChecker::new(
+        config
+            .approval_mode
+            .unwrap_or(crate::config::loader::ApprovalMode::Suggest),
+        Some(&permission_layers),
+        std::env::current_dir().ok(),
+    );
+    if let Some(error) = checker.validation_error() {
+        return Err(anyhow!("{error}"));
+    }
     if options.headless_environment_credentials_only {
         let environment_key = match config.provider {
             crate::config::loader::ProviderKind::OpenRouter => {
@@ -490,28 +508,7 @@ pub async fn create_session(options: SessionOptions) -> Result<SessionContext> {
         config.base_url.as_deref(),
     );
 
-    let permission_checker = if let Some(mode) = config.approval_mode {
-        let mut layers: Vec<PermissionsLayer> = Vec::new();
-        if let Some(cfg_layers) = &config.permissions_layers {
-            layers.extend(cfg_layers.clone());
-        }
-        if let Some(overrides) = &options.permission_overrides {
-            layers.push(PermissionsLayer {
-                allow: overrides.allow.clone().unwrap_or_default(),
-                deny: overrides.deny.clone().unwrap_or_default(),
-                ask: overrides.ask.clone().unwrap_or_default(),
-            });
-        }
-        let cwd = std::env::current_dir().ok();
-        let checker = PermissionChecker::new(
-            mode,
-            if layers.is_empty() {
-                None
-            } else {
-                Some(&layers)
-            },
-            cwd,
-        );
+    let permission_checker = if config.approval_mode.is_some() {
         Some(Arc::new(Mutex::new(checker)))
     } else {
         None

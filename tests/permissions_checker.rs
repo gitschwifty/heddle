@@ -18,6 +18,53 @@ fn layer(allow: &[&str], deny: &[&str], ask: &[&str]) -> PermissionsLayer {
 // ── suggest mode ──
 
 #[test]
+fn malformed_rules_fail_closed_in_every_layer_and_list() {
+    for raw in [
+        "Bash(rm *",
+        "Read([)",
+        "WebFetch([)",
+        "UnknownTool",
+        "",
+        "Read()",
+    ] {
+        for list in ["allow", "deny", "ask"] {
+            for layer_index in 0..3 {
+                let mut layers = vec![layer(&[], &[], &[]); 3];
+                let target = match list {
+                    "allow" => &mut layers[layer_index].allow,
+                    "deny" => &mut layers[layer_index].deny,
+                    _ => &mut layers[layer_index].ask,
+                };
+                target.push(raw.into());
+                for mode in [
+                    ApprovalMode::Suggest,
+                    ApprovalMode::FullAuto,
+                    ApprovalMode::Yolo,
+                ] {
+                    let checker = PermissionChecker::new(mode, Some(&layers), None);
+                    let decision = checker.check("bash", Some(&json!({"command":"rm file"})));
+                    assert_eq!(
+                        decision.decision,
+                        Decision::Deny,
+                        "{raw:?} in {list}, layer {layer_index}"
+                    );
+                    let reason = decision.reason.unwrap();
+                    assert!(reason.contains(&format!("layer {}", layer_index + 1)));
+                    assert!(reason.contains(&format!("{list}[0]")));
+                    assert!(!reason.contains("rm *"));
+                    assert_eq!(
+                        checker
+                            .check("read_file", Some(&json!({"file_path":"secret"})))
+                            .decision,
+                        Decision::Deny
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn suggest_allows_read() {
     let c = PermissionChecker::new(ApprovalMode::Suggest, None, None);
     assert_eq!(c.check("read_file", None).decision, Decision::Allow);

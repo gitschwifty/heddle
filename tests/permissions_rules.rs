@@ -30,6 +30,21 @@ fn many(p: ParsedRule) -> Vec<PermissionRule> {
 // ── parse_rule ──
 
 #[test]
+fn rejects_invalid_globs_but_preserves_shell_patterns() {
+    for raw in [
+        "Read([)",
+        "read([)",
+        "Write([)",
+        "network([)",
+        "WebFetch([)",
+    ] {
+        assert!(parse_rule(raw).is_none(), "{raw}");
+    }
+    // Bash patterns use exact/prefix matching, not glob syntax.
+    assert!(parse_rule("Bash(echo [)").is_some());
+}
+
+#[test]
 fn parse_bare_tool_name() {
     assert_eq!(one(parse_rule("Read").unwrap()), rule("read_file", None));
 }

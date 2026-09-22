@@ -17,6 +17,33 @@ fn opts() -> SessionOptions {
     SessionOptions::default()
 }
 
+#[tokio::test]
+async fn malformed_permissions_reject_session_initialization() {
+    let sb = Sandbox::new("session-malformed-permissions");
+    std::env::set_var("OPENROUTER_API_KEY", "test-key");
+    for mode in [Mode::Interactive, Mode::Headless] {
+        for config in [
+            "[permissions]\ndeny = [\"Bash(rm *\"]\n",
+            "[permissions]\ndeny = [\"Read([)\"]\n",
+            "[permissions]\nask = [42]\n",
+            "[permissions]\ndeny = 42\n",
+            "permissions = false\n",
+        ] {
+            std::fs::write(sb.heddle_home.join("config.toml"), config).unwrap();
+            let result = create_session(SessionOptions {
+                mode: Some(mode),
+                ..opts()
+            })
+            .await;
+            let error = match result {
+                Ok(_) => panic!("invalid permissions accepted: {config}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("permission"), "{error}");
+        }
+    }
+}
+
 fn registered_tool_names(ctx: &heddle::session::setup::SessionContext) -> Vec<String> {
     let mut names: Vec<String> = ctx
         .registry

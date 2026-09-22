@@ -103,12 +103,17 @@ pub enum ParsedRule {
 }
 
 pub fn parse_rule(raw: &str) -> Option<ParsedRule> {
+    parse_rule_checked(raw).ok()
+}
+
+/// Diagnostics deliberately omit the raw pattern (which may contain secrets).
+pub fn parse_rule_checked(raw: &str) -> Result<ParsedRule, &'static str> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return None;
+        return Err("expected a nonempty permission rule string");
     }
     if trimmed == "*" {
-        return Some(ParsedRule::One(PermissionRule {
+        return Ok(ParsedRule::One(PermissionRule {
             tool: "*".to_string(),
             pattern: None,
         }));
@@ -116,10 +121,13 @@ pub fn parse_rule(raw: &str) -> Option<ParsedRule> {
 
     let (name, pattern) = if let Some(paren_idx) = trimmed.find('(') {
         if !trimmed.ends_with(')') {
-            return None;
+            return Err("missing closing parenthesis");
         }
         let n = &trimmed[..paren_idx];
         let p = &trimmed[paren_idx + 1..trimmed.len() - 1];
+        if p.trim().is_empty() {
+            return Err("empty rule pattern");
+        }
         (n.to_string(), Some(p.to_string()))
     } else {
         (trimmed.to_string(), None)
@@ -137,15 +145,29 @@ pub fn parse_rule(raw: &str) -> Option<ParsedRule> {
                 pattern: pattern.clone(),
             })
             .collect();
-        return Some(ParsedRule::Many(rules));
+        for rule in &rules {
+            validate_pattern(rule)?;
+        }
+        return Ok(ParsedRule::Many(rules));
     }
 
     // Resolve specific tool
-    let tool_name = resolve_tool_name(&name)?;
-    Some(ParsedRule::One(PermissionRule {
+    let tool_name = resolve_tool_name(&name).ok_or("unknown tool or category name")?;
+    let rule = PermissionRule {
         tool: tool_name.to_string(),
         pattern,
-    }))
+    };
+    validate_pattern(&rule)?;
+    Ok(ParsedRule::One(rule))
+}
+
+fn validate_pattern(rule: &PermissionRule) -> Result<(), &'static str> {
+    if PATH_TOOLS.contains(&rule.tool.as_str()) || rule.tool == "web_fetch" {
+        if let Some(pattern) = &rule.pattern {
+            Glob::new(pattern).map_err(|_| "invalid path or host glob")?;
+        }
+    }
+    Ok(())
 }
 
 pub fn match_rule(rule: &PermissionRule, tool_name: &str, args: Option<&Value>) -> bool {

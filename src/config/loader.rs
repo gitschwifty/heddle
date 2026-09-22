@@ -453,17 +453,25 @@ fn apply_raw(config: &mut HeddleConfig, raw: &TomlValue) {
 }
 
 fn extract_permissions(raw: &TomlValue) -> Option<PermissionsLayer> {
-    let perms = raw.as_table()?.get("permissions")?.as_table()?;
+    let value = raw.as_table()?.get("permissions")?;
+    // Preserve invalid types as invalid (empty) rule slots so checker validation
+    // fails closed instead of silently removing a configured restriction.
+    let Some(perms) = value.as_table() else {
+        return Some(PermissionsLayer {
+            allow: vec![],
+            deny: vec![String::new()],
+            ask: vec![],
+        });
+    };
     let to_strings = |key: &str| -> Vec<String> {
-        perms
-            .get(key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        match perms.get(key) {
+            None => Vec::new(),
+            Some(TomlValue::Array(values)) => values
+                .iter()
+                .map(|value| value.as_str().unwrap_or_default().to_string())
+                .collect(),
+            Some(_) => vec![String::new()],
+        }
     };
     let allow = to_strings("allow");
     let deny = to_strings("deny");
