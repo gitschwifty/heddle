@@ -136,6 +136,36 @@ fn jsonl_files_under(dir: &Path) -> Vec<PathBuf> {
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
+async fn ipc_iteration_limit_stops_after_one_provider_call() {
+    let server = MockServer::start().await;
+    mount_repeating_tool_sse(&server).await;
+    let mut h = Headless::spawn(env(&server));
+    let mut init: Value = serde_json::from_str(&init_msg()).unwrap();
+    init["config"]["max_iterations"] = json!(1);
+    h.send_line(&init.to_string());
+    h.wait_for_lines(1, T);
+    h.send_line(&json!({"type":"send","id":"limited","message":"Find Cargo.toml"}).to_string());
+    let lines = h.wait_for(has_result, T);
+    let messages = collect_messages(&lines);
+    let result = messages.iter().find(|m| m["type"] == "result").unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(result["iterations"], 1);
+    assert_eq!(result["tool_calls_made"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ipc_iteration_limit_rejects_zero() {
+    let mut h = Headless::spawn(HashMap::new());
+    let mut init: Value = serde_json::from_str(&init_msg()).unwrap();
+    init["config"]["max_iterations"] = json!(0);
+    h.send_line(&init.to_string());
+    let lines = h.wait_for_lines(1, T);
+    let response = parse_line(&lines[0]);
+    assert_eq!(response["status"], "error", "{response}");
+    assert!(response.to_string().contains("max_iterations"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn send_message_returns_streamed_events_and_result() {
     let server = MockServer::start().await;
     mount_normal_sse(&server).await;

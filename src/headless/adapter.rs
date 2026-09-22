@@ -269,6 +269,9 @@ fn ipc_capabilities(registry: &ToolRegistry) -> IpcCapabilities {
 fn build_session_options(
     config: &InitConfig,
 ) -> std::result::Result<(SessionOptions, Option<EffectiveRuntimeMetadata>), String> {
+    if config.max_iterations == Some(0) {
+        return Err("max_iterations must be greater than zero".into());
+    }
     let runtime = config.runtime.as_ref();
     let mode = runtime
         .and_then(|r| r.mode.clone())
@@ -356,6 +359,9 @@ fn build_session_options(
 }
 
 fn wire_ipc_overrides(mut session: SessionContext, config: &InitConfig) -> SessionContext {
+    if let Some(max_iterations) = config.max_iterations {
+        session.config.max_iterations = Some(max_iterations);
+    }
     if config.tools.iter().any(|name| name == "ask_user") {
         let _ = session
             .registry
