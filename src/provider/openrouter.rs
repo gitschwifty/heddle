@@ -809,7 +809,9 @@ impl Provider for OpenRouterProvider {
             }
             let trimmed = std::str::from_utf8(&buffer)?.trim();
             if let Some(data) = trimmed.strip_prefix("data: ") {
-                if data != "[DONE]" {
+                if data == "[DONE]" {
+                    return;
+                } else {
                     if !openrouter_headers {
                         log_straitly_response("stream", data);
                     }
@@ -817,6 +819,15 @@ impl Provider for OpenRouterProvider {
                     yield parsed;
                 }
             }
+            let mut failure = provider_failure(
+                &response_headers,
+                Some(status.as_u16()),
+                &[],
+                "provider stream ended before [DONE] (unexpected EOF)",
+            );
+            failure.telemetry.failure_kind = Some(ProviderFailureKind::StreamBodyDecode);
+            failure.debug_detail = Some("phase=stream_body unexpected EOF before terminal marker".into());
+            Err::<(), _>(anyhow::Error::new(failure))?;
         };
         Box::pin(stream)
     }

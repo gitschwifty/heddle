@@ -337,6 +337,45 @@ async fn stream_errors_on_network_failure() {
 }
 
 #[tokio::test]
+async fn stream_rejects_eof_without_done() {
+    for tail in ["", "\n\n"] {
+        for delta in [
+            json!({"content": "partial"}),
+            json!({"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "bash", "arguments": "{"}}]}),
+        ] {
+            let server = MockServer::start().await;
+            let body = format!(
+                "data: {}{tail}",
+                json!({"id": "partial", "choices": [{"index": 0, "delta": delta}]})
+            );
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let (chunks, error) = drain_stream(provider(server.uri())).await;
+            assert_eq!(chunks.len(), 1);
+            assert!(
+                error.is_some(),
+                "early EOF must not complete a partial response"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn stream_accepts_done_without_final_newline() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("data: [DONE]"))
+        .mount(&server)
+        .await;
+    let (_, error) = drain_stream(provider(server.uri())).await;
+    assert!(error.is_none());
+}
+
+#[tokio::test]
 async fn stream_handles_only_done_marker() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
