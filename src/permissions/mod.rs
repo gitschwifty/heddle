@@ -2,6 +2,7 @@
 
 pub mod checker;
 pub mod defaults;
+pub mod interactive;
 pub mod rules;
 
 pub use checker::{read_only_tool_filter, PermissionChecker, PermissionDecision, ToolCategory};

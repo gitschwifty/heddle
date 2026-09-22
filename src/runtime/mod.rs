@@ -372,7 +372,14 @@ impl HeddleRuntime {
                 .map(|_| self.session.session_file.clone());
         }
         let loop_opts = AgentLoopOptions {
-            permission_checker: self.session.permission_checker.clone(),
+            max_iterations: self.session.config.max_iterations,
+            permission_checker: if options.permission_resolver.is_some()
+                || self.session.config.approval_mode.is_some()
+            {
+                self.session.permission_checker.clone()
+            } else {
+                None
+            },
             permission_resolver: options
                 .permission_resolver
                 .clone()
