@@ -36,8 +36,9 @@ impl Completer for MentionCompleter {
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let prefix = &line[..pos];
         let last_word_start = prefix
-            .rfind(|c: char| c.is_whitespace())
-            .map(|i| i + 1)
+            .char_indices()
+            .rfind(|(_, c)| c.is_whitespace())
+            .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
         let last_word = &prefix[last_word_start..];
         if !last_word.starts_with('@') {

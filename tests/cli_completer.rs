@@ -78,3 +78,16 @@ fn multiple_words_only_last_word_triggers_completion() {
     assert!(!completions.is_empty());
     assert_eq!(start, "look at ".len());
 }
+
+#[test]
+fn completion_offsets_follow_full_whitespace_characters() {
+    let (_dir, completer) = setup();
+    for whitespace in ["\u{2003}", "\u{a0}", " ", "\t"] {
+        let prefix = format!("look{whitespace}");
+        let (start, candidates) = complete(&completer, &format!("{prefix}@src/cl"));
+        assert_eq!(start, prefix.len());
+        assert_eq!(candidates, vec!["@src/cli.ts"]);
+        let (_, candidates) = complete(&completer, &format!("{prefix}plain"));
+        assert!(candidates.is_empty());
+    }
+}
